@@ -12,6 +12,23 @@ A web-based control plane dashboard for managing OpenShell and NemoClaw instance
 
 ## Installation
 
+### Quick Install (Recommended)
+
+Run the installer script which checks prerequisites and sets up everything:
+
+```bash
+./install.sh
+```
+
+The installer will:
+- ✅ Verify Node.js, npm, and Docker are installed
+- ✅ Check that your OpenShell-Mark container is running
+- ✅ Install npm dependencies
+- ✅ Build the dashboard
+- ✅ Create `.env.local` configuration file
+
+### Manual Install
+
 1. Navigate to the project directory:
 ```bash
 cd nemo-shell-dashboard
@@ -22,7 +39,16 @@ cd nemo-shell-dashboard
 npm install
 ```
 
+## Prerequisites
+
+- **Node.js** 18+ 
+- **npm** 9+
+- **Docker** (Docker Desktop on Mac, or native Docker on Linux)
+- **OpenShell-Mark fork running**: `ghcr.io/nvidia/openshell/cluster:dev`
+
 ## Running the Dashboard
+
+After running `./install.sh`:
 
 1. Start the development server:
 ```bash
@@ -32,6 +58,26 @@ npm run dev
 2. Open your browser and navigate to:
 ```
 http://localhost:3000
+```
+
+> **Important**: Make sure your OpenShell-Mark container is running before starting the dashboard!
+
+### On Mac
+```bash
+# Start OpenShell first
+/Applications/Docker.app/Contents/Resources/bin/docker run -d --name openshell-cluster -p 8080:30051 ghcr.io/nvidia/openshell/cluster:dev
+
+# Then start the dashboard
+npm run dev
+```
+
+### On Linux
+```bash
+# Start OpenShell first
+docker run -d --name openshell-cluster -p 8080:30051 ghcr.io/nvidia/openshell/cluster:dev
+
+# Then start the dashboard
+npm run dev
 ```
 
 ## Configuration
