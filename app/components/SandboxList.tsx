@@ -32,6 +32,8 @@ export default function SandboxList({
   onSandboxSelect,
   isDestroyMode
 }: SandboxListProps) {
+  const [terminalMessage, setTerminalMessage] = useState<string>('')
+  const [dashboardMessage, setDashboardMessage] = useState<string>('')
   const [sandboxes, setSandboxes] = useState<Sandbox[]>([])
   const [telemetry, setTelemetry] = useState<TelemetryData>({
     cpu: 0, memory: 0, disk: 0, timestamp: new Date().toISOString()
@@ -168,15 +170,54 @@ export default function SandboxList({
           {!isDestroyMode && selectedSandbox && (
             <>
               <div className="panel p-6">
-                <div className="flex items-center justify-between mb-6 pb-4 border-b border-[var(--border-subtle)]">
+                <div className="flex items-center justify-between mb-6 pb-4 border-b border-[var(--border-subtle)] gap-4 flex-wrap">
                   <h4 className="text-sm font-semibold text-[var(--foreground)] uppercase tracking-wider">
                     {sandboxes.find(s => s.id === selectedSandbox)?.name} — TELEMETRY
                   </h4>
-                  <span className="text-[10px] text-[var(--foreground-dim)] font-mono">
-                    LIVE
-                  </span>
+                  <div className="flex items-center gap-3 flex-wrap">
+                    <button
+                      onClick={async () => {
+                        try {
+                          const res = await fetch('/api/openshell/dashboard')
+                          const data = await res.json()
+                          setDashboardMessage(data.loopbackOnly
+                            ? `OpenClaw Dashboard detected at ${data.dashboardUrl}. It is loopback-only, so the next step is adding a proxy/open-in-new-tab bridge.`
+                            : `OpenClaw Dashboard: ${data.dashboardUrl}`)
+                        } catch (error) {
+                          setDashboardMessage('Failed to resolve OpenClaw Dashboard endpoint.')
+                        }
+                      }}
+                      className="px-3 py-2 rounded-sm bg-[var(--background-tertiary)] text-[var(--foreground)] text-xs font-mono uppercase tracking-wider hover:border-[var(--nvidia-green)] border border-[var(--border-subtle)]"
+                    >
+                      Start OpenClaw Gateway Dashboard
+                    </button>
+                    <button
+                      onClick={async () => {
+                        try {
+                          const res = await fetch(`/api/openshell/terminal?sandboxId=${encodeURIComponent(selectedSandbox)}`)
+                          const data = await res.json()
+                          setTerminalMessage(data.note || 'Terminal attach route reached.')
+                        } catch (error) {
+                          setTerminalMessage('Failed to attach to OpenShell terminal.')
+                        }
+                      }}
+                      className="px-3 py-2 rounded-sm bg-[var(--background-tertiary)] text-[var(--foreground)] text-xs font-mono uppercase tracking-wider hover:border-[var(--nvidia-green)] border border-[var(--border-subtle)]"
+                    >
+                      Attach to OpenShell Terminal
+                    </button>
+                    <span className="text-[10px] text-[var(--foreground-dim)] font-mono">
+                      LIVE
+                    </span>
+                  </div>
                 </div>
                 
+                {(dashboardMessage || terminalMessage) && (
+                  <div className="mb-4 space-y-2">
+                    {dashboardMessage && <div className="rounded-sm border border-[var(--border-subtle)] bg-[var(--background-tertiary)] p-3 text-xs text-[var(--foreground-dim)]">{dashboardMessage}</div>}
+                    {terminalMessage && <div className="rounded-sm border border-[var(--border-subtle)] bg-[var(--background-tertiary)] p-3 text-xs text-[var(--foreground-dim)]">{terminalMessage}</div>}
+                  </div>
+                )}
+
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                   <div className="metric p-4">
                     <p className="text-[10px] text-[var(--foreground-dim)] uppercase tracking-wider">CPU</p>
