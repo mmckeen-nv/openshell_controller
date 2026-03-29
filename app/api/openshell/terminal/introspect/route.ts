@@ -10,14 +10,21 @@ export async function GET(request: Request) {
       return NextResponse.json({ error: 'sandboxId is required' }, { status: 400 })
     }
 
-    const jsonpath = `{.spec.containers[*].name}{"\n"}{.spec.containers[*].image}{"\n"}{.status.containerStatuses[*].name}{"\n"}`
     const result = await dockerExecInOpenShell(
-      `kubectl -n ${OPENSHELL_NAMESPACE} get pod ${sandboxId} -o jsonpath='${jsonpath}'`
+      `kubectl -n ${OPENSHELL_NAMESPACE} get pod ${sandboxId} -o json`
     )
+
+    const pod = JSON.parse(result.stdout)
+    const containerNames = Array.isArray(pod?.spec?.containers) ? pod.spec.containers.map((c: any) => c.name) : []
+    const containerImages = Array.isArray(pod?.spec?.containers) ? pod.spec.containers.map((c: any) => c.image) : []
+    const statusNames = Array.isArray(pod?.status?.containerStatuses) ? pod.status.containerStatuses.map((c: any) => c.name) : []
 
     return NextResponse.json({
       ok: true,
       sandboxId,
+      containers: containerNames,
+      images: containerImages,
+      runningStatuses: statusNames,
       raw: result.stdout.trim(),
       stderr: result.stderr.trim(),
       note: 'Pod/container introspection succeeded. Use this to select the right exec target for terminal attach.'
