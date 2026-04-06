@@ -1,5 +1,6 @@
 "use client"
 import { useState, useEffect } from 'react'
+import { useRouter } from 'next/navigation'
 import ConfigurationPanel from './ConfigurationPanel'
 
 interface Sandbox {
@@ -32,7 +33,7 @@ export default function SandboxList({
   onSandboxSelect,
   isDestroyMode
 }: SandboxListProps) {
-  const [terminalMessage, setTerminalMessage] = useState<string>('')
+  const router = useRouter()
   const [dashboardMessage, setDashboardMessage] = useState<string>('')
   const [sandboxes, setSandboxes] = useState<Sandbox[]>([])
   const [telemetry, setTelemetry] = useState<TelemetryData>({
@@ -197,26 +198,12 @@ export default function SandboxList({
                       Start OpenClaw Gateway Dashboard
                     </button>
                     <button
-                      onClick={async () => {
-                        try {
-                          const res = await fetch(`/api/openshell/terminal/open?sandboxId=${encodeURIComponent(selectedSandbox)}`)
-                          const data = await res.json()
-                          if (data.ok) {
-                            setTerminalMessage(`Terminal probe succeeded for ${selectedSandbox}: ${data.output || 'attached'}`)
-                          } else {
-                            const inspectRes = await fetch(`/api/openshell/terminal/introspect?sandboxId=${encodeURIComponent(selectedSandbox)}`)
-                            const inspectData = await inspectRes.json()
-                            setTerminalMessage(inspectData.ok
-                              ? `Terminal probe failed. Pod introspection for ${selectedSandbox}: containers=${(inspectData.containers || []).join(', ')} images=${(inspectData.images || []).join(', ')}`
-                              : (data.error || 'Failed to attach to OpenShell terminal.'))
-                          }
-                        } catch (error) {
-                          setTerminalMessage('Failed to attach to OpenShell terminal.')
-                        }
+                      onClick={() => {
+                        router.push(`/operator-terminal?sandboxId=${encodeURIComponent(selectedSandbox)}`)
                       }}
                       className="px-3 py-2 rounded-sm bg-[var(--background-tertiary)] text-[var(--foreground)] text-xs font-mono uppercase tracking-wider hover:border-[var(--nvidia-green)] border border-[var(--border-subtle)]"
                     >
-                      Attach to OpenShell Terminal
+                      Open Operator Terminal
                     </button>
                     <span className="text-[10px] text-[var(--foreground-dim)] font-mono">
                       LIVE
@@ -224,10 +211,9 @@ export default function SandboxList({
                   </div>
                 </div>
                 
-                {(dashboardMessage || terminalMessage) && (
+                {dashboardMessage && (
                   <div className="mb-4 space-y-2">
-                    {dashboardMessage && <div className="rounded-sm border border-[var(--border-subtle)] bg-[var(--background-tertiary)] p-3 text-xs text-[var(--foreground-dim)]">{dashboardMessage}</div>}
-                    {terminalMessage && <div className="rounded-sm border border-[var(--border-subtle)] bg-[var(--background-tertiary)] p-3 text-xs text-[var(--foreground-dim)]">{terminalMessage}</div>}
+                    <div className="rounded-sm border border-[var(--border-subtle)] bg-[var(--background-tertiary)] p-3 text-xs text-[var(--foreground-dim)]">{dashboardMessage}</div>
                   </div>
                 )}
 
