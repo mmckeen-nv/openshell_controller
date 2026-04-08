@@ -20,18 +20,37 @@ function shellForPlatform() {
   return process.env.SHELL || '/bin/bash'
 }
 
+function buildAttachCommand(sandboxId) {
+  const alias = `openshell-${sandboxId}`
+  return process.env.OPENSHELL_TERMINAL_ATTACH_TEMPLATE || `ssh ${alias}`
+}
+
+function buildBootstrapShell(sandboxId) {
+  const attachCommand = buildAttachCommand(sandboxId)
+  return [
+    `export OPENSHELL_SANDBOX_ID=${shellEscape(sandboxId)}`,
+    `export PS1='[${sandboxId}] \\u@\\h:\\w\\$ '`,
+    `echo '[openclaw] attaching to ${sandboxId} using: ${attachCommand}'`,
+    `exec ${attachCommand}`,
+  ].join('; ')
+}
+
+function shellEscape(value) {
+  return `'${String(value).replace(/'/g, `'"'"'`)}'`
+}
+
 function createSession(sandboxId) {
   trimSessions()
   const id = randomUUID()
   const shell = shellForPlatform()
-  const proc = pty.spawn(shell, ['-l'], {
+  const bootstrap = buildBootstrapShell(sandboxId)
+  const proc = pty.spawn(shell, ['-lc', bootstrap], {
     name: 'xterm-256color',
     cols: 120,
     rows: 34,
     cwd: process.env.HOME,
     env: {
       ...process.env,
-      PS1: `[${sandboxId}] \\u@\\h:\\w\\$ `,
       OPENSHELL_SANDBOX_ID: sandboxId,
     },
   })
@@ -39,6 +58,7 @@ function createSession(sandboxId) {
   const session = {
     id,
     sandboxId,
+    attachCommand: buildAttachCommand(sandboxId),
     pty: proc,
     createdAt: Date.now(),
     updatedAt: Date.now(),
@@ -112,6 +132,7 @@ const server = http.createServer((req, res) => {
           ok: true,
           sessionId: session.id,
           sandboxId: session.sandboxId,
+          attachCommand: session.attachCommand,
           replay: session.buffer,
         }))
       } catch (error) {
@@ -140,6 +161,7 @@ wss.on('connection', (socket, req) => {
     type: 'ready',
     sessionId: session.id,
     sandboxId: session.sandboxId,
+    attachCommand: session.attachCommand,
     replay: session.buffer,
   }))
 
