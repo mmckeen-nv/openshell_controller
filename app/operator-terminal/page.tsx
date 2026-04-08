@@ -2,7 +2,10 @@
 
 import Link from 'next/link'
 import { useSearchParams } from 'next/navigation'
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Terminal } from 'xterm'
+import { FitAddon } from 'xterm-addon-fit'
+import 'xterm/css/xterm.css'
 
 interface ReadinessPodSummary {
   containers?: string[]
@@ -37,36 +40,11 @@ interface ReadinessResponse {
   error?: string
 }
 
-interface TranscriptEntry {
-  id: string
-  command: string
-  stdout: string
-  stderr: string
-  exitCode: number
-  executionMode?: string
-  ranAt: string
-}
-
-interface TerminalSessionPayload {
+interface LiveTerminalSession {
   sessionId: string
   sandboxId: string
-  cwd?: string
-  createdAt: string
-  updatedAt: string
-  prompt: string
-  transcript: TranscriptEntry[]
-}
-
-interface CommandRunResponse {
-  ok: boolean
-  command?: string
-  executionMode?: string
-  exitCode?: number
-  stdout?: string
-  stderr?: string
-  error?: string
-  note?: string
-  session?: TerminalSessionPayload
+  replay?: string
+  websocketUrl: string
 }
 
 type LoadState = 'idle' | 'loading' | 'ready' | 'error'
@@ -83,11 +61,14 @@ export default function OperatorTerminalPage() {
   const [data, setData] = useState<ReadinessResponse | null>(null)
   const [lastCheckedAt, setLastCheckedAt] = useState<string | null>(null)
   const [copyMessage, setCopyMessage] = useState<string>('')
-  const [commandInput, setCommandInput] = useState<string>('pwd')
-  const [commandState, setCommandState] = useState<'idle' | 'running' | 'done' | 'error'>('idle')
-  const [commandResult, setCommandResult] = useState<CommandRunResponse | null>(null)
-  const [sessionState, setSessionState] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle')
-  const [terminalSession, setTerminalSession] = useState<TerminalSessionPayload | null>(null)
+  const [terminalState, setTerminalState] = useState<'idle' | 'connecting' | 'connected' | 'error'>('idle')
+  const [terminalStatus, setTerminalStatus] = useState<string>('Terminal not connected yet.')
+  const [liveSession, setLiveSession] = useState<LiveTerminalSession | null>(null)
+
+  const terminalContainerRef = useRef<HTMLDivElement | null>(null)
+  const terminalRef = useRef<Terminal | null>(null)
+  const fitAddonRef = useRef<FitAddon | null>(null)
+  const socketRef = useRef<WebSocket | null>(null)
 
   const refreshReadiness = useCallback(async () => {
     if (!sandboxId) {
@@ -117,42 +98,168 @@ export default function OperatorTerminalPage() {
     }
   }, [sandboxId])
 
-  const ensureTerminalSession = useCallback(async () => {
+  const ensureLiveSession = useCallback(async () => {
     if (!sandboxId) {
-      setTerminalSession(null)
-      setSessionState('idle')
+      setLiveSession(null)
+      setTerminalState('idle')
       return
     }
 
-    setSessionState('loading')
+    setTerminalState('connecting')
+    setTerminalStatus('Initializing live PTY session…')
+
     try {
-      const currentSessionId = terminalSession?.sessionId
-      const url = currentSessionId
-        ? `/api/openshell/terminal?sandboxId=${encodeURIComponent(sandboxId)}&sessionId=${encodeURIComponent(currentSessionId)}`
-        : `/api/openshell/terminal?sandboxId=${encodeURIComponent(sandboxId)}`
-      const response = await fetch(url, { cache: 'no-store' })
+      const response = await fetch('/api/openshell/terminal/live', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          sandboxId,
+          sessionId: liveSession?.sessionId,
+        }),
+      })
       const result = await response.json()
-
-      if (!response.ok || !result.ok || !result.session) {
-        throw new Error(result.error || 'Failed to initialize dashboard terminal session.')
+      if (!response.ok || !result.ok) {
+        throw new Error(result.error || 'Failed to initialize live terminal session.')
       }
-
-      setTerminalSession(result.session)
-      setSessionState('ready')
+      setLiveSession({
+        sessionId: result.sessionId,
+        sandboxId: result.sandboxId,
+        replay: result.replay,
+        websocketUrl: result.websocketUrl,
+      })
     } catch (error) {
-      setSessionState('error')
-      setTerminalSession(null)
-      setCommandResult({ ok: false, error: error instanceof Error ? error.message : 'Failed to initialize terminal session.' })
+      setTerminalState('error')
+      setTerminalStatus(error instanceof Error ? error.message : 'Failed to initialize live terminal session.')
     }
-  }, [sandboxId, terminalSession?.sessionId])
+  }, [sandboxId, liveSession?.sessionId])
 
   useEffect(() => {
     refreshReadiness()
   }, [refreshReadiness])
 
   useEffect(() => {
-    ensureTerminalSession()
-  }, [ensureTerminalSession])
+    ensureLiveSession()
+  }, [ensureLiveSession])
+
+  useEffect(() => {
+    if (!terminalContainerRef.current || terminalRef.current) {
+      return
+    }
+
+    const term = new Terminal({
+      cursorBlink: true,
+      fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+      fontSize: 13,
+      theme: {
+        background: '#000000',
+        foreground: '#f5f5f5',
+        cursor: '#76b900',
+      },
+      scrollback: 5000,
+      allowTransparency: false,
+    })
+    const fitAddon = new FitAddon()
+    term.loadAddon(fitAddon)
+    term.open(terminalContainerRef.current)
+    fitAddon.fit()
+
+    terminalRef.current = term
+    fitAddonRef.current = fitAddon
+
+    const handleResize = () => {
+      fitAddon.fit()
+      if (socketRef.current?.readyState === WebSocket.OPEN) {
+        socketRef.current.send(JSON.stringify({
+          type: 'resize',
+          cols: term.cols,
+          rows: term.rows,
+        }))
+      }
+    }
+
+    window.addEventListener('resize', handleResize)
+
+    return () => {
+      window.removeEventListener('resize', handleResize)
+      socketRef.current?.close()
+      term.dispose()
+      terminalRef.current = null
+      fitAddonRef.current = null
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!liveSession?.websocketUrl || !terminalRef.current) {
+      return
+    }
+
+    const term = terminalRef.current
+    term.reset()
+    if (liveSession.replay) {
+      term.write(liveSession.replay)
+    }
+
+    const socket = new WebSocket(liveSession.websocketUrl)
+    socketRef.current = socket
+
+    const inputDisposable = term.onData((data) => {
+      if (socket.readyState === WebSocket.OPEN) {
+        socket.send(JSON.stringify({ type: 'input', data }))
+      }
+    })
+
+    socket.addEventListener('open', () => {
+      setTerminalState('connected')
+      setTerminalStatus(`Live PTY connected for ${liveSession.sandboxId}.`)
+      if (fitAddonRef.current) {
+        fitAddonRef.current.fit()
+      }
+      socket.send(JSON.stringify({
+        type: 'resize',
+        cols: term.cols,
+        rows: term.rows,
+      }))
+    })
+
+    socket.addEventListener('message', (event) => {
+      try {
+        const message = JSON.parse(event.data)
+        if (message.type === 'ready') {
+          if (message.replay) {
+            term.reset()
+            term.write(message.replay)
+          }
+        } else if (message.type === 'data' && typeof message.data === 'string') {
+          term.write(message.data)
+        } else if (message.type === 'exit') {
+          setTerminalState('error')
+          setTerminalStatus(`Terminal exited with code ${message.exitCode ?? 'unknown'}.`)
+        }
+      } catch {
+        // ignore malformed frames
+      }
+    })
+
+    socket.addEventListener('close', () => {
+      setTerminalState((current) => current === 'error' ? current : 'idle')
+      setTerminalStatus('Terminal disconnected. Refresh session to reconnect.')
+    })
+
+    socket.addEventListener('error', () => {
+      setTerminalState('error')
+      setTerminalStatus('Terminal websocket error.')
+    })
+
+    return () => {
+      inputDisposable.dispose()
+      socket.close()
+      if (socketRef.current === socket) {
+        socketRef.current = null
+      }
+    }
+  }, [liveSession])
 
   const readiness = useMemo(() => {
     if (!sandboxId) {
@@ -174,8 +281,8 @@ export default function OperatorTerminalPage() {
     if (state === 'ready' && data?.ok && data?.podReady && data?.sshReachable) {
       return {
         tone: 'border-[var(--status-running)] text-[var(--status-running)]',
-        label: 'TERMINAL PATH VERIFIED',
-        detail: 'The backend confirmed pod readiness and shell reachability. The dashboard terminal below is session-backed and preserves transcript plus working directory across commands.',
+        label: 'LIVE TERMINAL PATH VERIFIED',
+        detail: 'The backend confirmed pod readiness and shell reachability, and the dashboard is now wired for a live PTY transport.',
       }
     }
 
@@ -183,15 +290,15 @@ export default function OperatorTerminalPage() {
       return {
         tone: 'border-[var(--status-pending)] text-[var(--status-pending)]',
         label: 'DEGRADED: POD UP, SHELL UNCONFIRMED',
-        detail: 'The pod exists, but the bounded shell probe did not succeed from the dashboard backend. You can still inspect the terminal panel below, but local SSH remains the stronger recovery path.',
+        detail: 'The pod exists, but the readiness probe did not fully succeed. The live terminal may still connect, but direct SSH remains the stronger fallback.',
       }
     }
 
     if (state === 'ready' && data?.ok && data?.podExists) {
       return {
         tone: 'border-[var(--status-running)] text-[var(--status-running)]',
-        label: 'READY FOR DASHBOARD TERMINAL',
-        detail: 'Pod metadata is present and the dashboard terminal session can be used for command-scoped work.',
+        label: 'READY FOR LIVE TERMINAL',
+        detail: 'Pod metadata is present and the dashboard live terminal can attempt a real PTY session.',
       }
     }
 
@@ -211,49 +318,10 @@ export default function OperatorTerminalPage() {
     }
   }, [])
 
-  const runCommand = useCallback(async () => {
-    if (!sandboxId) {
-      setCommandState('error')
-      setCommandResult({ ok: false, error: 'Select a sandbox before running a command.' })
-      return
-    }
-
-    setCommandState('running')
-    setCommandResult(null)
-
-    try {
-      const response = await fetch('/api/openshell/terminal', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          sandboxId,
-          sessionId: terminalSession?.sessionId,
-          command: commandInput,
-        }),
-      })
-      const result: CommandRunResponse = await response.json()
-      setCommandResult(result)
-      if (result.session) {
-        setTerminalSession(result.session)
-        setSessionState('ready')
-      }
-      setCommandState(response.ok && result.ok ? 'done' : 'error')
-    } catch (error) {
-      setCommandResult({
-        ok: false,
-        error: error instanceof Error ? error.message : 'Failed to run dashboard command.',
-      })
-      setCommandState('error')
-    }
-  }, [commandInput, sandboxId, terminalSession?.sessionId])
-
   const aliasCommand = data?.attach?.aliasCommand || defaultAlias(sandboxId)
   const fallbackCommand = data?.attach?.fallbackCommand || defaultFallback(sandboxId)
   const loginShellCommand = data?.attach?.loginShellCommand || defaultLoginShell(sandboxId)
   const shellHint = data?.attach?.shellHint || DEFAULT_SHELL_HINT
-  const transcript = terminalSession?.transcript || []
 
   return (
     <main className="min-h-screen bg-[var(--background)] text-[var(--foreground)] p-8">
@@ -263,7 +331,7 @@ export default function OperatorTerminalPage() {
             <p className="text-[10px] uppercase tracking-[0.25em] text-[var(--foreground-dim)] font-mono">Operator path</p>
             <h1 className="text-2xl font-semibold uppercase tracking-wider mt-2">Operator Terminal</h1>
             <p className="text-sm text-[var(--foreground-dim)] mt-3 max-w-3xl">
-              Dashboard terminal for the selected sandbox. This is not pretending to be a raw PTY: it is a session-backed shell view that keeps working directory and transcript across commands so you can actually use the dashboard as a terminal surface.
+              Real live terminal surface for the selected sandbox. Browser keys flow into a PTY-backed shell process and output streams back live into the dashboard.
             </p>
           </div>
           <Link
@@ -292,92 +360,35 @@ export default function OperatorTerminalPage() {
         <section className="panel p-6 space-y-4">
           <div className="flex items-center justify-between gap-3 flex-wrap">
             <div>
-              <h3 className="text-sm font-semibold uppercase tracking-wider">Dashboard Terminal</h3>
+              <h3 className="text-sm font-semibold uppercase tracking-wider">Live Dashboard Terminal</h3>
               <p className="text-xs text-[var(--foreground-dim)] mt-2">
-                Session-backed shell surface. Each command runs through the backend against the sandbox, and the page keeps transcript plus cwd so the experience behaves like a terminal instead of isolated one-shot boxes.
+                xterm-backed live terminal. Supports typed input, streamed output, resize, and session reconnect.
               </p>
             </div>
-            <div className="text-[11px] text-[var(--foreground-dim)] font-mono">
-              {sessionState === 'loading' ? 'Initializing session…' : sessionState === 'ready' ? terminalSession?.prompt : sessionState === 'error' ? 'Session unavailable' : 'Idle'}
-            </div>
+            <div className="text-[11px] text-[var(--foreground-dim)] font-mono">{terminalStatus}</div>
           </div>
 
-          <div className="rounded-sm border border-[var(--border-subtle)] bg-black p-4 min-h-[420px]">
-            <div className="flex items-center justify-between gap-3 flex-wrap border-b border-white/10 pb-3 mb-3">
-              <div className="text-xs font-mono text-green-300">
-                {terminalSession?.prompt || `${sandboxId || 'sandbox'}:~$`}
-              </div>
-              <div className="text-[11px] font-mono text-zinc-400">
-                {terminalSession?.sessionId ? `session ${terminalSession.sessionId.slice(0, 8)}` : 'no session'}
-              </div>
-            </div>
-
-            <div className="space-y-4 max-h-[480px] overflow-auto pr-1">
-              {transcript.length === 0 ? (
-                <div className="text-sm font-mono text-zinc-500">No terminal transcript yet. Run a command below to start the session.</div>
-              ) : (
-                transcript.map((entry) => (
-                  <div key={entry.id} className="space-y-2">
-                    <div className="text-sm font-mono text-green-300">{terminalSession?.prompt || `${sandboxId || 'sandbox'}:~$`} {entry.command}</div>
-                    <pre className="whitespace-pre-wrap break-words text-sm font-mono text-zinc-100">{entry.stdout || ''}</pre>
-                    {entry.stderr && (
-                      <pre className="whitespace-pre-wrap break-words text-sm font-mono text-amber-300">{entry.stderr}</pre>
-                    )}
-                    <div className="text-[11px] font-mono text-zinc-500">exit {entry.exitCode}{entry.executionMode ? ` · ${entry.executionMode}` : ''} · {new Date(entry.ranAt).toLocaleTimeString()}</div>
-                  </div>
-                ))
-              )}
-            </div>
+          <div className="rounded-sm border border-[var(--border-subtle)] bg-black p-3">
+            <div ref={terminalContainerRef} className="h-[520px] w-full" />
           </div>
 
-          <div className="rounded-sm border border-[var(--border-subtle)] bg-[var(--background-tertiary)] p-4 space-y-4">
-            <label className="block">
-              <span className="text-[10px] uppercase tracking-[0.2em] text-[var(--foreground-dim)] font-mono">Command</span>
-              <textarea
-                value={commandInput}
-                onChange={(event) => setCommandInput(event.target.value)}
-                spellCheck={false}
-                rows={3}
-                className="mt-2 w-full rounded-sm border border-[var(--border-subtle)] bg-[var(--background)] px-3 py-2 text-sm font-mono text-[var(--foreground)] focus:border-[var(--nvidia-green)] focus:outline-none"
-                placeholder="pwd"
-              />
-            </label>
-
-            <div className="flex items-center gap-3 flex-wrap">
-              <button
-                onClick={runCommand}
-                disabled={commandState === 'running' || !sandboxId || sessionState === 'loading'}
-                className="px-3 py-2 rounded-sm border border-[var(--border-subtle)] text-xs font-mono uppercase tracking-wider hover:border-[var(--nvidia-green)] disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                {commandState === 'running' ? 'Running Command…' : 'Run in Dashboard Terminal'}
-              </button>
-              <button
-                onClick={ensureTerminalSession}
-                disabled={!sandboxId || sessionState === 'loading'}
-                className="px-3 py-2 rounded-sm border border-[var(--border-subtle)] text-xs font-mono uppercase tracking-wider hover:border-[var(--nvidia-green)] disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                Refresh Session
-              </button>
-              <p className="text-[11px] text-[var(--foreground-dim)] font-mono">Stateful transcript and cwd; not raw keystroke streaming yet.</p>
-            </div>
-
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-              <div className="rounded-sm border border-[var(--border-subtle)] bg-[var(--background)] p-3">
-                <p className="text-[10px] uppercase tracking-[0.2em] text-[var(--foreground-dim)] font-mono">Last stdout</p>
-                <pre className="mt-2 text-xs whitespace-pre-wrap break-words font-mono text-[var(--foreground)] min-h-16">{commandResult?.stdout || 'No command output yet.'}</pre>
-              </div>
-              <div className="rounded-sm border border-[var(--border-subtle)] bg-[var(--background)] p-3 space-y-2">
-                <div className="flex items-center justify-between gap-3 flex-wrap">
-                  <p className="text-[10px] uppercase tracking-[0.2em] text-[var(--foreground-dim)] font-mono">Last stderr / status</p>
-                  {typeof commandResult?.exitCode === 'number' && (
-                    <span className="text-[10px] font-mono text-[var(--foreground-dim)]">
-                      exit {commandResult.exitCode}{commandResult.executionMode ? ` · ${commandResult.executionMode}` : ''}
-                    </span>
-                  )}
-                </div>
-                <pre className="mt-2 text-xs whitespace-pre-wrap break-words font-mono text-[var(--foreground)] min-h-16">{commandResult?.error || commandResult?.stderr || commandResult?.note || 'No stderr.'}</pre>
-              </div>
-            </div>
+          <div className="flex items-center gap-3 flex-wrap">
+            <button
+              onClick={ensureLiveSession}
+              disabled={!sandboxId || terminalState === 'connecting'}
+              className="px-3 py-2 rounded-sm border border-[var(--border-subtle)] text-xs font-mono uppercase tracking-wider hover:border-[var(--nvidia-green)] disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {terminalState === 'connecting' ? 'Connecting…' : 'Reconnect Live Terminal'}
+            </button>
+            <button
+              onClick={refreshReadiness}
+              className="px-3 py-2 rounded-sm border border-[var(--border-subtle)] text-xs font-mono uppercase tracking-wider hover:border-[var(--nvidia-green)]"
+            >
+              Refresh Readiness
+            </button>
+            <span className="text-[11px] text-[var(--foreground-dim)] font-mono">
+              {liveSession?.sessionId ? `session ${liveSession.sessionId.slice(0, 8)}` : 'no session'}
+            </span>
           </div>
         </section>
 
@@ -387,15 +398,9 @@ export default function OperatorTerminalPage() {
               <div>
                 <h3 className="text-sm font-semibold uppercase tracking-wider">Direct Attach Fallbacks</h3>
                 <p className="text-xs text-[var(--foreground-dim)] mt-2">
-                  If the dashboard terminal is degraded, these remain the authoritative escape hatches.
+                  If the live dashboard terminal is degraded, these remain the authoritative escape hatches.
                 </p>
               </div>
-              <button
-                onClick={refreshReadiness}
-                className="px-3 py-2 rounded-sm bg-[var(--background-tertiary)] text-[var(--foreground)] text-xs font-mono uppercase tracking-wider hover:border-[var(--nvidia-green)] border border-[var(--border-subtle)]"
-              >
-                Refresh Terminal Readiness
-              </button>
             </div>
 
             <div className="space-y-3">
