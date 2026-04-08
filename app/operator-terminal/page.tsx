@@ -3,8 +3,6 @@
 import Link from 'next/link'
 import { useSearchParams } from 'next/navigation'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Terminal } from 'xterm'
-import { FitAddon } from 'xterm-addon-fit'
 import 'xterm/css/xterm.css'
 
 interface ReadinessPodSummary {
@@ -47,6 +45,11 @@ interface LiveTerminalSession {
   websocketUrl: string
 }
 
+type XTermModule = typeof import('xterm')
+type FitAddonModule = typeof import('xterm-addon-fit')
+type XTermInstance = InstanceType<XTermModule['Terminal']>
+type FitAddonInstance = InstanceType<FitAddonModule['FitAddon']>
+
 type LoadState = 'idle' | 'loading' | 'ready' | 'error'
 
 const defaultAlias = (sandboxId: string | null) => `ssh openshell-${sandboxId || 'my-assistant'}`
@@ -66,8 +69,8 @@ export default function OperatorTerminalPage() {
   const [liveSession, setLiveSession] = useState<LiveTerminalSession | null>(null)
 
   const terminalContainerRef = useRef<HTMLDivElement | null>(null)
-  const terminalRef = useRef<Terminal | null>(null)
-  const fitAddonRef = useRef<FitAddon | null>(null)
+  const terminalRef = useRef<XTermInstance | null>(null)
+  const fitAddonRef = useRef<FitAddonInstance | null>(null)
   const socketRef = useRef<WebSocket | null>(null)
 
   const refreshReadiness = useCallback(async () => {
@@ -148,43 +151,62 @@ export default function OperatorTerminalPage() {
       return
     }
 
-    const term = new Terminal({
-      cursorBlink: true,
-      fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
-      fontSize: 13,
-      theme: {
-        background: '#000000',
-        foreground: '#f5f5f5',
-        cursor: '#76b900',
-      },
-      scrollback: 5000,
-      allowTransparency: false,
-    })
-    const fitAddon = new FitAddon()
-    term.loadAddon(fitAddon)
-    term.open(terminalContainerRef.current)
-    fitAddon.fit()
+    let disposed = false
+    let cleanupResize: (() => void) | null = null
 
-    terminalRef.current = term
-    fitAddonRef.current = fitAddon
+    ;(async () => {
+      const [{ Terminal }, { FitAddon }] = await Promise.all([
+        import('xterm'),
+        import('xterm-addon-fit'),
+      ])
 
-    const handleResize = () => {
-      fitAddon.fit()
-      if (socketRef.current?.readyState === WebSocket.OPEN) {
-        socketRef.current.send(JSON.stringify({
-          type: 'resize',
-          cols: term.cols,
-          rows: term.rows,
-        }))
+      if (disposed || !terminalContainerRef.current) {
+        return
       }
-    }
 
-    window.addEventListener('resize', handleResize)
+      const term = new Terminal({
+        cursorBlink: true,
+        fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+        fontSize: 13,
+        theme: {
+          background: '#000000',
+          foreground: '#f5f5f5',
+          cursor: '#76b900',
+        },
+        scrollback: 5000,
+        allowTransparency: false,
+      })
+      const fitAddon = new FitAddon()
+      term.loadAddon(fitAddon)
+      term.open(terminalContainerRef.current)
+      fitAddon.fit()
+
+      terminalRef.current = term
+      fitAddonRef.current = fitAddon
+
+      const handleResize = () => {
+        fitAddon.fit()
+        if (socketRef.current?.readyState === WebSocket.OPEN) {
+          socketRef.current.send(JSON.stringify({
+            type: 'resize',
+            cols: term.cols,
+            rows: term.rows,
+          }))
+        }
+      }
+
+      window.addEventListener('resize', handleResize)
+      cleanupResize = () => window.removeEventListener('resize', handleResize)
+    })().catch((error) => {
+      setTerminalState('error')
+      setTerminalStatus(error instanceof Error ? error.message : 'Failed to load terminal renderer.')
+    })
 
     return () => {
-      window.removeEventListener('resize', handleResize)
+      disposed = true
+      cleanupResize?.()
       socketRef.current?.close()
-      term.dispose()
+      terminalRef.current?.dispose()
       terminalRef.current = null
       fitAddonRef.current = null
     }
