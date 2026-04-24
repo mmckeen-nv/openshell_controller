@@ -41,6 +41,11 @@ assert.match(pageSource, /fetch\('\/api\/sandbox\/delete'/, 'destroy workflow mu
 assert.match(pageSource, /refresh\(\{ force: true \}\)/, 'create and destroy workflows must force fresh inventory reads')
 assert.match(pageSource, /refreshUntilSandboxVisible/, 'create workflow must wait for the new sandbox to appear in inventory')
 assert.match(pageSource, /refreshUntilSandboxGone/, 'destroy workflow must wait for deleted sandboxes to leave inventory')
+assert.match(
+  pageSource,
+  /isDestroyMode \? \([\s\S]*<SandboxList[\s\S]*isDestroyMode=\{isDestroyMode\}/,
+  'destroy mode must render the sandbox list so a sandbox can be selected'
+)
 assert.doesNotMatch(pageSource, /console\.log\('Destroying sandbox:'/, 'destroy workflow must not be a UI-only placeholder')
 assert.doesNotMatch(configPanelSource, /onInventoryRefresh/, 'create panel must leave post-create inventory orchestration to the parent')
 

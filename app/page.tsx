@@ -214,24 +214,56 @@ export default function Dashboard() {
                 <ConfigurationPanel sandboxId="new-sandbox" mode="create" onCreateSuccess={handleCreateSuccess} />
               </div>
             ) : isDestroyMode ? (
-              <div className="panel p-8 border-2 border-[var(--status-stopped)]">
-                <h1 className="text-lg font-semibold text-[var(--status-stopped)] uppercase tracking-wider mb-4">
-                  DESTROY SANDBOX
-                </h1>
-                <p className="text-sm text-[var(--foreground-dim)] mb-4">
-                  Click on any sandbox below to initiate destruction. All sandboxes are highlighted in red.
-                </p>
-                <div className="flex items-center gap-2">
-                  <button
-                    onClick={() => {
-                      setIsDestroyMode(false)
-                      clearSelection()
-                    }}
-                    className="px-4 py-2 rounded-sm bg-[var(--background-tertiary)] text-[var(--foreground)] text-xs font-mono uppercase tracking-wider hover:bg-[var(--background-panel)]"
-                  >
-                    Cancel
-                  </button>
+              <div className="space-y-6">
+                <div className="panel p-8 border-2 border-[var(--status-stopped)]">
+                  <h1 className="text-lg font-semibold text-[var(--status-stopped)] uppercase tracking-wider mb-4">
+                    DESTROY SANDBOX
+                  </h1>
+                  <p className="text-sm text-[var(--foreground-dim)] mb-4">
+                    Click a sandbox below to destroy it.
+                  </p>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => {
+                        setIsDestroyMode(false)
+                        clearSelection()
+                      }}
+                      className="px-4 py-2 rounded-sm bg-[var(--background-tertiary)] text-[var(--foreground)] text-xs font-mono uppercase tracking-wider hover:bg-[var(--background-panel)]"
+                    >
+                      Cancel
+                    </button>
+                  </div>
                 </div>
+
+                {lifecycleMessage && (
+                  <div className="panel p-4 text-xs text-[var(--foreground-dim)] whitespace-pre-wrap" data-testid="sandbox-lifecycle-message">
+                    {lifecycleMessage}
+                  </div>
+                )}
+
+                {inventoryEnabled && loading ? (
+                  <div className="flex items-center justify-center h-64" data-testid="inventory-loading-state">
+                    <div className="text-xs text-[var(--foreground-dim)] font-mono uppercase tracking-wider">
+                      INITIALIZING...
+                    </div>
+                  </div>
+                ) : inventoryEnabled && error ? (
+                  <div className="panel p-8 text-center" data-testid="inventory-error-state">
+                    <h3 className="text-sm font-semibold text-[var(--status-stopped)] uppercase tracking-wider">Inventory Unavailable</h3>
+                    <p className="text-xs text-[var(--foreground-dim)] mt-2 font-mono">{error}</p>
+                  </div>
+                ) : (
+                  <SandboxList
+                    sandboxes={sandboxes}
+                    nemoclaw={nemoclaw}
+                    dashboardSessionId={dashboardSession.dashboardSessionId}
+                    selectedSandboxId={dashboardSession.selectedSandboxId}
+                    selectedSandbox={selectedSandbox}
+                    onSandboxSelect={handleSandboxSelect}
+                    isDestroyMode={isDestroyMode}
+                    onInventoryRefresh={refresh}
+                  />
+                )}
               </div>
             ) : (
               <>
