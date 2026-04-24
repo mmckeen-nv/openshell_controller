@@ -92,14 +92,23 @@ function buildTargetUrl(requestUrl: URL) {
 
 function copyRequestHeaders(request: Request, target: URL) {
   const headers = new Headers()
+  const targetOrigin = target.origin
 
   request.headers.forEach((value, key) => {
-    if (!HOP_BY_HOP_HEADERS.has(key.toLowerCase()) && key.toLowerCase() !== 'host') {
+    const lowerKey = key.toLowerCase()
+    if (
+      !HOP_BY_HOP_HEADERS.has(lowerKey) &&
+      lowerKey !== 'host' &&
+      lowerKey !== 'origin' &&
+      lowerKey !== 'referer'
+    ) {
       headers.set(key, value)
     }
   })
 
   headers.set('host', target.host)
+  headers.set('origin', targetOrigin)
+  headers.set('referer', `${targetOrigin}/`)
   return headers
 }
 
