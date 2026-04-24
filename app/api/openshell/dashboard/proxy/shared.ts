@@ -5,6 +5,7 @@ import { resolveRuntimeAuthority } from '@/app/lib/runtimeAuthority'
 const LEGACY_PROXY_PREFIX = '/api/openshell/dashboard/proxy'
 const INSTANCES_PREFIX = '/api/openshell/instances/'
 const DASHBOARD_PROXY_SUFFIX = '/dashboard/proxy'
+const BOOTSTRAP_SCRIPT_NAME = '__nemoclaw_openclaw_bootstrap.js'
 const HOP_BY_HOP_HEADERS = new Set([
   'accept-encoding',
   'connection',
@@ -134,22 +135,47 @@ function proxiedAssetPath(value: string, proxyPrefix: string) {
   return `${proxyPrefix}/${normalized}`
 }
 
+function isBootstrapScriptRequest(requestUrl: URL, proxyPrefix: string) {
+  return requestUrl.pathname === `${proxyPrefix}/${BOOTSTRAP_SCRIPT_NAME}`
+}
+
+function bootstrapScriptResponse(proxyPrefix: string) {
+  return new NextResponse(
+    `window.__OPENCLAW_CONTROL_UI_BASE_PATH__=${JSON.stringify(proxyPrefix)};\n`,
+    {
+      status: 200,
+      headers: {
+        'cache-control': 'no-store',
+        'content-type': 'application/javascript; charset=utf-8',
+      },
+    }
+  )
+}
+
 function injectOpenClawBootstrap(body: string, proxyPrefix: string) {
-  const bootstrap = `<script>window.__OPENCLAW_CONTROL_UI_BASE_PATH__=${JSON.stringify(proxyPrefix)};</script>`
+  const bootstrap = `<script src="${proxyPrefix}/${BOOTSTRAP_SCRIPT_NAME}"></script>`
 
   return body.replace(/<head(\s[^>]*)?>/i, (match) => `${match}${bootstrap}`)
 }
 
 function rewriteHtml(body: string, proxyPrefix: string) {
-  return injectOpenClawBootstrap(body, proxyPrefix).replace(
+  const rewritten = body.replace(
     /(<(?:script|img|link)\b[^>]*\s(?:src|href)=)(["'])([^"']+)(["'])/gi,
     (_match, prefix: string, quote: string, value: string, suffix: string) =>
       `${prefix}${quote}${proxiedAssetPath(value, proxyPrefix)}${suffix}`
   )
+
+  return injectOpenClawBootstrap(rewritten, proxyPrefix)
 }
 
 export async function proxyOpenClawDashboard(request: Request) {
   const requestUrl = new URL(request.url)
+  const resolution = resolveProxyTarget(requestUrl)
+
+  if (isBootstrapScriptRequest(requestUrl, resolution.proxyPrefix)) {
+    return bootstrapScriptResponse(resolution.proxyPrefix)
+  }
+
   const { target, proxyPrefix, authorityMode, bridgeActive } = buildTargetUrl(requestUrl)
   const method = request.method.toUpperCase()
   const headers = copyRequestHeaders(request, target)
