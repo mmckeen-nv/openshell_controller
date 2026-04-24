@@ -573,6 +573,21 @@ server.on('upgrade', (req, socket, head) => {
 })
 
 dashboardWsProxyServer.on('upgrade', (req, socket, head) => {
+  if ((req.url || '').startsWith(terminalProxyPath)) {
+    if (!isAuthenticatedUpgrade(req)) {
+      rejectUnauthorizedUpgrade(req, socket, req.url || '/')
+      return
+    }
+    logBridge('terminal-sidecar-upgrade-accepted', {
+      path: req.url || '/',
+      remoteAddress: req.socket.remoteAddress || 'unknown',
+    })
+    clientWss.handleUpgrade(req, socket, head, (ws) => {
+      clientWss.emit('connection', ws, req)
+    })
+    return
+  }
+
   if (
     (req.url || '').startsWith(legacyDashboardProxyPrefix) ||
     (req.url || '').startsWith(instancesProxyPrefix)

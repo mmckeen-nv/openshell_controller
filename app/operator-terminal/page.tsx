@@ -79,6 +79,8 @@ function OperatorTerminalInner() {
   const terminalRef = useRef<XTermInstance | null>(null)
   const fitAddonRef = useRef<FitAddonInstance | null>(null)
   const socketRef = useRef<WebSocket | null>(null)
+  const liveSessionIdRef = useRef<string>('')
+  const liveSessionRequestRef = useRef<Promise<void> | null>(null)
 
   useEffect(() => {
     setDashboardSessionId(ensureDashboardSessionId(requestedDashboardSessionId))
@@ -108,21 +110,23 @@ function OperatorTerminalInner() {
   }, [sandboxId])
 
   const ensureLiveSession = useCallback(async () => {
+    if (liveSessionRequestRef.current) return liveSessionRequestRef.current
     setTerminalState('connecting')
     setTerminalStatus(sandboxId
       ? `Initializing live terminal session for ${sandboxId}…`
       : 'Initializing host-mode live terminal session…')
 
-    try {
+    const request = (async () => {
       const response = await fetch('/api/openshell/terminal/live', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sandboxId, sessionId: liveSession?.sessionId, dashboardSessionId }),
+        body: JSON.stringify({ sandboxId, sessionId: liveSessionIdRef.current, dashboardSessionId }),
       })
       const result = await response.json()
       if (!response.ok || !result.ok) {
         throw new Error(result.error || 'Failed to initialize live terminal session.')
       }
+      liveSessionIdRef.current = result.sessionId
       setLiveSession({
         sessionId: result.sessionId,
         sandboxId: result.sandboxId,
@@ -131,11 +135,18 @@ function OperatorTerminalInner() {
         websocketUrl: result.websocketUrl,
         sshHostAlias: result.sshHostAlias,
       })
+    })()
+
+    liveSessionRequestRef.current = request
+    try {
+      await request
     } catch (error) {
       setTerminalState('error')
       setTerminalStatus(error instanceof Error ? error.message : 'Failed to initialize live terminal session.')
+    } finally {
+      liveSessionRequestRef.current = null
     }
-  }, [dashboardSessionId, sandboxId, liveSession?.sessionId])
+  }, [dashboardSessionId, sandboxId])
 
   useEffect(() => { refreshReadiness() }, [refreshReadiness])
   useEffect(() => { ensureLiveSession() }, [ensureLiveSession])
