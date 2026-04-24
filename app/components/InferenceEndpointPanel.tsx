@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useState } from "react"
 
 type InferenceRoute = {
   configured: boolean
@@ -22,6 +22,16 @@ type InferenceResponse = {
   gateway: InferenceRoute
   system: InferenceRoute
   providers: ProviderSummary[]
+}
+
+type OllamaModel = {
+  name: string
+  model: string
+  modifiedAt: string | null
+  sizeLabel: string | null
+  family: string | null
+  parameterSize: string | null
+  quantization: string | null
 }
 
 const providerTypeOptions = [
@@ -55,11 +65,15 @@ export default function InferenceEndpointPanel() {
   const [route, setRoute] = useState<"gateway" | "system">("gateway")
   const [timeout, setTimeoutValue] = useState("0")
   const [noVerify, setNoVerify] = useState(true)
+  const [ollamaModels, setOllamaModels] = useState<OllamaModel[]>([])
+  const [ollamaLoading, setOllamaLoading] = useState(false)
+  const [ollamaMessage, setOllamaMessage] = useState("")
 
   const activeProvider = useMemo(
     () => providers.find((provider) => provider.name === gateway.provider) ?? null,
     [providers, gateway.provider]
   )
+  const isOllamaEndpoint = name.toLowerCase().includes("ollama") || baseUrl.includes("11434")
 
   async function load() {
     try {
@@ -84,12 +98,45 @@ export default function InferenceEndpointPanel() {
     load()
   }, [])
 
+  const loadOllamaModels = useCallback(async ({ silent = false }: { silent?: boolean } = {}) => {
+    try {
+      setOllamaLoading(true)
+      if (!silent) setOllamaMessage("")
+      const response = await fetch("/api/ollama/models", { cache: "no-store" })
+      const data = await response.json()
+      if (!data.available) {
+        setOllamaModels([])
+        setOllamaMessage(data.error || "Ollama is not reachable")
+        return
+      }
+      const models = Array.isArray(data.models) ? data.models : []
+      setOllamaModels(models)
+      setOllamaMessage(models.length > 0 ? `${models.length} Ollama model${models.length === 1 ? "" : "s"} available.` : "Ollama is reachable but has no models installed.")
+      if (models[0]?.name) setModel((current) => current || models[0].name)
+    } catch (error) {
+      setOllamaModels([])
+      setOllamaMessage(error instanceof Error ? error.message : "Failed to fetch Ollama models")
+    } finally {
+      setOllamaLoading(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!isOllamaEndpoint) return
+    loadOllamaModels({ silent: true })
+    const interval = window.setInterval(() => loadOllamaModels({ silent: true }), 10000)
+    return () => window.clearInterval(interval)
+  }, [isOllamaEndpoint, loadOllamaModels])
+
   function selectProvider(provider: ProviderSummary) {
     if (!provider.name) return
     setName(provider.name)
     setType(provider.type || "openai")
     setCredentialKey(provider.credentialKeys[0] || "OPENAI_API_KEY")
-    setApiKey("")
+    if (provider.name.toLowerCase().includes("ollama")) {
+      setBaseUrl("http://host.docker.internal:11434/v1")
+      setApiKey("")
+    }
     setMessage(`Loaded ${provider.name}. Enter a model and save to make it active.`)
   }
 
@@ -181,7 +228,13 @@ export default function InferenceEndpointPanel() {
                 </div>
                 <div className="space-y-2 md:col-span-2">
                   <FieldLabel>Model</FieldLabel>
-                  <input value={model} onChange={(event) => setModel(event.target.value)} placeholder="provider/model-name" className="w-full rounded-sm border border-[var(--border-subtle)] bg-[var(--background-tertiary)] px-3 py-2 text-sm font-mono text-[var(--foreground)] focus:outline-none focus:border-[var(--nvidia-green)]" />
+                  {isOllamaEndpoint && ollamaModels.length > 0 ? (
+                    <select value={model} onChange={(event) => setModel(event.target.value)} className="w-full rounded-sm border border-[var(--border-subtle)] bg-[var(--background-tertiary)] px-3 py-2 text-sm font-mono text-[var(--foreground)] focus:outline-none focus:border-[var(--nvidia-green)]">
+                      {ollamaModels.map((item) => <option key={item.name} value={item.name}>{item.name}</option>)}
+                    </select>
+                  ) : (
+                    <input value={model} onChange={(event) => setModel(event.target.value)} placeholder="provider/model-name" className="w-full rounded-sm border border-[var(--border-subtle)] bg-[var(--background-tertiary)] px-3 py-2 text-sm font-mono text-[var(--foreground)] focus:outline-none focus:border-[var(--nvidia-green)]" />
+                  )}
                 </div>
                 <div className="space-y-2 md:col-span-2">
                   <FieldLabel>Endpoint URL</FieldLabel>
@@ -212,6 +265,32 @@ export default function InferenceEndpointPanel() {
                 <input type="checkbox" checked={noVerify} onChange={(event) => setNoVerify(event.target.checked)} />
                 Skip provider verification while saving
               </label>
+
+              {isOllamaEndpoint && (
+                <div className="rounded-sm border border-[var(--border-subtle)] bg-[var(--background-tertiary)] p-4">
+                  <div className="flex items-center justify-between gap-4">
+                    <div>
+                      <h3 className="text-xs uppercase tracking-wider text-[var(--foreground)]">Ollama Models</h3>
+                      <p className="mt-1 text-xs text-[var(--foreground-dim)]">{ollamaMessage || "Polling local Ollama every 10 seconds."}</p>
+                    </div>
+                    <button type="button" onClick={() => loadOllamaModels()} disabled={ollamaLoading} className="px-3 py-2 rounded-sm bg-[var(--background)] text-[var(--foreground)] text-xs font-mono uppercase tracking-wider hover:bg-[var(--background-panel)] disabled:opacity-50">
+                      {ollamaLoading ? "Polling..." : "Poll"}
+                    </button>
+                  </div>
+                  {ollamaModels.length > 0 && (
+                    <div className="mt-3 grid grid-cols-1 md:grid-cols-2 gap-2">
+                      {ollamaModels.map((item) => (
+                        <button key={item.name} type="button" onClick={() => setModel(item.name)} className={`rounded-sm border p-3 text-left ${model === item.name ? "border-[var(--nvidia-green)] bg-[rgba(118,185,0,0.08)]" : "border-[var(--border-subtle)] bg-[var(--background)]"}`}>
+                          <div className="text-xs font-mono text-[var(--foreground)]">{item.name}</div>
+                          <div className="mt-1 text-[11px] text-[var(--foreground-dim)]">
+                            {[item.parameterSize, item.quantization, item.sizeLabel].filter(Boolean).join(" · ") || item.family || "local model"}
+                          </div>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
 
               <div className="flex items-center gap-3">
                 <button onClick={saveEndpoint} disabled={saving} className="px-4 py-2 rounded-sm bg-[var(--nvidia-green)] text-white text-xs font-mono uppercase tracking-wider disabled:opacity-50">
