@@ -33,10 +33,14 @@ assert.match(hookSource, /requestIdRef = useRef\(0\)/, 'inventory refresh must g
 assert.match(deleteRouteSource, /OPENSHELL_BIN.*openshell/, 'delete route must use the OpenShell CLI')
 assert.match(deleteRouteSource, /\["sandbox", "delete", sandboxName\]/, 'delete route must call openshell sandbox delete with the sandbox name')
 assert.match(deleteRouteSource, /validateSandboxName/, 'delete route must validate sandbox names before execution')
+assert.match(deleteRouteSource, /resolveSandboxRef/, 'delete route must resolve sandbox ids to names before deleting')
+assert.match(deleteRouteSource, /OPENSHELL_GATEWAY: process\.env\.OPENSHELL_GATEWAY \|\| "nemoclaw"/, 'delete route must use the NemoClaw gateway context by default')
+assert.match(deleteRouteSource, /waitForSandboxDeleted/, 'delete route must poll authoritative inventory until the sandbox is gone')
 
 assert.match(pageSource, /fetch\('\/api\/sandbox\/delete'/, 'destroy workflow must call the real sandbox delete endpoint')
 assert.match(pageSource, /refresh\(\{ force: true \}\)/, 'create and destroy workflows must force fresh inventory reads')
 assert.match(pageSource, /refreshUntilSandboxVisible/, 'create workflow must wait for the new sandbox to appear in inventory')
+assert.match(pageSource, /refreshUntilSandboxGone/, 'destroy workflow must wait for deleted sandboxes to leave inventory')
 assert.doesNotMatch(pageSource, /console\.log\('Destroying sandbox:'/, 'destroy workflow must not be a UI-only placeholder')
 assert.doesNotMatch(configPanelSource, /onInventoryRefresh/, 'create panel must leave post-create inventory orchestration to the parent')
 

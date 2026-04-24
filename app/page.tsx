@@ -76,6 +76,17 @@ export default function Dashboard() {
     return null
   }
 
+  const refreshUntilSandboxGone = async (sandboxId: string, sandboxName: string) => {
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      const latest = await refresh({ force: true })
+      const stillPresent = latest.find((item) => item.id === sandboxId || item.name === sandboxName)
+      if (!stillPresent) return { latest, gone: true }
+      await sleep(1500)
+    }
+
+    return { latest: await refresh({ force: true }), gone: false }
+  }
+
   const handleCreateSuccess = async (createdSandboxId: string) => {
     setIsCreateMode(false)
     setIsDestroyMode(false)
@@ -102,10 +113,9 @@ export default function Dashboard() {
       const data = await response.json()
       if (!response.ok) throw new Error([data.error, data.stdout, data.stderr].filter(Boolean).join('\n\n') || 'Failed to destroy sandbox')
 
-      const latest = await refresh({ force: true })
-      const stillPresent = latest.find((item) => item.id === deletingSandboxId || item.name === sandboxName)
+      const { gone } = await refreshUntilSandboxGone(deletingSandboxId, sandboxName)
       setDashboardSession((current) => updateDashboardSessionSelection(current, current.selectedSandboxId === deletingSandboxId ? null : current.selectedSandboxId))
-      setLifecycleMessage(stillPresent ? `Delete started for ${sandboxName}. Inventory still reports it while cleanup finishes.` : `Sandbox ${sandboxName} destroyed.`)
+      setLifecycleMessage(gone ? `Sandbox ${sandboxName} destroyed.` : `Delete started for ${sandboxName}. Inventory still reports it while cleanup finishes.`)
       setShowDeleteConfirm(false)
       setDeletingSandboxId(null)
       setIsDestroyMode(false)

@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server"
 import { execFile } from "node:child_process"
 import { promisify } from "node:util"
+import { resolveSandboxRef } from "@/app/lib/openshellHost"
 
 const execFileAsync = promisify(execFile)
 const HOME = process.env.HOME || ""
@@ -31,6 +32,36 @@ function validateSandboxName(name: string) {
   return name
 }
 
+function parseDeleteTarget(body: any) {
+  const raw = typeof body?.sandboxName === "string"
+    ? body.sandboxName.trim()
+    : typeof body?.sandboxId === "string"
+      ? body.sandboxId.trim()
+      : ""
+  if (!raw) throw new Error("sandbox name or id is required")
+  return raw
+}
+
+async function resolveDeleteTarget(ref: string) {
+  try {
+    const sandbox = await resolveSandboxRef(ref)
+    return {
+      requested: ref,
+      sandboxName: validateSandboxName(sandbox.name),
+      sandboxId: sandbox.id,
+      resolved: true,
+    }
+  } catch (error) {
+    return {
+      requested: ref,
+      sandboxName: validateSandboxName(ref),
+      sandboxId: null,
+      resolved: false,
+      resolveError: error instanceof Error ? error.message : String(error ?? "Sandbox lookup failed"),
+    }
+  }
+}
+
 async function deleteSandbox(sandboxName: string) {
   const startedAt = Date.now()
   console.log(`[sandbox/delete] command:start sandbox=${sandboxName}`)
@@ -39,10 +70,12 @@ async function deleteSandbox(sandboxName: string) {
       env: {
         ...process.env,
         PATH: HOST_PATH,
+        OPENSHELL_GATEWAY: process.env.OPENSHELL_GATEWAY || "nemoclaw",
         NO_COLOR: "1",
         CLICOLOR: "0",
         CLICOLOR_FORCE: "0",
       },
+      timeout: 60000,
       maxBuffer: 20 * 1024 * 1024,
     })
     console.log(`[sandbox/delete] command:done sandbox=${sandboxName} elapsedMs=${elapsedMs(startedAt)}`)
@@ -59,37 +92,86 @@ async function deleteSandbox(sandboxName: string) {
   }
 }
 
+async function waitForSandboxDeleted(sandboxName: string, timeoutMs: number, intervalMs: number) {
+  const startedAt = Date.now()
+  let attempts = 0
+  let lastError: string | null = null
+
+  while (elapsedMs(startedAt) < timeoutMs) {
+    attempts += 1
+    try {
+      await resolveSandboxRef(sandboxName)
+    } catch (error) {
+      return {
+        deleted: true as const,
+        attempts,
+        elapsedMs: elapsedMs(startedAt),
+        lastError: error instanceof Error ? error.message : String(error ?? "Sandbox lookup failed"),
+      }
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, intervalMs))
+  }
+
+  try {
+    await resolveSandboxRef(sandboxName)
+  } catch (error) {
+    return {
+      deleted: true as const,
+      attempts,
+      elapsedMs: elapsedMs(startedAt),
+      lastError: error instanceof Error ? error.message : String(error ?? "Sandbox lookup failed"),
+    }
+  }
+
+  return {
+    deleted: false as const,
+    attempts,
+    elapsedMs: elapsedMs(startedAt),
+    lastError,
+  }
+}
+
 export async function POST(request: Request) {
   const startedAt = Date.now()
   console.log("[sandbox/delete] request:start")
   try {
     const body = await request.json()
-    const sandboxName = validateSandboxName(
-      typeof body?.sandboxName === "string" ? body.sandboxName.trim() : typeof body?.sandboxId === "string" ? body.sandboxId.trim() : "",
-    )
-    const result = await deleteSandbox(sandboxName)
+    const target = await resolveDeleteTarget(parseDeleteTarget(body))
+    const result = await deleteSandbox(target.sandboxName)
     if (!result.ok) {
       return NextResponse.json({
         ok: false,
         deleted: false,
-        sandboxName,
+        requested: target.requested,
+        sandboxName: target.sandboxName,
+        sandboxId: target.sandboxId,
+        resolved: target.resolved,
+        resolveError: target.resolveError,
         error: result.error,
         stdout: result.stdout,
         stderr: result.stderr,
       }, { status: 500 })
     }
 
-    console.log(`[sandbox/delete] request:complete sandbox=${sandboxName} elapsedMs=${elapsedMs(startedAt)}`)
+    const deletion = await waitForSandboxDeleted(target.sandboxName, 45000, 1500)
+    const deleted = deletion.deleted
+    console.log(`[sandbox/delete] request:complete sandbox=${target.sandboxName} deleted=${deleted} elapsedMs=${elapsedMs(startedAt)}`)
     return NextResponse.json({
-      ok: true,
-      deleted: true,
-      sandboxName,
+      ok: deleted,
+      deleted,
+      requested: target.requested,
+      sandboxName: target.sandboxName,
+      sandboxId: target.sandboxId,
+      resolved: target.resolved,
       stdout: result.stdout,
       stderr: result.stderr,
-    })
+      deletion,
+      note: deleted ? "Sandbox delete completed and inventory no longer reports it." : "Sandbox delete command completed, but inventory still reports the sandbox.",
+    }, { status: deleted ? 200 : 202 })
   } catch (error) {
     const message = error instanceof Error ? error.message : "Sandbox delete failed"
-    const status = /required|must be|too long/.test(message) ? 400 : 500
+    const status = /required|must be|too long|name or id/.test(message) ? 400 : 500
     console.log(`[sandbox/delete] request:error elapsedMs=${elapsedMs(startedAt)} message=${message}`)
     return NextResponse.json({ ok: false, deleted: false, error: message }, { status })
   }
