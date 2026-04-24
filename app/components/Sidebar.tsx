@@ -110,7 +110,7 @@ export default function Sidebar({
           <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="square" strokeLinejoin="miter" strokeWidth={2} d="M12 6v6l4 2m5-2a9 9 0 11-18 0 9 9 0 0118 0z" />
           </svg>
-          <span className="text-sm">Status</span>
+          <span className="text-sm">Inference Endpoints</span>
         </button>
       </nav>
     </aside>

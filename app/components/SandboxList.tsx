@@ -1,6 +1,7 @@
 "use client"
 import { useEffect, useState } from 'react'
 import ConfigurationPanel from './ConfigurationPanel'
+import SandboxInferencePanel from './SandboxInferencePanel'
 import type { NemoClawSummary, SandboxInventoryItem } from '../hooks/useSandboxInventory'
 import { buildOperatorTerminalRoute } from '../lib/dashboardSession'
 
@@ -239,6 +240,8 @@ export default function SandboxList({
                   </div>
                 </div>
               </div>
+
+              <SandboxInferencePanel sandbox={selectedSandbox} />
 
               <ConfigurationPanel sandboxId={selectedSandbox.id} mode="existing" />
             </>
