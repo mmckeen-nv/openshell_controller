@@ -52,7 +52,8 @@ assert.match(telemetrySource, /authoritySource: "runtimeAuthority"/, 'inventory 
 assert.match(telemetrySource, /authorities: authorities\.map\(/, 'inventory route must expose per-sandbox authority metadata')
 assert.match(openshellHostSource, /const canMintBootstrapFromCli = instance\.id === defaultInstance\.id/, 'bootstrap minting should only use CLI for the default OpenClaw instance')
 assert.match(packageJsonSource, /"dev": "node server\.mjs"/, 'development script must run through the custom server so websocket proxy bridges are active')
-assert.match(serverSource, /const dashboardWss = new WebSocketServer\(\{ noServer: true \}\)/, 'custom server must provision a dedicated dashboard websocket bridge')
+assert.match(serverSource, /const dashboardWsProxyServer = http\.createServer/, 'custom server must provision a dedicated dashboard websocket sidecar')
+assert.match(serverSource, /dashboard-sidecar-listening/, 'custom server must expose the dashboard websocket sidecar listener')
 assert.match(serverSource, /dashboard-upgrade-accepted/, 'custom server must accept dashboard websocket upgrades through the proxy path')
 
 console.log('runtime-authority-resolution-check: PASS shared authority resolution assertions')

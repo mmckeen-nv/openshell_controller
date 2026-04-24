@@ -1,11 +1,14 @@
 import http from 'node:http'
 import crypto from 'node:crypto'
+import net from 'node:net'
+import tls from 'node:tls'
 import next from 'next'
 import { WebSocketServer, WebSocket } from 'ws'
 
 const dev = process.env.NODE_ENV !== 'production'
 const hostname = process.env.HOSTNAME || process.env.HOST || '0.0.0.0'
 const port = Number(process.env.PORT || 3000)
+const dashboardWsProxyPort = Number(process.env.OPENCLAW_DASHBOARD_WS_PROXY_PORT || 3001)
 const terminalServerUrl = new URL(process.env.TERMINAL_SERVER_URL || 'http://127.0.0.1:3011')
 const terminalWsProtocol = terminalServerUrl.protocol === 'https:' ? 'wss:' : 'ws:'
 const terminalProxyPath = '/api/openshell/terminal/live/ws'
@@ -196,58 +199,63 @@ const handleUpgrade = typeof app.getUpgradeHandler === 'function'
 await app.prepare()
 
 const server = http.createServer((req, res) => handle(req, res))
+const dashboardWsProxyServer = http.createServer((_, res) => {
+  res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' })
+  res.end('OpenClaw dashboard websocket proxy only')
+})
 const clientWss = new WebSocketServer({ noServer: true })
 
 function buildRawDashboardUpgradeHeaders(req, upstreamWsUrl) {
-  const headers = { ...req.headers }
   const upstreamOrigin = new URL(upstreamWsUrl.toString())
   upstreamOrigin.protocol = upstreamOrigin.protocol === 'wss:' ? 'https:' : 'http:'
   upstreamOrigin.pathname = '/'
   upstreamOrigin.search = ''
   upstreamOrigin.hash = ''
-  headers.host = upstreamWsUrl.host
-  headers.origin = upstreamOrigin.origin
+  const headers = []
+  const seen = new Set()
+
+  for (let i = 0; i < req.rawHeaders.length; i += 2) {
+    const name = req.rawHeaders[i]
+    const value = req.rawHeaders[i + 1]
+    const lowerName = name.toLowerCase()
+    seen.add(lowerName)
+    if (lowerName === 'host') {
+      headers.push(`Host: ${upstreamWsUrl.host}`)
+    } else if (lowerName === 'origin') {
+      headers.push(`Origin: ${upstreamOrigin.origin}`)
+    } else {
+      headers.push(`${name}: ${value}`)
+    }
+  }
+
+  if (!seen.has('host')) headers.push(`Host: ${upstreamWsUrl.host}`)
+  if (!seen.has('origin')) headers.push(`Origin: ${upstreamOrigin.origin}`)
   return headers
 }
 
-function writeBadGateway(socket, reason) {
-  if (socket.destroyed) return
-  socket.write(
-    'HTTP/1.1 502 Bad Gateway\r\n' +
-    'Connection: close\r\n' +
-    'Content-Type: text/plain; charset=utf-8\r\n' +
-    `Content-Length: ${Buffer.byteLength(reason)}\r\n` +
-    '\r\n' +
-    reason
-  )
-  socket.destroy()
-}
-
 function tunnelDashboardUpgrade(req, socket, head, upstreamWsUrl, instanceId) {
-  const upstreamReq = http.request({
-    hostname: upstreamWsUrl.hostname,
-    port: upstreamWsUrl.port || '80',
-    path: `${upstreamWsUrl.pathname}${upstreamWsUrl.search}`,
-    method: 'GET',
-    headers: buildRawDashboardUpgradeHeaders(req, upstreamWsUrl),
-  })
+  const isSecure = upstreamWsUrl.protocol === 'wss:'
+  const port = Number(upstreamWsUrl.port || (isSecure ? 443 : 80))
+  const upstreamSocket = isSecure
+    ? tls.connect({ host: upstreamWsUrl.hostname, port, servername: upstreamWsUrl.hostname })
+    : net.connect({ host: upstreamWsUrl.hostname, port })
+  const upstreamPath = `${upstreamWsUrl.pathname || '/'}${upstreamWsUrl.search || ''}`
+  const requestHead = [
+    `GET ${upstreamPath} HTTP/1.1`,
+    ...buildRawDashboardUpgradeHeaders(req, upstreamWsUrl),
+    '',
+    '',
+  ].join('\r\n')
+  let opened = false
+  let upstreamBytes = 0
+  let clientBytes = 0
 
-  upstreamReq.on('upgrade', (upstreamRes, upstreamSocket, upstreamHead) => {
-    const responseHead = [
-      'HTTP/1.1 101 Switching Protocols',
-      ...Object.entries(upstreamRes.headers).flatMap(([key, value]) => {
-        if (Array.isArray(value)) return value.map((entry) => `${key}: ${entry}`)
-        return typeof value === 'undefined' ? [] : [`${key}: ${value}`]
-      }),
-      '',
-      '',
-    ].join('\r\n')
-
-    socket.write(responseHead)
-    if (upstreamHead?.length) socket.write(upstreamHead)
+  upstreamSocket.once(isSecure ? 'secureConnect' : 'connect', () => {
+    opened = true
+    upstreamSocket.write(requestHead)
     if (head?.length) upstreamSocket.write(head)
-    upstreamSocket.pipe(socket)
-    socket.pipe(upstreamSocket)
+    upstreamSocket.resume()
+    socket.resume()
     logBridge('dashboard-tunnel-open', {
       path: req.url || '/',
       upstreamUrl: upstreamWsUrl.toString(),
@@ -256,23 +264,53 @@ function tunnelDashboardUpgrade(req, socket, head, upstreamWsUrl, instanceId) {
     })
   })
 
-  upstreamReq.on('response', (upstreamRes) => {
-    writeBadGateway(socket, `OpenClaw dashboard websocket upgrade rejected: ${upstreamRes.statusCode || 502}`)
-    upstreamRes.resume()
+  upstreamSocket.on('data', (chunk) => {
+    upstreamBytes += chunk.length
+    if (!socket.destroyed) socket.write(chunk)
   })
 
-  upstreamReq.on('error', (error) => {
+  socket.on('data', (chunk) => {
+    clientBytes += chunk.length
+    if (!upstreamSocket.destroyed) upstreamSocket.write(chunk)
+  })
+
+  upstreamSocket.on('error', (error) => {
     logBridge('dashboard-tunnel-error', {
       path: req.url || '/',
       upstreamUrl: upstreamWsUrl.toString(),
       instanceId,
       reason: error instanceof Error ? error.message : 'upstream error',
     })
-    writeBadGateway(socket, 'OpenClaw dashboard websocket upstream unavailable')
+    if (!opened && !socket.destroyed) {
+      socket.end('HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\nContent-Length: 0\r\n\r\n')
+    } else {
+      socket.destroy()
+    }
   })
 
-  socket.on('error', () => upstreamReq.destroy())
-  upstreamReq.end()
+  upstreamSocket.on('close', (hadError) => {
+    logBridge('dashboard-tunnel-upstream-close', {
+      path: req.url || '/',
+      upstreamUrl: upstreamWsUrl.toString(),
+      instanceId,
+      hadError,
+      upstreamBytes,
+      clientBytes,
+    })
+  })
+
+  socket.on('error', () => upstreamSocket.destroy())
+  socket.on('close', (hadError) => {
+    logBridge('dashboard-tunnel-client-close', {
+      path: req.url || '/',
+      upstreamUrl: upstreamWsUrl.toString(),
+      instanceId,
+      hadError,
+      upstreamBytes,
+      clientBytes,
+    })
+    upstreamSocket.destroy()
+  })
 }
 
 clientWss.on('connection', (client, req) => {
@@ -418,6 +456,29 @@ server.on('upgrade', (req, socket, head) => {
   socket.destroy()
 })
 
+dashboardWsProxyServer.on('upgrade', (req, socket, head) => {
+  if (
+    (req.url || '').startsWith(legacyDashboardProxyPrefix) ||
+    (req.url || '').startsWith(instancesProxyPrefix)
+  ) {
+    const { upstreamWsUrl, instanceId } = resolveDashboardUpstream(req)
+    logBridge('dashboard-sidecar-upgrade-accepted', {
+      path: req.url || '/',
+      upstreamUrl: upstreamWsUrl.toString(),
+      instanceId,
+      remoteAddress: req.socket.remoteAddress || 'unknown',
+    })
+    tunnelDashboardUpgrade(req, socket, head, upstreamWsUrl, instanceId)
+    return
+  }
+
+  logBridge('dashboard-sidecar-upgrade-rejected', {
+    path: req.url || '/',
+    remoteAddress: req.socket.remoteAddress || 'unknown',
+  })
+  socket.destroy()
+})
+
 server.listen(port, hostname, () => {
   console.log(`dashboard server listening on http://${hostname}:${port}`)
   logBridge('server-listening', {
@@ -425,5 +486,12 @@ server.listen(port, hostname, () => {
     port,
     terminalServerUrl: terminalServerUrl.toString(),
     soleOwnerPath: terminalProxyPath,
+  })
+})
+
+dashboardWsProxyServer.listen(dashboardWsProxyPort, hostname, () => {
+  logBridge('dashboard-sidecar-listening', {
+    hostname,
+    port: dashboardWsProxyPort,
   })
 })

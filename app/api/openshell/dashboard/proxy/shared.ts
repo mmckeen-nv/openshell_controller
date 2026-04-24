@@ -140,8 +140,37 @@ function isBootstrapScriptRequest(requestUrl: URL, proxyPrefix: string) {
 }
 
 function bootstrapScriptResponse(proxyPrefix: string) {
+  const wsProxyPort = process.env.OPENCLAW_DASHBOARD_WS_PROXY_PORT?.trim() || '3001'
+  const script = `
+(() => {
+  const proxyPrefix = ${JSON.stringify(proxyPrefix)};
+  const wsProxyPort = ${JSON.stringify(wsProxyPort)};
+  window.__OPENCLAW_CONTROL_UI_BASE_PATH__ = proxyPrefix;
+
+  try {
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const gatewayHost = wsProxyPort ? window.location.hostname + ':' + wsProxyPort : window.location.host;
+    const gatewayUrl = protocol + '//' + gatewayHost + proxyPrefix;
+    const settingsKey = 'openclaw.control.settings.v1';
+    const tokenPrefix = 'openclaw.control.token.v1:';
+    const tokenScope = gatewayUrl;
+    const hashParams = new URLSearchParams(window.location.hash.startsWith('#') ? window.location.hash.slice(1) : window.location.hash);
+    const token = (hashParams.get('token') || '').trim();
+    const rawSettings = window.localStorage.getItem(settingsKey);
+    const settings = rawSettings ? JSON.parse(rawSettings) : {};
+
+    settings.gatewayUrl = gatewayUrl;
+    window.localStorage.setItem(settingsKey, JSON.stringify(settings));
+    window.sessionStorage.removeItem('openclaw.control.token.v1');
+    if (token) window.sessionStorage.setItem(tokenPrefix + tokenScope, token);
+  } catch {
+    // Best-effort compatibility bridge for OpenClaw's persisted UI settings.
+  }
+})();
+`
+
   return new NextResponse(
-    `window.__OPENCLAW_CONTROL_UI_BASE_PATH__=${JSON.stringify(proxyPrefix)};\n`,
+    script,
     {
       status: 200,
       headers: {

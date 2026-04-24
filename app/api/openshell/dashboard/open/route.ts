@@ -19,8 +19,12 @@ function buildBrowserGatewayUrl(request: Request, requestUrl: URL, proxiedUrl: s
   const forwardedHost = firstHeaderValue(request.headers.get('x-forwarded-host'))
   const host = forwardedHost || request.headers.get('host') || requestUrl.host
   const protocol = (forwardedProtocol || requestUrl.protocol.replace(/:$/, '')) === 'https' ? 'wss:' : 'ws:'
+  const wsProxyPort = process.env.OPENCLAW_DASHBOARD_WS_PROXY_PORT?.trim() || '3001'
+  const gatewayHost = wsProxyPort
+    ? new URL(`${requestUrl.protocol}//${host}`).hostname + `:${wsProxyPort}`
+    : host
 
-  return `${protocol}//${host}${proxiedUrl}`
+  return `${protocol}//${gatewayHost}${proxiedUrl}`
 }
 
 function buildLaunchUrl(request: Request, requestUrl: URL, proxiedUrl: string, bootstrapUrl: string | null) {
