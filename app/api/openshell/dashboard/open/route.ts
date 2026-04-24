@@ -10,19 +10,40 @@ function parseInventoryCount(requestUrl: URL) {
   return Number.isFinite(count) && count >= 0 ? count : null
 }
 
-function buildLaunchUrl(proxiedUrl: string, bootstrapUrl: string | null) {
-  if (!bootstrapUrl) return proxiedUrl
+function firstHeaderValue(value: string | null) {
+  return value?.split(',')[0]?.trim() || null
+}
+
+function buildBrowserGatewayUrl(request: Request, requestUrl: URL, proxiedUrl: string) {
+  const forwardedProtocol = firstHeaderValue(request.headers.get('x-forwarded-proto'))
+  const forwardedHost = firstHeaderValue(request.headers.get('x-forwarded-host'))
+  const host = forwardedHost || request.headers.get('host') || requestUrl.host
+  const protocol = (forwardedProtocol || requestUrl.protocol.replace(/:$/, '')) === 'https' ? 'wss:' : 'ws:'
+
+  return `${protocol}//${host}${proxiedUrl}`
+}
+
+function buildLaunchUrl(request: Request, requestUrl: URL, proxiedUrl: string, bootstrapUrl: string | null) {
+  const hashParams = new URLSearchParams({
+    gatewayUrl: buildBrowserGatewayUrl(request, requestUrl, proxiedUrl),
+  })
+
+  if (!bootstrapUrl) return `${proxiedUrl}#${hashParams.toString()}`
 
   const bootstrap = new URL(bootstrapUrl)
-  const browserHash = bootstrap.hash
+  const browserHash = bootstrap.hash.startsWith('#') ? bootstrap.hash.slice(1) : bootstrap.hash
   bootstrap.hash = ''
+
+  new URLSearchParams(browserHash).forEach((value, key) => {
+    hashParams.set(key, value)
+  })
 
   const params = new URLSearchParams({
     path: '/',
     bootstrapUrl: bootstrap.toString(),
   })
 
-  return `${proxiedUrl}?${params.toString()}${browserHash}`
+  return `${proxiedUrl}?${params.toString()}#${hashParams.toString()}`
 }
 
 export async function GET(request: Request) {
@@ -55,7 +76,7 @@ export async function GET(request: Request) {
         : 'verified'
 
   const proxiedUrl = authority.explicitInstanceOverride ? instanceQualifiedProxyBase : '/api/openshell/dashboard/proxy'
-  const launchUrl = buildLaunchUrl(proxiedUrl, probe.bootstrapUrl)
+  const launchUrl = buildLaunchUrl(request, requestUrl, proxiedUrl, probe.bootstrapUrl)
 
   return NextResponse.json({
     ok: true,

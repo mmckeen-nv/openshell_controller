@@ -134,8 +134,14 @@ function proxiedAssetPath(value: string, proxyPrefix: string) {
   return `${proxyPrefix}/${normalized}`
 }
 
+function injectOpenClawBootstrap(body: string, proxyPrefix: string) {
+  const bootstrap = `<script>window.__OPENCLAW_CONTROL_UI_BASE_PATH__=${JSON.stringify(proxyPrefix)};</script>`
+
+  return body.replace(/<head(\s[^>]*)?>/i, (match) => `${match}${bootstrap}`)
+}
+
 function rewriteHtml(body: string, proxyPrefix: string) {
-  return body.replace(
+  return injectOpenClawBootstrap(body, proxyPrefix).replace(
     /(<(?:script|img|link)\b[^>]*\s(?:src|href)=)(["'])([^"']+)(["'])/gi,
     (_match, prefix: string, quote: string, value: string, suffix: string) =>
       `${prefix}${quote}${proxiedAssetPath(value, proxyPrefix)}${suffix}`
