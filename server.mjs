@@ -38,7 +38,13 @@ function copyHeaders(req) {
   const headers = {}
   for (const [key, value] of Object.entries(req.headers)) {
     if (typeof value === 'undefined') continue
-    if (['connection', 'host', 'sec-websocket-key', 'sec-websocket-version', 'upgrade'].includes(key.toLowerCase())) continue
+    const lowerKey = key.toLowerCase()
+    if (
+      ['connection', 'host', 'upgrade'].includes(lowerKey) ||
+      lowerKey.startsWith('sec-websocket-')
+    ) {
+      continue
+    }
     headers[key] = Array.isArray(value) ? value.join(', ') : value
   }
   return headers
@@ -191,7 +197,83 @@ await app.prepare()
 
 const server = http.createServer((req, res) => handle(req, res))
 const clientWss = new WebSocketServer({ noServer: true })
-const dashboardWss = new WebSocketServer({ noServer: true })
+
+function buildRawDashboardUpgradeHeaders(req, upstreamWsUrl) {
+  const headers = { ...req.headers }
+  const upstreamOrigin = new URL(upstreamWsUrl.toString())
+  upstreamOrigin.protocol = upstreamOrigin.protocol === 'wss:' ? 'https:' : 'http:'
+  upstreamOrigin.pathname = '/'
+  upstreamOrigin.search = ''
+  upstreamOrigin.hash = ''
+  headers.host = upstreamWsUrl.host
+  headers.origin = upstreamOrigin.origin
+  return headers
+}
+
+function writeBadGateway(socket, reason) {
+  if (socket.destroyed) return
+  socket.write(
+    'HTTP/1.1 502 Bad Gateway\r\n' +
+    'Connection: close\r\n' +
+    'Content-Type: text/plain; charset=utf-8\r\n' +
+    `Content-Length: ${Buffer.byteLength(reason)}\r\n` +
+    '\r\n' +
+    reason
+  )
+  socket.destroy()
+}
+
+function tunnelDashboardUpgrade(req, socket, head, upstreamWsUrl, instanceId) {
+  const upstreamReq = http.request({
+    hostname: upstreamWsUrl.hostname,
+    port: upstreamWsUrl.port || '80',
+    path: `${upstreamWsUrl.pathname}${upstreamWsUrl.search}`,
+    method: 'GET',
+    headers: buildRawDashboardUpgradeHeaders(req, upstreamWsUrl),
+  })
+
+  upstreamReq.on('upgrade', (upstreamRes, upstreamSocket, upstreamHead) => {
+    const responseHead = [
+      'HTTP/1.1 101 Switching Protocols',
+      ...Object.entries(upstreamRes.headers).flatMap(([key, value]) => {
+        if (Array.isArray(value)) return value.map((entry) => `${key}: ${entry}`)
+        return typeof value === 'undefined' ? [] : [`${key}: ${value}`]
+      }),
+      '',
+      '',
+    ].join('\r\n')
+
+    socket.write(responseHead)
+    if (upstreamHead?.length) socket.write(upstreamHead)
+    if (head?.length) upstreamSocket.write(head)
+    upstreamSocket.pipe(socket)
+    socket.pipe(upstreamSocket)
+    logBridge('dashboard-tunnel-open', {
+      path: req.url || '/',
+      upstreamUrl: upstreamWsUrl.toString(),
+      instanceId,
+      remoteAddress: req.socket.remoteAddress || 'unknown',
+    })
+  })
+
+  upstreamReq.on('response', (upstreamRes) => {
+    writeBadGateway(socket, `OpenClaw dashboard websocket upgrade rejected: ${upstreamRes.statusCode || 502}`)
+    upstreamRes.resume()
+  })
+
+  upstreamReq.on('error', (error) => {
+    logBridge('dashboard-tunnel-error', {
+      path: req.url || '/',
+      upstreamUrl: upstreamWsUrl.toString(),
+      instanceId,
+      reason: error instanceof Error ? error.message : 'upstream error',
+    })
+    writeBadGateway(socket, 'OpenClaw dashboard websocket upstream unavailable')
+  })
+
+  socket.on('error', () => upstreamReq.destroy())
+  upstreamReq.end()
+}
 
 clientWss.on('connection', (client, req) => {
   const bridgeId = crypto.randomUUID()
@@ -298,74 +380,6 @@ clientWss.on('connection', (client, req) => {
   })
 })
 
-dashboardWss.on('connection', (client, req) => {
-  const { upstreamWsUrl, instanceId } = resolveDashboardUpstream(req)
-  const upstream = new WebSocket(upstreamWsUrl, { headers: copyHeaders(req) })
-  const pendingClientFrames = []
-  let closing = false
-
-  logBridge('dashboard-client-connected', {
-    path: req.url || '/',
-    upstreamUrl: upstreamWsUrl.toString(),
-    instanceId,
-    remoteAddress: req.socket.remoteAddress || 'unknown',
-  })
-
-  const closeBoth = (code = 1000, reason, source = 'dashboard-unknown') => {
-    if (closing) return
-    closing = true
-    logBridge('dashboard-bridge-closing', {
-      path: req.url || '/',
-      upstreamUrl: upstreamWsUrl.toString(),
-      instanceId,
-      source,
-      code: normalizeCloseCode(code),
-      reason,
-    })
-    const safeCode = normalizeCloseCode(code)
-    if (client.readyState === WebSocket.OPEN) client.close(safeCode, reason)
-    else if (client.readyState === WebSocket.CONNECTING) client.terminate()
-    if (upstream.readyState === WebSocket.OPEN) upstream.close(safeCode, reason)
-    else if (upstream.readyState === WebSocket.CONNECTING) upstream.terminate()
-  }
-
-  client.on('message', (data, isBinary) => {
-    if (upstream.readyState === WebSocket.OPEN) {
-      upstream.send(data, { binary: isBinary })
-    } else if (upstream.readyState === WebSocket.CONNECTING) {
-      pendingClientFrames.push({ data, isBinary })
-    }
-  })
-  client.on('close', (code, reasonBuffer) => {
-    const reason = Buffer.isBuffer(reasonBuffer) ? reasonBuffer.toString() : String(reasonBuffer || '')
-    closeBoth(code || 1000, reason || undefined, 'dashboard-client-close')
-  })
-  client.on('error', (error) => closeBoth(1011, error instanceof Error ? error.message : 'dashboard client error', 'dashboard-client-error'))
-
-  upstream.on('open', () => {
-    while (pendingClientFrames.length && upstream.readyState === WebSocket.OPEN) {
-      const frame = pendingClientFrames.shift()
-      upstream.send(frame.data, { binary: frame.isBinary })
-    }
-    logBridge('dashboard-upstream-open', {
-      path: req.url || '/',
-      upstreamUrl: upstreamWsUrl.toString(),
-      instanceId,
-      bufferedFramesFlushed: pendingClientFrames.length,
-    })
-  })
-  upstream.on('message', (data, isBinary) => {
-    if (client.readyState === WebSocket.OPEN) {
-      client.send(data, { binary: isBinary })
-    }
-  })
-  upstream.on('close', (code, reasonBuffer) => {
-    const reason = Buffer.isBuffer(reasonBuffer) ? reasonBuffer.toString() : String(reasonBuffer || '')
-    closeBoth(code || 1000, reason || undefined, 'dashboard-upstream-close')
-  })
-  upstream.on('error', (error) => closeBoth(1011, error instanceof Error ? error.message : 'dashboard upstream error', 'dashboard-upstream-error'))
-})
-
 server.on('upgrade', (req, socket, head) => {
   if ((req.url || '').startsWith(terminalProxyPath)) {
     logBridge('upgrade-accepted', {
@@ -389,10 +403,7 @@ server.on('upgrade', (req, socket, head) => {
       instanceId,
       remoteAddress: req.socket.remoteAddress || 'unknown',
     })
-
-    dashboardWss.handleUpgrade(req, socket, head, (ws) => {
-      dashboardWss.emit('connection', ws, req)
-    })
+    tunnelDashboardUpgrade(req, socket, head, upstreamWsUrl, instanceId)
     return
   }
 
