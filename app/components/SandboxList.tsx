@@ -54,6 +54,14 @@ function renderDashboardTruthMessage(data: any) {
   return `${inventorySummary} ${mappingSummary} ${data.note || `OpenClaw Dashboard at ${data.dashboardUrl} is currently unreachable from this host.`}${listenerSummary}${upstreamSummary}`
 }
 
+function openDashboardUrl(url: string, openInNewTab: boolean) {
+  if (openInNewTab) {
+    window.open(url, '_blank', 'noopener,noreferrer')
+  } else {
+    window.location.href = url
+  }
+}
+
 export default function SandboxList({
   sandboxes,
   nemoclaw,
@@ -234,11 +242,11 @@ export default function SandboxList({
                           const data = await res.json()
                           setDashboardMessage(renderDashboardTruthMessage(data))
                           if (data.reachable && data.launchUrl) {
-                            window.location.href = data.launchUrl
+                            openDashboardUrl(data.launchUrl, data.openInNewTab)
                           } else if (data.reachable && data.proxiedUrl) {
-                            window.location.href = data.proxiedUrl
+                            openDashboardUrl(data.proxiedUrl, data.openInNewTab)
                           } else if (data.reachable && data.dashboardUrl && !data.loopbackOnly) {
-                            window.location.href = data.dashboardUrl
+                            openDashboardUrl(data.dashboardUrl, data.openInNewTab)
                           }
                         } catch (error) {
                           setDashboardMessage('Failed to resolve OpenClaw Dashboard endpoint.')
