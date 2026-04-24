@@ -6,6 +6,7 @@ import { resolveSandboxRef } from "@/app/lib/openshellHost"
 const execFileAsync = promisify(execFile)
 const HOME = process.env.HOME || ""
 const OPENSHELL_BIN = process.env.OPENSHELL_BIN || `${HOME}/.local/bin/openshell`
+const NEMOCLAW_BIN = process.env.NEMOCLAW_BIN || `${HOME}/NemoClaw/bin/nemoclaw.js`
 const HOST_PATH = [
   `${HOME}/.local/bin`,
   `${HOME}/.nvm/versions/node/v22.22.2/bin`,
@@ -92,6 +93,57 @@ async function deleteSandbox(sandboxName: string) {
   }
 }
 
+function isSandboxNotFound(output: string) {
+  return /sandbox not found|status:\s*NotFound|not present in the live OpenShell gateway/i.test(output)
+}
+
+function isNemoClawSandboxNotRegistered(output: string, sandboxName: string) {
+  return new RegExp(`Unknown command:\\s*${sandboxName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`, "i").test(output)
+}
+
+async function cleanupNemoClawSandbox(sandboxName: string) {
+  const startedAt = Date.now()
+  console.log(`[sandbox/delete] nemoclaw-cleanup:start sandbox=${sandboxName}`)
+  try {
+    const { stdout, stderr } = await execFileAsync(NEMOCLAW_BIN, [sandboxName, "destroy", "--yes"], {
+      cwd: `${HOME}/NemoClaw`,
+      env: {
+        ...process.env,
+        PATH: HOST_PATH,
+        OPENSHELL_GATEWAY: process.env.OPENSHELL_GATEWAY || "nemoclaw",
+        NO_COLOR: "1",
+        CLICOLOR: "0",
+        CLICOLOR_FORCE: "0",
+      },
+      timeout: 90000,
+      maxBuffer: 20 * 1024 * 1024,
+    })
+    console.log(`[sandbox/delete] nemoclaw-cleanup:done sandbox=${sandboxName} elapsedMs=${elapsedMs(startedAt)}`)
+    return { ok: true as const, stdout: String(stdout).trim(), stderr: String(stderr).trim() }
+  } catch (error: any) {
+    const message = error instanceof Error ? error.message : String(error ?? "NemoClaw cleanup failed")
+    const stdout = String(error?.stdout || "").trim()
+    const stderr = String(error?.stderr || "").trim()
+    const output = [message, stdout, stderr].filter(Boolean).join("\n")
+    if (isNemoClawSandboxNotRegistered(output, sandboxName)) {
+      console.log(`[sandbox/delete] nemoclaw-cleanup:already-gone sandbox=${sandboxName} elapsedMs=${elapsedMs(startedAt)}`)
+      return {
+        ok: true as const,
+        stdout,
+        stderr,
+        note: "NemoClaw registry already had no matching sandbox.",
+      }
+    }
+    console.log(`[sandbox/delete] nemoclaw-cleanup:error sandbox=${sandboxName} elapsedMs=${elapsedMs(startedAt)} message=${message}`)
+    return {
+      ok: false as const,
+      stdout,
+      stderr,
+      error: message,
+    }
+  }
+}
+
 async function waitForSandboxDeleted(sandboxName: string, timeoutMs: number, intervalMs: number) {
   const startedAt = Date.now()
   let attempts = 0
@@ -139,7 +191,11 @@ export async function POST(request: Request) {
     const body = await request.json()
     const target = await resolveDeleteTarget(parseDeleteTarget(body))
     const result = await deleteSandbox(target.sandboxName)
-    if (!result.ok) {
+    const deleteOutput = [result.error, result.stdout, result.stderr].filter(Boolean).join("\n")
+    const openShellAlreadyGone = !result.ok && isSandboxNotFound(deleteOutput)
+    const cleanup = await cleanupNemoClawSandbox(target.sandboxName)
+
+    if (!result.ok && !openShellAlreadyGone) {
       return NextResponse.json({
         ok: false,
         deleted: false,
@@ -151,11 +207,29 @@ export async function POST(request: Request) {
         error: result.error,
         stdout: result.stdout,
         stderr: result.stderr,
+        nemoclaw: cleanup,
+      }, { status: 500 })
+    }
+
+    if (!cleanup.ok) {
+      return NextResponse.json({
+        ok: false,
+        deleted: false,
+        requested: target.requested,
+        sandboxName: target.sandboxName,
+        sandboxId: target.sandboxId,
+        resolved: target.resolved,
+        openShellAlreadyGone,
+        openShell: result,
+        error: cleanup.error,
+        stdout: cleanup.stdout,
+        stderr: cleanup.stderr,
+        nemoclaw: cleanup,
       }, { status: 500 })
     }
 
     const deletion = await waitForSandboxDeleted(target.sandboxName, 45000, 1500)
-    const deleted = deletion.deleted
+    const deleted = deletion.deleted || openShellAlreadyGone
     console.log(`[sandbox/delete] request:complete sandbox=${target.sandboxName} deleted=${deleted} elapsedMs=${elapsedMs(startedAt)}`)
     return NextResponse.json({
       ok: deleted,
@@ -164,10 +238,13 @@ export async function POST(request: Request) {
       sandboxName: target.sandboxName,
       sandboxId: target.sandboxId,
       resolved: target.resolved,
-      stdout: result.stdout,
-      stderr: result.stderr,
+      stdout: [result.stdout, cleanup.stdout].filter(Boolean).join("\n\n"),
+      stderr: [result.stderr, cleanup.stderr].filter(Boolean).join("\n\n"),
+      openShellAlreadyGone,
+      openShell: result,
+      nemoclaw: cleanup,
       deletion,
-      note: deleted ? "Sandbox delete completed and inventory no longer reports it." : "Sandbox delete command completed, but inventory still reports the sandbox.",
+      note: deleted ? "Sandbox delete completed and NemoClaw registry cleanup ran." : "Sandbox delete command completed, but inventory still reports the sandbox.",
     }, { status: deleted ? 200 : 202 })
   } catch (error) {
     const message = error instanceof Error ? error.message : "Sandbox delete failed"

@@ -340,14 +340,15 @@ async function readSandbox(name: string, defaultSandboxNames: Set<string>): Prom
 
 export async function GET() {
   try {
-    const [{ stdout: sandboxListStdout }, nemoclawListResult, nemoclawStatusResult] = await Promise.all([
-      execOpenShell(["sandbox", "list"]),
-      execNemoclaw(["list"]).catch(() => null),
-      execNemoclaw(["status"]).catch(() => null),
-    ])
-
-    const defaultSandboxNames = parseDefaultSandboxNames(nemoclawListResult?.stdout ?? "")
+    const { stdout: sandboxListStdout } = await execOpenShell(["sandbox", "list"])
     const names = parseOpenShellSandboxNames(sandboxListStdout)
+    const [nemoclawListResult, nemoclawStatusResult] = names.length > 0
+      ? await Promise.all([
+          execNemoclaw(["list"]).catch(() => null),
+          execNemoclaw(["status"]).catch(() => null),
+        ])
+      : [null, null]
+    const defaultSandboxNames = parseDefaultSandboxNames(nemoclawListResult?.stdout ?? "")
     const results = await Promise.all(names.map((name) => readSandbox(name, defaultSandboxNames)))
     const sandboxes = results.map((result) => result.summary)
     const items = results.map((result) => result.pod)
