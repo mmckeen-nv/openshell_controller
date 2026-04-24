@@ -240,7 +240,7 @@ export default function SandboxList({
                 </div>
               </div>
 
-              <ConfigurationPanel sandboxId={selectedSandbox.id} mode="existing" onInventoryRefresh={onInventoryRefresh} />
+              <ConfigurationPanel sandboxId={selectedSandbox.id} mode="existing" />
             </>
           )}
         </>

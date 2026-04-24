@@ -299,9 +299,16 @@ export async function POST(request: Request) {
         }, { status: 500 })
       }
 
-      const verification = await verifySandboxCreation(sandboxName)
-      const created = verification.verified
-      console.log(`[sandbox/create] request:complete sandbox=${sandboxName} created=${created} elapsedMs=${elapsedMs(requestStartedAt)}`)
+      const readiness = await waitForSandboxReady(sandboxName, 90000, 2000)
+      const verification = readiness.verification ?? {
+        verified: false,
+        summary: "Sandbox readiness polling produced no verification result.",
+        error: "Sandbox readiness polling produced no verification result.",
+      }
+      const created = readiness.verified
+      console.log(
+        `[sandbox/create] request:complete sandbox=${sandboxName} created=${created} readinessAttempts=${readiness.attempts} elapsedMs=${elapsedMs(requestStartedAt)}`,
+      )
 
       return NextResponse.json({
         ok: created,
@@ -314,6 +321,10 @@ export async function POST(request: Request) {
         enableTailscale,
         setupPath: NEMOCLAW_SETUP,
         hostPath: HOST_PATH,
+        readiness: {
+          attempts: readiness.attempts,
+          elapsedMs: readiness.elapsedMs,
+        },
         stdout: result.stdout,
         stderr: result.stderr,
         note: created

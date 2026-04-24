@@ -27,7 +27,6 @@ interface ConfigurationPanelProps {
   sandboxId: string
   mode?: 'existing' | 'create'
   onCreateSuccess?: (sandboxId: string) => void | Promise<void>
-  onInventoryRefresh?: () => Promise<unknown>
 }
 
 function FieldHelp({ text }: { text: string }) {
@@ -75,7 +74,7 @@ function blocksToPolicy(blocks: NetworkPolicyBlock[]): OpenShellPolicy["network_
   return out
 }
 
-export default function ConfigurationPanel({ sandboxId, mode = 'existing', onCreateSuccess, onInventoryRefresh }: ConfigurationPanelProps) {
+export default function ConfigurationPanel({ sandboxId, mode = 'existing', onCreateSuccess }: ConfigurationPanelProps) {
   const [policy, setPolicy] = useState<OpenShellPolicy>(defaultPolicy)
   const [blocks, setBlocks] = useState<NetworkPolicyBlock[]>([])
   const [loading, setLoading] = useState(mode === 'existing')
@@ -132,9 +131,6 @@ export default function ConfigurationPanel({ sandboxId, mode = 'existing', onCre
         const data = await res.json()
         if (!res.ok) throw new Error([data.error, data.verification?.summary, data.verification?.error, data.stdout, data.stderr].filter(Boolean).join('\n\n'))
         const createdSandboxId = data.verification?.details?.id || data.verification?.details?.name || data.sandboxName
-        if (onInventoryRefresh) {
-          await onInventoryRefresh()
-        }
         setMessage([
           `Sandbox '${data.sandboxName}' created.`,
           data.verification?.summary,

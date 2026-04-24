@@ -19,6 +19,8 @@ export default function Dashboard() {
   const [activeView, setActiveView] = useState<'settings' | 'sandboxes'>('sandboxes')
   const [deletingSandboxId, setDeletingSandboxId] = useState<string | null>(null)
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
+  const [lifecycleMessage, setLifecycleMessage] = useState<string | null>(null)
+  const [deleteInProgress, setDeleteInProgress] = useState(false)
   const inventoryEnabled = activeView === 'sandboxes' || isCreateMode || isDestroyMode
   const { sandboxes, nemoclaw, loading, error, refresh } = useSandboxInventory({
     enabled: inventoryEnabled,
@@ -40,6 +42,10 @@ export default function Dashboard() {
     () => sandboxes.find((sandbox) => sandbox.id === dashboardSession.selectedSandboxId) ?? null,
     [sandboxes, dashboardSession.selectedSandboxId]
   )
+  const deletingSandbox = useMemo(
+    () => sandboxes.find((sandbox) => sandbox.id === deletingSandboxId) ?? null,
+    [sandboxes, deletingSandboxId]
+  )
 
   const toggleTheme = () => {
     setTheme(theme === 'light' ? 'dark' : 'light')
@@ -58,20 +64,56 @@ export default function Dashboard() {
     setDashboardSession((current) => updateDashboardSessionSelection(current, null))
   }
 
+  const sleep = (ms: number) => new Promise((resolve) => window.setTimeout(resolve, ms))
+
+  const refreshUntilSandboxVisible = async (sandboxRef: string) => {
+    for (let attempt = 0; attempt < 8; attempt += 1) {
+      const latest = await refresh({ force: true })
+      const sandbox = latest.find((item) => item.id === sandboxRef || item.name === sandboxRef)
+      if (sandbox) return sandbox
+      await sleep(1500)
+    }
+    return null
+  }
+
   const handleCreateSuccess = async (createdSandboxId: string) => {
     setIsCreateMode(false)
     setIsDestroyMode(false)
     setActiveView('sandboxes')
-    const latest = await refresh()
-    const created = latest.find((sandbox) => sandbox.id === createdSandboxId || sandbox.name === createdSandboxId)
-    setDashboardSession((current) => updateDashboardSessionSelection(current, created?.id ?? createdSandboxId))
+    setLifecycleMessage(`Refreshing inventory for ${createdSandboxId}...`)
+    const created = await refreshUntilSandboxVisible(createdSandboxId)
+    setLifecycleMessage(created ? `Sandbox ${created.name} is ready.` : `Sandbox ${createdSandboxId} was created, but inventory has not reported it yet.`)
+    setDashboardSession((current) => updateDashboardSessionSelection(current, created?.id ?? null))
   }
 
-  const confirmDelete = () => {
-    console.log('Destroying sandbox:', deletingSandboxId)
-    setShowDeleteConfirm(false)
-    setDeletingSandboxId(null)
-    setIsDestroyMode(false)
+  const confirmDelete = async () => {
+    if (!deletingSandboxId || deleteInProgress) return
+    const sandbox = sandboxes.find((item) => item.id === deletingSandboxId)
+    const sandboxName = sandbox?.name ?? deletingSandboxId
+
+    try {
+      setDeleteInProgress(true)
+      setLifecycleMessage(`Destroying sandbox ${sandboxName}...`)
+      const response = await fetch('/api/sandbox/delete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sandboxName }),
+      })
+      const data = await response.json()
+      if (!response.ok) throw new Error([data.error, data.stdout, data.stderr].filter(Boolean).join('\n\n') || 'Failed to destroy sandbox')
+
+      const latest = await refresh({ force: true })
+      const stillPresent = latest.find((item) => item.id === deletingSandboxId || item.name === sandboxName)
+      setDashboardSession((current) => updateDashboardSessionSelection(current, current.selectedSandboxId === deletingSandboxId ? null : current.selectedSandboxId))
+      setLifecycleMessage(stillPresent ? `Delete started for ${sandboxName}. Inventory still reports it while cleanup finishes.` : `Sandbox ${sandboxName} destroyed.`)
+      setShowDeleteConfirm(false)
+      setDeletingSandboxId(null)
+      setIsDestroyMode(false)
+    } catch (err) {
+      setLifecycleMessage(err instanceof Error ? err.message : 'Failed to destroy sandbox')
+    } finally {
+      setDeleteInProgress(false)
+    }
   }
 
   const cancelDelete = () => {
@@ -103,11 +145,13 @@ export default function Dashboard() {
           setIsCreateMode(true)
           setIsDestroyMode(false)
           clearSelection()
+          setLifecycleMessage(null)
         }}
         onDestroyClick={() => {
           setActiveView('sandboxes')
           setIsDestroyMode(true)
           setIsCreateMode(false)
+          setLifecycleMessage(null)
         }}
         onSettingsClick={() => {
           setActiveView('settings')
@@ -157,7 +201,7 @@ export default function Dashboard() {
                     Choose a blueprint, name the sandbox, and create it.
                   </p>
                 </div>
-                <ConfigurationPanel sandboxId="new-sandbox" mode="create" onCreateSuccess={handleCreateSuccess} onInventoryRefresh={refresh} />
+                <ConfigurationPanel sandboxId="new-sandbox" mode="create" onCreateSuccess={handleCreateSuccess} />
               </div>
             ) : isDestroyMode ? (
               <div className="panel p-8 border-2 border-[var(--status-stopped)]">
@@ -197,6 +241,12 @@ export default function Dashboard() {
                     {theme === 'dark' ? 'LIGHT' : 'DARK'}
                   </button>
                 </div>
+
+                {lifecycleMessage && (
+                  <div className="panel mb-6 p-4 text-xs text-[var(--foreground-dim)] whitespace-pre-wrap" data-testid="sandbox-lifecycle-message">
+                    {lifecycleMessage}
+                  </div>
+                )}
 
                 {inventoryEnabled && loading ? (
                   <div className="flex items-center justify-center h-64" data-testid="inventory-loading-state">
@@ -249,14 +299,20 @@ export default function Dashboard() {
               </h2>
             </div>
             <p className="text-sm text-[var(--foreground)] mb-6">
-              Destroying this sandbox will permanently delete it and it will not be recoverable. Are you sure?
+              Destroying {deletingSandbox?.name ?? 'this sandbox'} will permanently delete it and it will not be recoverable. Are you sure?
             </p>
+            {lifecycleMessage && (
+              <div className="mb-4 rounded-sm border border-[var(--border-subtle)] bg-[var(--background-tertiary)] p-3 text-xs text-[var(--foreground-dim)] whitespace-pre-wrap">
+                {lifecycleMessage}
+              </div>
+            )}
             <div className="flex gap-4">
               <button
                 onClick={confirmDelete}
-                className="flex-1 px-4 py-2 rounded-sm bg-[var(--status-stopped)] text-white text-xs font-mono uppercase tracking-wider hover:bg-[#b91c1c] transition-colors"
+                disabled={deleteInProgress}
+                className="flex-1 px-4 py-2 rounded-sm bg-[var(--status-stopped)] text-white text-xs font-mono uppercase tracking-wider hover:bg-[#b91c1c] transition-colors disabled:opacity-50"
               >
-                YES — DESTROY
+                {deleteInProgress ? 'DESTROYING...' : 'YES — DESTROY'}
               </button>
               <button
                 onClick={cancelDelete}

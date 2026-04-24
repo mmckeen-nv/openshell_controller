@@ -27,6 +27,10 @@ interface InventoryResponse {
   nemoclaw?: NemoClawSummary | null
 }
 
+type RefreshOptions = {
+  force?: boolean
+}
+
 function normalizeStatus(status: unknown): SandboxInventoryItem['status'] {
   const value = typeof status === 'string' ? status.toLowerCase() : 'unknown'
   if (value === 'running' || value === 'pending' || value === 'stopped' || value === 'error') return value
@@ -79,11 +83,15 @@ export function useSandboxInventory(options?: { enabled?: boolean; refreshInterv
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const inFlightRef = useRef<Promise<SandboxInventoryItem[]> | null>(null)
+  const requestIdRef = useRef(0)
 
-  const refresh = useCallback(async () => {
-    if (inFlightRef.current) {
+  const refresh = useCallback(async (refreshOptions?: RefreshOptions) => {
+    if (!refreshOptions?.force && inFlightRef.current) {
       return inFlightRef.current
     }
+
+    const requestId = requestIdRef.current + 1
+    requestIdRef.current = requestId
 
     const run = (async () => {
       try {
@@ -92,19 +100,27 @@ export function useSandboxInventory(options?: { enabled?: boolean; refreshInterv
         if (!response.ok) throw new Error(data.error || 'Failed to fetch sandbox inventory')
 
         const nextSandboxes = normalizeFromResponse(data)
-        setSandboxes(nextSandboxes)
-        setNemoclaw(data?.nemoclaw ?? null)
-        setError(null)
+        if (requestId === requestIdRef.current) {
+          setSandboxes(nextSandboxes)
+          setNemoclaw(data?.nemoclaw ?? null)
+          setError(null)
+        }
         return nextSandboxes
       } catch (err) {
         const message = err instanceof Error ? err.message : 'Failed to fetch sandbox inventory'
-        setSandboxes([])
-        setNemoclaw(null)
-        setError(message)
+        if (requestId === requestIdRef.current) {
+          setSandboxes([])
+          setNemoclaw(null)
+          setError(message)
+        }
         throw err
       } finally {
-        setLoading(false)
-        inFlightRef.current = null
+        if (requestId === requestIdRef.current) {
+          setLoading(false)
+        }
+        if (requestId === requestIdRef.current) {
+          inFlightRef.current = null
+        }
       }
     })()
 
