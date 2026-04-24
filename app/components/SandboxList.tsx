@@ -26,32 +26,8 @@ interface SandboxListProps {
 }
 
 function renderDashboardTruthMessage(data: any) {
-  const listenerSummary = data.listenerSummary ? `\nListener: ${data.listenerSummary}` : ''
-  const showUpstreamSummary = !data.reachable || data.degraded || data.truthState !== 'verified'
-  const upstreamSummary = showUpstreamSummary && (data.upstreamStatus || data.upstreamStatusText)
-    ? `\nUpstream probe: ${data.upstreamStatus ?? 'no-status'} ${data.upstreamStatusText ?? ''}`.trimEnd()
-    : ''
-  const inventorySummary = typeof data.inventoryCount === 'number'
-    ? `Inventory visibility: ${data.inventoryCount} live sandbox${data.inventoryCount === 1 ? '' : 'es'}.`
-    : 'Inventory visibility: unknown.'
-  const mappingSummary = data.sandboxId
-    ? (data.authority?.usedMappedSandboxInstance
-      ? `Sandbox ${data.sandboxId} resolved to OpenClaw instance ${data.instanceId} via bridge mapping (fallback-active).`
-      : `Sandbox ${data.sandboxId} resolved to OpenClaw instance ${data.instanceId}.`)
-    : `OpenClaw instance: ${data.instanceId}.`
-  const reachabilitySummary = data.reachable
-    ? `Dashboard reachability: reachable at ${data.dashboardUrl}.`
-    : `Dashboard reachability: unreachable at ${data.dashboardUrl}.`
-
-  if (data.degraded) {
-    return `${inventorySummary} ${mappingSummary} ${reachabilitySummary} Degraded truth: the dashboard is reachable, but live OpenShell inventory is zero, so mapping alone does not prove the sandbox currently exists.${listenerSummary}${upstreamSummary}`
-  }
-
-  if (data.reachable) {
-    return `${inventorySummary} ${mappingSummary} ${data.note || reachabilitySummary}`.trim()
-  }
-
-  return `${inventorySummary} ${mappingSummary} ${data.note || `OpenClaw Dashboard at ${data.dashboardUrl} is currently unreachable from this host.`}${listenerSummary}${upstreamSummary}`
+  if (data.reachable) return 'OpenClaw dashboard opened in a new tab.'
+  return 'OpenClaw dashboard is not reachable from this host right now.'
 }
 
 function openDashboardUrl(url: string, openInNewTab: boolean) {
@@ -64,7 +40,7 @@ function openDashboardUrl(url: string, openInNewTab: boolean) {
 
 export default function SandboxList({
   sandboxes,
-  nemoclaw,
+  nemoclaw: _nemoclaw,
   dashboardSessionId,
   selectedSandboxId,
   selectedSandbox,
@@ -118,51 +94,6 @@ export default function SandboxList({
               REFRESH: 10s
             </span>
           </div>
-
-          {!isDestroyMode && (
-            <div className="panel p-4 space-y-2">
-              <div className="flex items-center justify-between gap-4 flex-wrap">
-                <div>
-                  <p className="text-[10px] uppercase tracking-wider text-[var(--foreground-dim)]">Inventory Source</p>
-                  <p className="text-sm font-mono text-[var(--foreground)] mt-1">Live OpenShell gateway inventory</p>
-                </div>
-                <div>
-                  <p className="text-[10px] uppercase tracking-wider text-[var(--foreground-dim)]">NemoClaw Operator Surface</p>
-                  <p className="text-sm font-mono text-[var(--foreground)] mt-1">
-                    {nemoclaw?.available ? 'Local registry + services' : 'Unavailable'}
-                  </p>
-                </div>
-              </div>
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-2 pt-1">
-                <div className="rounded-sm border border-[var(--border-subtle)] bg-[var(--background-tertiary)] px-3 py-2 text-xs font-mono text-[var(--foreground-dim)]">
-                  Inventory visibility: {sandboxes.length} live sandbox{sandboxes.length === 1 ? '' : 'es'}
-                </div>
-                <div className="rounded-sm border border-[var(--border-subtle)] bg-[var(--background-tertiary)] px-3 py-2 text-xs font-mono text-[var(--foreground-dim)]">
-                  Mapping truth: intent only, not proof of sandbox existence
-                </div>
-                <div className={`rounded-sm border px-3 py-2 text-xs font-mono ${sandboxes.length === 0 ? 'border-[var(--status-pending)] bg-[var(--status-pending-bg)] text-[var(--status-pending)]' : 'border-[var(--border-subtle)] bg-[var(--background-tertiary)] text-[var(--foreground-dim)]'}`}>
-                  {sandboxes.length === 0 ? 'Truth state: degraded / unverified' : 'Truth state: verified from live inventory'}
-                </div>
-              </div>
-              <p className="text-xs text-[var(--foreground-dim)] font-mono">
-                Dashboard session: {dashboardSessionId.slice(0, 8)}
-              </p>
-              {nemoclaw?.defaultSandboxNames?.length ? (
-                <p className="text-xs text-[var(--foreground-dim)] font-mono">
-                  Default sandbox marker: {nemoclaw.defaultSandboxNames.join(', ')}
-                </p>
-              ) : null}
-              {nemoclaw?.serviceLines?.length ? (
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-2 pt-1">
-                  {nemoclaw.serviceLines.slice(0, 4).map((line) => (
-                    <div key={line} className="rounded-sm border border-[var(--border-subtle)] bg-[var(--background-tertiary)] px-3 py-2 text-xs font-mono text-[var(--foreground-dim)]" title={line}>
-                      {line}
-                    </div>
-                  ))}
-                </div>
-              ) : null}
-            </div>
-          )}
 
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
             {sandboxes.map((sandbox) => (
@@ -266,7 +197,7 @@ export default function SandboxList({
                       }}
                       className="px-3 py-2 rounded-sm bg-[var(--background-tertiary)] text-[var(--foreground)] text-xs font-mono uppercase tracking-wider hover:border-[var(--nvidia-green)] border border-[var(--border-subtle)]"
                     >
-                      Open Operator Terminal Path
+                      Open Operator Terminal
                     </button>
                     <button
                       onClick={async () => {

@@ -74,8 +74,8 @@ assert.match(
 )
 assert.match(
   sandboxListSource,
-  /Sandbox \$\{data\.sandboxId\} resolved to OpenClaw instance \$\{data\.instanceId\}/,
-  'sandbox list should surface sandbox-aware resolution feedback'
+  /OpenClaw dashboard opened in a new tab/,
+  'sandbox list should surface concise dashboard launch feedback'
 )
 
 console.log('openclaw-dashboard-instance-resolution-check: PASS sandbox-aware dashboard resolution assertions')

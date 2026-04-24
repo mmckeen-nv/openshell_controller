@@ -13,15 +13,13 @@ import {
 
 export default function Dashboard() {
   const [theme, setTheme] = useState<'light' | 'dark'>('dark')
-  const [isSubmenuOpen, setIsSubmenuOpen] = useState(false)
-  const [hostIP] = useState('192.168.50.173')
   const [dashboardSession, setDashboardSession] = useState(() => createHydrationSafeDashboardSessionState())
   const [isCreateMode, setIsCreateMode] = useState(false)
   const [isDestroyMode, setIsDestroyMode] = useState(false)
-  const [activeView, setActiveView] = useState<'overview' | 'settings' | 'sandboxes'>('sandboxes')
+  const [activeView, setActiveView] = useState<'settings' | 'sandboxes'>('sandboxes')
   const [deletingSandboxId, setDeletingSandboxId] = useState<string | null>(null)
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
-  const inventoryEnabled = isSubmenuOpen || activeView === 'sandboxes' || isCreateMode || isDestroyMode
+  const inventoryEnabled = activeView === 'sandboxes' || isCreateMode || isDestroyMode
   const { sandboxes, nemoclaw, loading, error, refresh } = useSandboxInventory({
     enabled: inventoryEnabled,
   })
@@ -64,7 +62,6 @@ export default function Dashboard() {
     setIsCreateMode(false)
     setIsDestroyMode(false)
     setActiveView('sandboxes')
-    setIsSubmenuOpen(true)
     const latest = await refresh()
     const created = latest.find((sandbox) => sandbox.id === createdSandboxId || sandbox.name === createdSandboxId)
     setDashboardSession((current) => updateDashboardSessionSelection(current, created?.id ?? createdSandboxId))
@@ -91,47 +88,32 @@ export default function Dashboard() {
       }`}
     >
       <Sidebar
-        hostIP={hostIP}
-        sandboxes={sandboxes}
-        nemoclaw={nemoclaw}
-        dashboardSessionId={dashboardSession.dashboardSessionId}
-        selectedSandboxId={dashboardSession.selectedSandboxId}
-        onSandboxSelect={handleSandboxSelect}
-        isSubmenuOpen={isSubmenuOpen}
-        onToggleSubmenu={() => {
-          setIsSubmenuOpen(!isSubmenuOpen)
-          if (isCreateMode) setIsCreateMode(false)
-          if (isDestroyMode) setIsDestroyMode(false)
-        }}
+        sandboxesRunning={sandboxes.filter((sandbox) => sandbox.status === 'running').length}
+        sandboxesTotal={sandboxes.length}
         isCreateMode={isCreateMode}
         isDestroyMode={isDestroyMode}
         activeView={activeView}
+        onSandboxesClick={() => {
+          setActiveView('sandboxes')
+          setIsCreateMode(false)
+          setIsDestroyMode(false)
+        }}
         onCreateClick={() => {
           setActiveView('sandboxes')
           setIsCreateMode(true)
           setIsDestroyMode(false)
           clearSelection()
-          setIsSubmenuOpen(true)
         }}
         onDestroyClick={() => {
           setActiveView('sandboxes')
           setIsDestroyMode(true)
           setIsCreateMode(false)
-          setIsSubmenuOpen(true)
-        }}
-        onOverviewClick={() => {
-          setActiveView('overview')
-          setIsCreateMode(false)
-          setIsDestroyMode(false)
-          clearSelection()
-          setIsSubmenuOpen(false)
         }}
         onSettingsClick={() => {
           setActiveView('settings')
           setIsCreateMode(false)
           setIsDestroyMode(false)
           clearSelection()
-          setIsSubmenuOpen(false)
         }}
         onExitMode={() => {
           setIsCreateMode(false)
@@ -141,57 +123,29 @@ export default function Dashboard() {
       />
 
       <main className="ml-64 transition-all duration-300">
-        <div className={isSubmenuOpen ? 'ml-72' : ''}>
+        <div>
           <div className="p-8">
-            {activeView === 'overview' ? (
+            {activeView === 'settings' ? (
               <div className="space-y-6">
                 <div className="panel p-8">
                   <h1 className="text-lg font-semibold text-[var(--nvidia-green)] uppercase tracking-wider mb-4">
-                    OVERVIEW
+                    STATUS
                   </h1>
-                  <p className="text-sm text-[var(--foreground-dim)] mb-6">
-                    Operational summary of the current OpenShell environment and preset posture.
-                  </p>
                   <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                     <div className="metric p-4">
-                      <p className="text-[10px] text-[var(--foreground-dim)] uppercase tracking-wider">HOST</p>
-                      <p className="text-lg font-mono text-[var(--nvidia-green)] mt-2">{hostIP}</p>
+                      <p className="text-[10px] text-[var(--foreground-dim)] uppercase tracking-wider">Sandboxes</p>
+                      <p className="text-xl font-mono text-[var(--nvidia-green)] mt-1">{sandboxes.length}</p>
                     </div>
                     <div className="metric p-4">
-                      <p className="text-[10px] text-[var(--foreground-dim)] uppercase tracking-wider">VIEW</p>
-                      <p className="text-lg font-mono text-[var(--foreground)] mt-2">OVERVIEW</p>
+                      <p className="text-[10px] text-[var(--foreground-dim)] uppercase tracking-wider">Running</p>
+                      <p className="text-xl font-mono text-[var(--nvidia-green)] mt-1">{sandboxes.filter((sandbox) => sandbox.status === 'running').length}</p>
                     </div>
                     <div className="metric p-4">
-                      <p className="text-[10px] text-[var(--foreground-dim)] uppercase tracking-wider">STATUS</p>
-                      <p className="text-lg font-mono text-[var(--nvidia-green)] mt-2">ONLINE</p>
+                      <p className="text-[10px] text-[var(--foreground-dim)] uppercase tracking-wider">OpenClaw</p>
+                      <p className="text-sm font-mono text-[var(--foreground)] mt-2">{nemoclaw?.available ? 'available' : 'not detected'}</p>
                     </div>
                   </div>
                 </div>
-                <div className="panel p-8">
-                  <h2 className="text-sm font-semibold text-[var(--foreground)] uppercase tracking-wider mb-4">Preset Ladder</h2>
-                  <div className="space-y-3 text-sm text-[var(--foreground-dim)]">
-                    <p><span className="text-[var(--foreground)] font-mono">Lockdown Mode</span> → minimum writable scope</p>
-                    <p><span className="text-[var(--foreground)] font-mono">Enterprise Mode</span> → controlled enterprise defaults</p>
-                    <p><span className="text-[var(--foreground)] font-mono">Medium-Spicy</span> → balanced dev workflow</p>
-                    <p><span className="text-[var(--foreground)] font-mono">Spicy</span> → broad engineering access, dangerous if misused</p>
-                    <p><span className="text-[var(--foreground)] font-mono">Ultra-Lobster</span> → maximum lab convenience, highly permissive</p>
-                  </div>
-                </div>
-              </div>
-            ) : activeView === 'settings' ? (
-              <div className="space-y-6">
-                <div className="panel p-8">
-                  <h1 className="text-lg font-semibold text-[var(--nvidia-green)] uppercase tracking-wider mb-4">
-                    SETTINGS
-                  </h1>
-                  <p className="text-sm text-[var(--foreground-dim)] mb-6">
-                    Global defaults and preset-driven policy controls for this dashboard instance.
-                  </p>
-                  <p className="text-[11px] text-[var(--foreground-dim)] font-mono">
-                    Dashboard session {dashboardSession.dashboardSessionId.slice(0, 8)}
-                  </p>
-                </div>
-                <ConfigurationPanel sandboxId="global-settings" mode="create" onCreateSuccess={handleCreateSuccess} onInventoryRefresh={refresh} />
               </div>
             ) : isCreateMode ? (
               <div className="space-y-6">
@@ -200,7 +154,7 @@ export default function Dashboard() {
                     CREATE SANDBOX
                   </h1>
                   <p className="text-sm text-[var(--foreground-dim)]">
-                    Start from a named security preset, then refine the OpenShell policy before creating the sandbox.
+                    Choose a blueprint, name the sandbox, and create it.
                   </p>
                 </div>
                 <ConfigurationPanel sandboxId="new-sandbox" mode="create" onCreateSuccess={handleCreateSuccess} onInventoryRefresh={refresh} />
@@ -230,13 +184,10 @@ export default function Dashboard() {
                 <div className="flex items-center justify-between mb-8">
                   <div>
                     <h1 className="text-lg font-semibold text-[var(--foreground)] uppercase tracking-wider">
-                      NEMOSHELL DASHBOARD
+                      OPENSHELL CONTROL
                     </h1>
                     <p className="text-xs text-[var(--foreground-dim)] mt-1">
-                      Real-time OpenShell sandbox monitoring
-                    </p>
-                    <p className="text-[11px] text-[var(--foreground-dim)] font-mono mt-2">
-                      Dashboard session {dashboardSession.dashboardSessionId.slice(0, 8)}
+                      Manage local OpenShell sandboxes and operator access.
                     </p>
                   </div>
                   <button

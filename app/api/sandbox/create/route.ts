@@ -20,13 +20,6 @@ const HOST_PATH = [
   process.env.PATH || "",
 ].filter(Boolean).join(":")
 
-const GATEWAY_REUSE_POLICY = [
-  "Gateway reuse policy:",
-  "- reuse the existing OpenShell gateway when `openshell status` reports `Connected`",
-  "- only start a fresh gateway when no healthy gateway is already connected",
-  `- force non-interactive PATH to include ${HOME}/.local/bin so openshell resolves during setup`,
-].join("\n")
-
 function validateSandboxName(name: string) {
   if (!name || typeof name !== "string") throw new Error("sandbox name is required")
   if (name.length > 63) throw new Error("sandbox name too long (max 63 chars)")
@@ -99,7 +92,6 @@ async function verifySandboxCreation(sandboxName: string): Promise<SandboxVerifi
 async function runCommand(file: string, args: string[], env: NodeJS.ProcessEnv) {
   const startedAt = Date.now()
   console.log(`[sandbox/create] command:start file=${file} args=${JSON.stringify(args)}`)
-  console.log(`[sandbox/create] gateway-policy ${GATEWAY_REUSE_POLICY.replace(/\n/g, " | ")}`)
   try {
     const { stdout, stderr } = await execFileAsync(file, args, {
       env,
@@ -320,7 +312,6 @@ export async function POST(request: Request) {
         verification,
         mode: "nemoclaw-blueprint",
         enableTailscale,
-        gatewayReusePolicy: GATEWAY_REUSE_POLICY,
         setupPath: NEMOCLAW_SETUP,
         hostPath: HOST_PATH,
         stdout: result.stdout,

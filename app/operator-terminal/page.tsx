@@ -207,7 +207,7 @@ function OperatorTerminalInner() {
 
     socket.addEventListener('open', () => {
       setTerminalState('connected')
-      setTerminalStatus(`Live terminal connected for ${liveSession.sandboxId} in dashboard session ${liveSession.dashboardSessionId.slice(0, 8)}.`)
+      setTerminalStatus(`Live terminal connected for ${liveSession.sandboxId}.`)
       fitAddonRef.current?.fit()
       term.focus()
       socket.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }))
@@ -274,7 +274,7 @@ function OperatorTerminalInner() {
             <p className="text-[10px] uppercase tracking-[0.25em] text-[var(--foreground-dim)] font-mono">Operator path</p>
             <h1 className="text-2xl font-semibold uppercase tracking-wider mt-2">Operator Terminal</h1>
             <p className="text-sm text-[var(--foreground-dim)] mt-3 max-w-3xl">{sandboxId ? 'Live operator terminal for the selected sandbox, brokered through the dashboard-owned terminal bridge.' : 'Live operator terminal for host mode, brokered through the dashboard-owned terminal bridge.'}</p>
-            <p className="text-[11px] text-[var(--foreground-dim)] font-mono mt-2">Dashboard session {dashboardSessionId.slice(0, 8)}</p>
+            <p className="text-[11px] text-[var(--foreground-dim)] font-mono mt-2">OpenShell operator terminal</p>
           </div>
           <Link href="/" className="px-4 py-2 rounded-sm bg-[var(--background-tertiary)] text-[var(--foreground)] text-xs font-mono uppercase tracking-wider hover:bg-[var(--background-panel)]">Back to Dashboard</Link>
         </div>

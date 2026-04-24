@@ -111,7 +111,7 @@ export default function SandboxDetails({
           </div>
           <div className="text-right">
             <p className="text-[10px] text-[var(--foreground-dim)] uppercase tracking-wider">Running</p>
-            <p className="text-xs font-mono text-[var(--nvidia-green)]">NEMOSHELL</p>
+            <p className="text-xs font-mono text-[var(--nvidia-green)]">OPENSHELL</p>
           </div>
         </div>
       </div>
