@@ -7,6 +7,7 @@ import InferenceEndpointPanel from './components/InferenceEndpointPanel'
 import { useSandboxInventory } from './hooks/useSandboxInventory'
 import {
   createHydrationSafeDashboardSessionState,
+  buildOperatorTerminalRoute,
   loadDashboardSessionState,
   persistDashboardSessionState,
   updateDashboardSessionSelection,
@@ -187,6 +188,14 @@ export default function Dashboard() {
           setIsCreateMode(false)
           setLifecycleMessage(null)
         }}
+        onTerminalClick={() => {
+          const nextUrl = buildOperatorTerminalRoute({
+            sandboxId: selectedSandbox?.id,
+            dashboardSessionId: dashboardSession.dashboardSessionId,
+          })
+          window.open(nextUrl, '_blank', 'noopener,noreferrer')
+        }}
+        terminalDisabled={!selectedSandbox}
         onSettingsClick={() => {
           setActiveView('settings')
           setIsCreateMode(false)
@@ -197,6 +206,10 @@ export default function Dashboard() {
           setIsCreateMode(false)
           setIsDestroyMode(false)
           clearSelection()
+        }}
+        onLogout={async () => {
+          await fetch('/api/auth/logout', { method: 'POST' }).catch(() => null)
+          window.location.href = '/login'
         }}
       />
 
@@ -281,7 +294,6 @@ export default function Dashboard() {
                   <SandboxList
                     sandboxes={sandboxes}
                     nemoclaw={nemoclaw}
-                    dashboardSessionId={dashboardSession.dashboardSessionId}
                     selectedSandboxId={dashboardSession.selectedSandboxId}
                     selectedSandbox={selectedSandbox}
                     onSandboxSelect={handleSandboxSelect}
@@ -340,7 +352,6 @@ export default function Dashboard() {
                   <SandboxList
                     sandboxes={sandboxes}
                     nemoclaw={nemoclaw}
-                    dashboardSessionId={dashboardSession.dashboardSessionId}
                     selectedSandboxId={dashboardSession.selectedSandboxId}
                     selectedSandbox={selectedSandbox}
                     onSandboxSelect={handleSandboxSelect}

@@ -9,8 +9,11 @@ interface SidebarProps {
   onSandboxesClick: () => void
   onCreateClick: () => void
   onDestroyClick: () => void
+  onTerminalClick: () => void
   onSettingsClick: () => void
   onExitMode: () => void
+  onLogout: () => void
+  terminalDisabled?: boolean
 }
 
 export default function Sidebar({
@@ -22,8 +25,11 @@ export default function Sidebar({
   onSandboxesClick,
   onCreateClick,
   onDestroyClick,
+  onTerminalClick,
   onSettingsClick,
   onExitMode,
+  onLogout,
+  terminalDisabled = false,
 }: SidebarProps) {
   return (
     <aside className="fixed left-0 top-0 h-screen w-64 bg-[var(--background-secondary)] border-r border-[var(--border-subtle)] flex flex-col z-20">
@@ -87,6 +93,17 @@ export default function Sidebar({
           <span className="text-sm">Destroy Sandbox</span>
         </button>
 
+        <button
+          onClick={onTerminalClick}
+          disabled={terminalDisabled}
+          className="mt-1 w-full flex items-center gap-3 px-3 py-2 rounded-sm transition-colors hover:bg-[var(--background-tertiary)] text-[var(--foreground-dim)] disabled:opacity-40 disabled:cursor-not-allowed"
+        >
+          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="square" strokeLinejoin="miter" strokeWidth={2} d="M4 17l6-6-6-6m8 14h8" />
+          </svg>
+          <span className="text-sm">Operator Terminal</span>
+        </button>
+
         {(isCreateMode || isDestroyMode) && (
           <button
             onClick={onExitMode}
@@ -112,7 +129,29 @@ export default function Sidebar({
           </svg>
           <span className="text-sm">Inference Endpoints</span>
         </button>
+
+        <a
+          href="/setup-account"
+          className="mt-1 w-full flex items-center gap-3 px-3 py-2 rounded-sm transition-colors hover:bg-[var(--background-tertiary)] text-[var(--foreground-dim)]"
+        >
+          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+            <path strokeLinecap="square" strokeLinejoin="miter" strokeWidth={2} d="M12 12a4 4 0 100-8 4 4 0 000 8zm-7 9a7 7 0 0114 0" />
+          </svg>
+          <span className="text-sm">Setup Account</span>
+        </a>
       </nav>
+
+      <div className="p-2 border-t border-[var(--border-subtle)]">
+        <button
+          onClick={onLogout}
+          className="w-full flex items-center gap-3 px-3 py-2 rounded-sm transition-colors hover:bg-[var(--background-tertiary)] text-[var(--foreground-dim)]"
+        >
+          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+            <path strokeLinecap="square" strokeLinejoin="miter" strokeWidth={2} d="M15 12H3m0 0l4-4m-4 4l4 4m5-10h6v12h-6" />
+          </svg>
+          <span className="text-sm">Sign Out</span>
+        </button>
+      </div>
     </aside>
   )
 }

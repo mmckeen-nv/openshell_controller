@@ -1,0 +1,125 @@
+import { spawn } from "node:child_process"
+import path from "node:path"
+import { resolveSandboxRef } from "./openshellHost"
+
+const HOME = process.env.HOME || ""
+const OPENSHELL_BIN = process.env.OPENSHELL_BIN || `${HOME}/.local/bin/openshell`
+const HOST_PATH = [
+  `${HOME}/.local/bin`,
+  `${HOME}/.nvm/versions/node/v22.22.2/bin`,
+  `${HOME}/.nvm/versions/node/v22.22.1/bin`,
+  "/usr/local/bin",
+  "/usr/bin",
+  "/bin",
+  process.env.PATH || "",
+].filter(Boolean).join(":")
+
+const MAX_FILE_BYTES = Number.parseInt(process.env.SANDBOX_FILE_TRANSFER_MAX_BYTES || String(128 * 1024 * 1024), 10)
+const ALLOWED_ROOTS = ["/sandbox", "/tmp"]
+
+function shellQuote(value: string) {
+  return `'${value.replace(/'/g, `'\\''`)}'`
+}
+
+function sanitizeFileName(value: string) {
+  const base = path.posix.basename(value.trim() || "upload.bin")
+  return base.replace(/[^\w.@:+-]/g, "_") || "upload.bin"
+}
+
+export function normalizeSandboxPath(input: string, fallbackFileName?: string) {
+  const raw = input.trim()
+  if (!raw) throw new Error("sandbox path is required")
+  if (raw.includes("\0")) throw new Error("sandbox path contains unsupported characters")
+
+  const absolute = raw.startsWith("/") ? raw : path.posix.join("/sandbox", raw)
+  const withFileName = absolute.endsWith("/") && fallbackFileName
+    ? path.posix.join(absolute, sanitizeFileName(fallbackFileName))
+    : absolute
+  const normalized = path.posix.normalize(withFileName)
+  const allowed = ALLOWED_ROOTS.some((root) => normalized === root || normalized.startsWith(`${root}/`))
+  if (!allowed) throw new Error("sandbox path must be under /sandbox or /tmp")
+  return normalized
+}
+
+function runSandboxExec(sandboxName: string, script: string, input?: Buffer, timeoutMs = 60000) {
+  return new Promise<{ stdout: Buffer; stderr: string; code: number | null }>((resolve, reject) => {
+    const child = spawn(OPENSHELL_BIN, ["sandbox", "exec", "-n", sandboxName, "--", "sh", "-lc", script], {
+      env: {
+        ...process.env,
+        PATH: HOST_PATH,
+        OPENSHELL_GATEWAY: process.env.OPENSHELL_GATEWAY || "nemoclaw",
+        NO_COLOR: "1",
+        CLICOLOR: "0",
+        CLICOLOR_FORCE: "0",
+      },
+      stdio: ["pipe", "pipe", "pipe"],
+    })
+    const stdout: Buffer[] = []
+    let stderr = ""
+    const timer = setTimeout(() => child.kill("SIGTERM"), timeoutMs)
+
+    child.stdout.on("data", (chunk) => stdout.push(Buffer.from(chunk)))
+    child.stderr.on("data", (chunk) => { stderr += String(chunk) })
+    child.on("error", (error) => {
+      clearTimeout(timer)
+      reject(error)
+    })
+    child.on("close", (code) => {
+      clearTimeout(timer)
+      resolve({ stdout: Buffer.concat(stdout), stderr: stderr.trim(), code })
+    })
+
+    if (input) child.stdin.end(input)
+    else child.stdin.end()
+  })
+}
+
+export async function resolveSandboxName(sandboxId: string) {
+  const resolved = await resolveSandboxRef(sandboxId)
+  return resolved.name
+}
+
+export async function uploadSandboxFile(sandboxId: string, destinationPath: string, fileName: string, payload: Buffer) {
+  if (payload.byteLength > MAX_FILE_BYTES) {
+    throw new Error(`file is too large; max transfer size is ${Math.floor(MAX_FILE_BYTES / 1024 / 1024)} MiB`)
+  }
+
+  const sandboxName = await resolveSandboxName(sandboxId)
+  const targetPath = normalizeSandboxPath(destinationPath, fileName)
+  const targetDir = path.posix.dirname(targetPath)
+  const script = [
+    `mkdir -p ${shellQuote(targetDir)}`,
+    `cat > ${shellQuote(targetPath)}`,
+    `chmod 0644 ${shellQuote(targetPath)}`,
+  ].join(" && ")
+  const result = await runSandboxExec(sandboxName, script, payload, 120000)
+  if (result.code !== 0) throw new Error(result.stderr || "failed to upload file to sandbox")
+
+  return {
+    sandboxName,
+    path: targetPath,
+    bytes: payload.byteLength,
+  }
+}
+
+export async function downloadSandboxFile(sandboxId: string, sourcePath: string) {
+  const sandboxName = await resolveSandboxName(sandboxId)
+  const targetPath = normalizeSandboxPath(sourcePath)
+  const statScript = `test -f ${shellQuote(targetPath)} && wc -c < ${shellQuote(targetPath)}`
+  const stat = await runSandboxExec(sandboxName, statScript, undefined, 30000)
+  if (stat.code !== 0) throw new Error(stat.stderr || "sandbox file does not exist or is not a regular file")
+  const size = Number.parseInt(stat.stdout.toString("utf8").trim(), 10)
+  if (Number.isFinite(size) && size > MAX_FILE_BYTES) {
+    throw new Error(`file is too large; max transfer size is ${Math.floor(MAX_FILE_BYTES / 1024 / 1024)} MiB`)
+  }
+
+  const result = await runSandboxExec(sandboxName, `cat ${shellQuote(targetPath)}`, undefined, 120000)
+  if (result.code !== 0) throw new Error(result.stderr || "failed to download file from sandbox")
+
+  return {
+    sandboxName,
+    path: targetPath,
+    fileName: path.posix.basename(targetPath) || "download.bin",
+    bytes: result.stdout,
+  }
+}

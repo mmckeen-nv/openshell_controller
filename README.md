@@ -1,134 +1,279 @@
-# OpenShell/NemoClaw Dashboard
+# OpenShell Control
 
-A web-based control plane dashboard for managing OpenShell and NemoClaw instances, with live telemetry and one-click actions.
+OpenShell Control is a local, development-stage dashboard for operating OpenShell sandboxes and their OpenClaw gateway dashboards.
+
+It is currently built for active development and lab use. It includes a simple password gate, but it is not a hardened production control plane yet.
+
+## Current Status
+
+- Development software. Expect fast-moving APIs and sharp edges.
+- Designed to run near the OpenShell gateway host.
+- Uses local shell/CLI access for sandbox lifecycle, network policy grants, file transfer, and OpenClaw dashboard proxying.
+- Authentication is intentionally simple so a future dev team can replace it with a real identity provider.
 
 ## Features
 
-- **Live Telemetry**: Real-time CPU, memory, disk, and GPU monitoring
-- **One-Click Actions**: Quick actions to start/stop sandbox, create NemoClaw instances, and switch models
-- **Configuration Management**: Update OpenShell, NemoClaw, and Ollama settings
-- **Model Switcher**: Select and switch between available Ollama models
-- **Local-first**: Runs entirely on your local machine
+- View live OpenShell sandbox inventory.
+- Create, destroy, and restart sandboxes.
+- Launch a sandbox-specific OpenClaw Gateway Dashboard through the local proxy.
+- Approve or reject pending OpenShell network permission requests.
+- Configure per-sandbox inference routes for Ollama, NIM, vLLM, and external endpoints.
+- Poll Ollama for available models.
+- Upload files into sandboxes and download files back out.
+- Open an operator terminal for the selected sandbox.
+- Simple local login, setup account, forgot password, and recovery token flow.
 
-## Installation
+## Version Requirements
 
-### Quick Install (Recommended)
+Tested on the current development host with:
 
-Run the installer script which checks prerequisites and sets up everything:
+- Ubuntu/Linux host
+- Node.js `v22.22.2`
+- npm `10.9.7`
+- Docker `29.1.3`
+- OpenShell CLI `0.0.24`
+- OpenShell cluster image `ghcr.io/nvidia/openshell/cluster:0.0.24`
+
+Minimum expected versions:
+
+- Node.js `20+`
+- npm `10+`
+- Docker `24+`
+- OpenShell CLI and gateway compatible with OpenShell `0.0.24`
+
+The app uses Next.js `14.2.15`, React `18.3.1`, TypeScript, Tailwind CSS, `ws`, and `node-pty`.
+
+## Prerequisites
+
+Install and verify:
+
+```bash
+node -v
+npm -v
+docker ps
+openshell --version
+```
+
+OpenShell must already be installed and able to reach its gateway. On this host the active gateway metadata lives under:
+
+```bash
+~/.config/openshell/gateways/
+```
+
+The installer does not create an OpenShell gateway for you. Start or connect OpenShell first, then install this dashboard.
+
+## Installer
+
+From the repository root:
 
 ```bash
 ./install.sh
 ```
 
-The installer will:
-- ✅ Verify Node.js, npm, and Docker are installed
-- ✅ Check that your OpenShell-Mark container is running
-- ✅ Install npm dependencies
-- ✅ Build the dashboard
-- ✅ Create `.env.local` configuration file
+The installer:
 
-### Manual Install
+- checks Node, npm, Docker, and OpenShell CLI availability;
+- installs npm dependencies;
+- creates `.env.local` if needed;
+- generates a local dashboard password, signing secret, and recovery token if they are missing;
+- runs `npm run build` as a verification step;
+- removes `.next` afterward so the development server starts cleanly.
 
-1. Navigate to the project directory:
+Options:
+
 ```bash
-cd nemo-shell-dashboard
+./install.sh --no-build
+./install.sh --start
+./install.sh --help
 ```
 
-2. Install dependencies:
+After install, read the generated local password from:
+
 ```bash
-npm install
+grep OPENSHELL_CONTROL_PASSWORD .env.local
 ```
 
-## Prerequisites
+## Run
 
-- **Node.js** 18+ 
-- **npm** 9+
-- **Docker** (Docker Desktop on Mac, or native Docker on Linux)
-- **OpenShell-Mark fork running**: `ghcr.io/nvidia/openshell/cluster:dev`
-
-## Running the Dashboard
-
-After running `./install.sh`:
-
-1. Start the development server:
 ```bash
 npm run dev
 ```
 
-2. Open your browser and navigate to:
-```
+Open:
+
+```text
 http://localhost:3000
 ```
 
-> **Important**: Make sure your OpenShell-Mark container is running before starting the dashboard!
+Default ports:
 
-### On Mac
+- `3000`: dashboard HTTP server
+- `3001`: OpenClaw dashboard websocket sidecar
+- `3011`: operator terminal upstream
+
+## Authentication
+
+This project currently uses a simple local password and signed HTTP-only cookie.
+
+Configuration keys:
+
 ```bash
-# Start OpenShell first
-/Applications/Docker.app/Contents/Resources/bin/docker run -d --name openshell-cluster -p 8080:30051 ghcr.io/nvidia/openshell/cluster:dev
+OPENSHELL_CONTROL_PASSWORD=...
+OPENSHELL_CONTROL_AUTH_SECRET=...
+OPENSHELL_CONTROL_RECOVERY_TOKEN=...
+```
 
-# Then start the dashboard
+Pages:
+
+- `/login`
+- `/setup-account`
+- `/forgot-password`
+
+There is no email sender. Forgot-password uses `OPENSHELL_CONTROL_RECOVERY_TOKEN` from `.env.local`, which means it is a host-admin recovery flow. Anyone who can read `.env.local` can reset the dashboard password.
+
+After changing `.env.local`, restart the server:
+
+```bash
+pkill -f 'node server.mjs|npm run dev' || true
 npm run dev
 ```
 
-### On Linux
-```bash
-# Start OpenShell first
-docker run -d --name openshell-cluster -p 8080:30051 ghcr.io/nvidia/openshell/cluster:dev
+## OpenShell And OpenClaw Notes
 
-# Then start the dashboard
+The dashboard shells out to the OpenShell CLI for several operations:
+
+- `openshell list`
+- `openshell sandbox exec`
+- `openshell sandbox delete`
+- `openshell rule get`
+- `openshell rule approve`
+- `openshell rule reject`
+
+OpenClaw dashboard access is loopback-only inside the host/sandbox context, so the UI uses local proxy routes:
+
+- `/api/openshell/dashboard/proxy`
+- `/api/openshell/instances/[instanceId]/dashboard/proxy`
+
+The custom server in `server.mjs` also handles websocket upgrades for:
+
+- operator terminal websocket traffic;
+- OpenClaw dashboard websocket traffic.
+
+Those upgrade paths are protected by the same auth cookie as the HTTP routes.
+
+## Inference Endpoints
+
+Inference endpoint configuration is development-stage.
+
+The UI supports per-sandbox route profiles and can apply them live to OpenClaw where possible. Depending on the sandbox and provider, changes may require a sandbox restart to fully take effect inside the container.
+
+Supported provider categories in the UI:
+
+- Ollama
+- NVIDIA NIM
+- vLLM
+- external HTTP-compatible endpoints
+
+## File Transfer
+
+The file transfer UI is scoped to safe sandbox paths:
+
+- `/sandbox`
+- `/tmp`
+
+The default max transfer size is `128 MiB`. Override with:
+
+```bash
+SANDBOX_FILE_TRANSFER_MAX_BYTES=134217728
+```
+
+## Development Commands
+
+```bash
+npm run dev
+npm run lint
+npx tsc --noEmit
+npm run build
+```
+
+After running `npm run build` during development, restart cleanly:
+
+```bash
+pkill -f 'node server.mjs|npm run dev' || true
+rm -rf .next
 npm run dev
 ```
 
 ## Configuration
 
-The dashboard will attempt to connect to:
+Copy or edit `.env.local`:
 
-- **OpenShell**: `http://localhost:8080`
-- **Ollama**: `http://localhost:11434`
-
-You can update these URLs in the configuration panel at the top of the dashboard.
-
-## API Endpoints
-
-The dashboard provides the following API endpoints (all mocked for development):
-
-- `GET /api/telemetry` - Get system telemetry
-- `GET /api/config/openshell` - Get OpenShell configuration
-- `POST /api/config/openshell` - Update OpenShell configuration
-- `GET /api/config/nemoclaw` - Get NemoClaw configuration
-- `POST /api/config/nemoclaw` - Update NemoClaw configuration
-- `GET /api/config/ollama` - Get Ollama configuration
-- `POST /api/config/ollama` - Update Ollama configuration
-- `POST /api/actions/sandbox-start` - Start the sandbox
-- `POST /api/actions/sandbox-stop` - Stop the sandbox
-- `POST /api/actions/nemoclaw-create` - Create a NemoClaw instance
-- `POST /api/actions/model-switch` - Switch to a different model
-
-## Development
-
-This project uses:
-- **Next.js 14** - React framework with App Router
-- **TypeScript** - Type safety
-- **Tailwind CSS** - Utility-first styling
-- **React Use** - Custom hooks
-- **Zustand** - State management
-- **Axios** - HTTP client
-
-## Production Build
-
-Build the project for production:
 ```bash
-npm run build
-npm start
+cp .env.example .env.local
 ```
 
-## Notes
+Common keys:
 
-- This is a development prototype. In production, you'll need to connect to real OpenShell and Ollama APIs.
-- All API endpoints are currently mocked for demonstration purposes.
-- Telemetry data is randomly generated for testing purposes.
+```bash
+NEXT_PUBLIC_DASHBOARD_PORT=3000
+NEXT_PUBLIC_API_BASE=/api
+NEXT_PUBLIC_ENABLE_SANDBOX_OPERATIONS=true
+OPEN_SHELL_CONTAINER=openshell-cluster-nemoclaw
+OPENSHELL_GATEWAY=nemoclaw
+OPENSHELL_CONTROL_PASSWORD=change-this-password
+OPENSHELL_CONTROL_AUTH_SECRET=change-this-random-secret
+OPENSHELL_CONTROL_RECOVERY_TOKEN=change-this-recovery-token
+```
+
+## Security Limitations
+
+This is not production hardened.
+
+Known limitations:
+
+- single shared local password;
+- no user accounts or roles;
+- no email reset flow;
+- no rate limiting;
+- no audit log persistence beyond process/container logs;
+- local recovery token can reset the password;
+- assumes a trusted operator host and trusted local filesystem.
+
+Before exposing this outside a trusted lab network, replace auth with a real identity provider, add role-based access control, add audit logging, use TLS, and review every shell-out path.
+
+## Troubleshooting
+
+Check OpenShell:
+
+```bash
+openshell --version
+openshell list
+docker ps | grep openshell
+```
+
+Check auth:
+
+```bash
+grep OPENSHELL_CONTROL_PASSWORD .env.local
+grep OPENSHELL_CONTROL_RECOVERY_TOKEN .env.local
+```
+
+Check dashboard:
+
+```bash
+npm run lint
+npx tsc --noEmit
+npm run build
+```
+
+If the UI behaves oddly after a production build:
+
+```bash
+pkill -f 'node server.mjs|npm run dev' || true
+rm -rf .next
+npm run dev
+```
 
 ## License
 
-MIT
+Internal development prototype. Add the appropriate license before distribution.

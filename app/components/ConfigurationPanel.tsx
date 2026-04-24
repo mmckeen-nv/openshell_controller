@@ -27,6 +27,8 @@ interface ConfigurationPanelProps {
   sandboxId: string
   mode?: 'existing' | 'create'
   onCreateSuccess?: (sandboxId: string) => void | Promise<void>
+  embedded?: boolean
+  showHeader?: boolean
 }
 
 function FieldHelp({ text }: { text: string }) {
@@ -74,7 +76,7 @@ function blocksToPolicy(blocks: NetworkPolicyBlock[]): OpenShellPolicy["network_
   return out
 }
 
-export default function ConfigurationPanel({ sandboxId, mode = 'existing', onCreateSuccess }: ConfigurationPanelProps) {
+export default function ConfigurationPanel({ sandboxId, mode = 'existing', onCreateSuccess, embedded = false, showHeader = true }: ConfigurationPanelProps) {
   const [policy, setPolicy] = useState<OpenShellPolicy>(defaultPolicy)
   const [blocks, setBlocks] = useState<NetworkPolicyBlock[]>([])
   const [loading, setLoading] = useState(mode === 'existing')
@@ -153,21 +155,24 @@ export default function ConfigurationPanel({ sandboxId, mode = 'existing', onCre
   function addBlock() { setBlocks((prev) => [...prev, { key: `policy_${prev.length + 1}`, name: `policy-${prev.length + 1}`, endpoints: [{ host: "", port: "443", protocol: "", tls: "", enforcement: "", access: "read-only", rules: [] }], binaries: [{ path: "" }] }]) }
 
   return (
-    <div className="panel p-6 mt-6 border-t-2 border-[var(--nvidia-green)]">
-      <div className="flex items-center justify-between mb-6 pb-4 border-b border-[var(--border-subtle)]">
-        <h4 className="text-sm font-semibold text-[var(--foreground)] uppercase tracking-wider">
-          {mode === 'create' ? 'New Sandbox' : `${sandboxId} — OpenShell Policy`}
-        </h4>
-        <button onClick={savePolicy} disabled={saving} className="px-4 py-2 rounded-sm bg-[var(--nvidia-green)] text-white text-xs font-mono uppercase tracking-wider disabled:opacity-50">
-          {saving ? "Working..." : mode === 'create' ? 'Create Sandbox' : 'Save Policy'}
-        </button>
-      </div>
+    <div className={embedded ? "" : "panel p-6 mt-6 border-t-2 border-[var(--nvidia-green)]"}>
+      {showHeader && (
+        <div className="flex items-center justify-between mb-6 pb-4 border-b border-[var(--border-subtle)]">
+          <h4 className="text-sm font-semibold text-[var(--foreground)] uppercase tracking-wider">
+            {mode === 'create' ? 'New Sandbox' : `${sandboxId} - OpenShell Policy`}
+          </h4>
+          <button onClick={savePolicy} disabled={saving} className="px-4 py-2 rounded-sm bg-[var(--nvidia-green)] text-white text-xs font-mono uppercase tracking-wider disabled:opacity-50">
+            {saving ? "Working..." : mode === 'create' ? 'Create Sandbox' : 'Save Policy'}
+          </button>
+        </div>
+      )}
       {loading ? <div className="text-sm text-[var(--foreground-dim)]">Loading policy…</div> : <div className="space-y-8">
         {mode === 'create' && <section className="space-y-4 rounded-sm border border-[var(--border-subtle)] bg-[var(--background-tertiary)] p-4"><div><h5 className="text-xs uppercase tracking-wider text-[var(--foreground)]">Create Sandbox</h5><p className="text-xs text-[var(--foreground-dim)] mt-1">Choose a template and enter a sandbox name.</p></div><div className="grid grid-cols-1 md:grid-cols-2 gap-4">{blueprints.map((bp) => <button key={bp.id} type="button" onClick={() => setSelectedBlueprint(bp.id)} className={`rounded-sm border p-4 text-left ${selectedBlueprint === bp.id ? 'border-[var(--nvidia-green)] bg-[rgba(118,185,0,0.08)]' : 'border-[var(--border-subtle)] bg-[var(--background)]'}`}><div className="flex items-center justify-between gap-3"><span className="text-sm font-semibold text-[var(--foreground)] uppercase tracking-wider">{bp.label}</span><Badge tone={bp.type === 'custom' ? 'static' : 'dynamic'}>{bp.type}</Badge></div><p className="text-xs text-[var(--foreground-dim)] mt-2">{bp.description}</p></button>)}</div><div><label className="text-xs uppercase tracking-wider text-[var(--foreground-dim)]">Sandbox Name<FieldHelp text="Lowercase letters, numbers, and hyphens only." /></label><input value={sandboxName} onChange={(e) => setSandboxName(e.target.value)} placeholder={selectedBlueprint === 'nemoclaw-blueprint' ? 'my-assistant' : 'custom-sandbox'} className="mt-2 w-full rounded-sm border border-[var(--border-subtle)] bg-[var(--background)] px-3 py-2 text-xs font-mono text-[var(--foreground)]" /></div>{activeBlueprint?.supportsTailscale && <label className="flex items-center gap-3 text-sm text-[var(--foreground)] font-mono"><input type="checkbox" checked={enableTailscale} onChange={(e) => setEnableTailscale(e.target.checked)} /> Enable Tailscale</label>}{enableTailscale && <div className="rounded-sm border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-300">Tailscale-enabled creation requires NVIDIA_API_KEY in the dashboard process environment.</div>}</section>}
         <section className="space-y-4"><div className="flex items-center justify-between gap-4 flex-wrap"><div><h5 className="text-xs uppercase tracking-wider text-[var(--foreground)]">Security Presets</h5><p className="text-xs text-[var(--foreground-dim)] mt-1">Use a canned profile for new sandboxes or switch an existing sandbox policy baseline on the fly.</p></div><div className="min-w-[260px]"><select value={selectedPreset} onChange={(e) => { const value = e.target.value as SecurityPresetId | ''; setSelectedPreset(value); if (value) applyPreset(value) }} className="w-full rounded-sm border border-[var(--border-subtle)] bg-[var(--background-tertiary)] px-3 py-2 text-xs font-mono text-[var(--foreground)]"><option value="">Select preset…</option>{SECURITY_PRESETS.map((preset) => <option key={preset.id} value={preset.id}>{preset.label}</option>)}</select></div></div>{activePreset && <div className="rounded-sm border border-[var(--border-subtle)] bg-[var(--background-tertiary)] p-4 space-y-3"><div className="flex items-center gap-3 flex-wrap"><span className="text-sm font-semibold text-[var(--foreground)] uppercase tracking-wider">{activePreset.label}</span></div><p className="text-sm text-[var(--foreground-dim)]">{activePreset.summary}</p></div>}</section>
         <section className="space-y-4"><div className="flex items-center gap-3"><h5 className="text-xs uppercase tracking-wider text-[var(--foreground)]">Filesystem Policy</h5><Badge tone="static">Static</Badge></div><label className="flex items-center gap-3 text-sm text-[var(--foreground)] font-mono"><input type="checkbox" checked={policy.filesystem_policy.include_workdir} onChange={(e) => setPolicy({ ...policy, filesystem_policy: { ...policy.filesystem_policy, include_workdir: e.target.checked } })} />Include workdir<FieldHelp text="Automatically adds the agent working directory to read_write. Static: changing this requires recreating the sandbox." /></label><div className="grid grid-cols-1 md:grid-cols-2 gap-4"><TextListEditor label="Read-only paths" tooltipText="Absolute paths the sandbox can read but not modify. Paths not listed are inaccessible." value={policy.filesystem_policy.read_only} onChange={(v) => setPolicy({ ...policy, filesystem_policy: { ...policy.filesystem_policy, read_only: v } })} placeholder="/usr\n/lib\n/etc" /><TextListEditor label="Read-write paths" tooltipText="Absolute paths the sandbox can read and write. Keep this scoped; broad paths are rejected." value={policy.filesystem_policy.read_write} onChange={(v) => setPolicy({ ...policy, filesystem_policy: { ...policy.filesystem_policy, read_write: v } })} placeholder="/sandbox\n/tmp" /></div></section>
         <section className="space-y-4"><div className="flex items-center gap-3"><h5 className="text-xs uppercase tracking-wider text-[var(--foreground)]">Network Policies</h5><Badge tone="dynamic">Dynamic</Badge></div><button onClick={addBlock} className="px-3 py-2 rounded-sm bg-[var(--background-tertiary)] text-xs font-mono uppercase tracking-wider hover:bg-[var(--background-panel)]">Add policy block</button></section>
         {mode === 'existing' && <section className="space-y-3"><h5 className="text-xs uppercase tracking-wider text-[var(--foreground)]">Policy JSON</h5><pre className="overflow-auto rounded-sm border border-[var(--border-subtle)] bg-[var(--background-tertiary)] p-4 text-[11px] leading-5 text-[var(--foreground)]">{JSON.stringify(assembledPolicy, null, 2)}</pre></section>}
+        {!showHeader && <button onClick={savePolicy} disabled={saving} className="px-4 py-2 rounded-sm bg-[var(--nvidia-green)] text-white text-xs font-mono uppercase tracking-wider disabled:opacity-50">{saving ? "Working..." : mode === 'create' ? 'Create Sandbox' : 'Save Policy'}</button>}
         {message && <div className="text-sm text-[var(--foreground-dim)] whitespace-pre-wrap">{message}</div>}
       </div>}
     </div>

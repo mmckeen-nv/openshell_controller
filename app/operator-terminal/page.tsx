@@ -73,6 +73,7 @@ function OperatorTerminalInner() {
   const [terminalState, setTerminalState] = useState<'idle' | 'connecting' | 'connected' | 'error'>('idle')
   const [terminalStatus, setTerminalStatus] = useState<string>('Terminal not connected yet.')
   const [liveSession, setLiveSession] = useState<LiveTerminalSession | null>(null)
+  const [showRecovery, setShowRecovery] = useState(false)
 
   const terminalContainerRef = useRef<HTMLDivElement | null>(null)
   const terminalRef = useRef<XTermInstance | null>(null)
@@ -267,43 +268,47 @@ function OperatorTerminalInner() {
   const shellHint = data?.attach?.shellHint || DEFAULT_SHELL_HINT
 
   return (
-    <main className="min-h-screen bg-[var(--background)] text-[var(--foreground)] p-8">
-      <div className="mx-auto max-w-6xl space-y-6">
-        <div className="flex items-start justify-between gap-4 flex-wrap">
+    <main className="min-h-screen bg-[var(--background)] text-[var(--foreground)] p-6">
+      <div className="mx-auto max-w-7xl space-y-5">
+        <div className="flex items-center justify-between gap-4 flex-wrap">
           <div>
-            <p className="text-[10px] uppercase tracking-[0.25em] text-[var(--foreground-dim)] font-mono">Operator path</p>
-            <h1 className="text-2xl font-semibold uppercase tracking-wider mt-2">Operator Terminal</h1>
-            <p className="text-sm text-[var(--foreground-dim)] mt-3 max-w-3xl">{sandboxId ? 'Live operator terminal for the selected sandbox, brokered through the dashboard-owned terminal bridge.' : 'Live operator terminal for host mode, brokered through the dashboard-owned terminal bridge.'}</p>
-            <p className="text-[11px] text-[var(--foreground-dim)] font-mono mt-2">OpenShell operator terminal</p>
+            <p className="text-[10px] uppercase tracking-[0.25em] text-[var(--foreground-dim)] font-mono">OpenShell Control</p>
+            <h1 className="text-xl font-semibold uppercase tracking-wider mt-2">Operator Terminal</h1>
           </div>
           <Link href="/" className="px-4 py-2 rounded-sm bg-[var(--background-tertiary)] text-[var(--foreground)] text-xs font-mono uppercase tracking-wider hover:bg-[var(--background-panel)]">Back to Dashboard</Link>
         </div>
 
-        <section className={`panel p-6 border-2 ${readiness.tone}`}>
+        <section className={`panel px-4 py-3 border ${readiness.tone}`}>
           <div className="flex items-center justify-between gap-4 flex-wrap">
-            <div><p className="text-[10px] uppercase tracking-[0.2em] font-mono opacity-80">Sandbox</p><h2 className="text-lg font-semibold mt-1">{sandboxId || 'HOST'}</h2></div>
-            <div><p className="text-[10px] uppercase tracking-[0.2em] font-mono opacity-80">Dashboard Session</p><h2 className="text-lg font-semibold mt-1">{dashboardSessionId.slice(0, 8)}</h2></div>
-            <div className="text-right"><p className="text-[10px] uppercase tracking-[0.2em] font-mono opacity-80">Status</p><p className="text-sm font-mono mt-1">{readiness.label}</p>{lastCheckedAt && <p className="text-[10px] mt-1 opacity-80">Last checked {lastCheckedAt}</p>}</div>
+            <div className="flex items-center gap-3 min-w-0">
+              <span className="text-[10px] uppercase tracking-[0.2em] text-[var(--foreground-dim)] font-mono">Sandbox</span>
+              <span className="text-sm font-mono text-[var(--foreground)] truncate">{sandboxId || 'host'}</span>
+            </div>
+            <div className="flex items-center gap-3 min-w-0">
+              <span className="text-[10px] uppercase tracking-[0.2em] text-[var(--foreground-dim)] font-mono">Status</span>
+              <span className="text-xs font-mono truncate">{readiness.label}</span>
+              {lastCheckedAt && <span className="text-[10px] text-[var(--foreground-dim)]">checked {lastCheckedAt}</span>}
+            </div>
           </div>
-          <p className="text-sm mt-4 text-[var(--foreground)]">{readiness.detail}</p>
         </section>
 
         <section className="panel p-6 space-y-4">
           <div className="flex items-center justify-between gap-3 flex-wrap">
-            <div><h3 className="text-sm font-semibold uppercase tracking-wider">Live Dashboard Terminal</h3><p className="text-xs text-[var(--foreground-dim)] mt-2">Browser terminal backed by the dashboard terminal server.</p></div>
+            <div><h3 className="text-sm font-semibold uppercase tracking-wider">Live Terminal</h3></div>
             <div className="text-[11px] text-[var(--foreground-dim)] font-mono">{terminalStatus}</div>
           </div>
-          <div className="rounded-sm border border-[var(--border-subtle)] bg-black p-3"><div ref={terminalContainerRef} className="h-[520px] w-full" /></div>
+          <div className="rounded-sm border border-[var(--border-subtle)] bg-black p-3"><div ref={terminalContainerRef} className="h-[68vh] min-h-[460px] w-full" /></div>
           <div className="flex items-center gap-3 flex-wrap">
             <button onClick={ensureLiveSession} disabled={terminalState === 'connecting'} className="px-3 py-2 rounded-sm border border-[var(--border-subtle)] text-xs font-mono uppercase tracking-wider hover:border-[var(--nvidia-green)] disabled:opacity-50 disabled:cursor-not-allowed">{terminalState === 'connecting' ? 'Connecting…' : 'Reconnect Live Terminal'}</button>
             <button onClick={refreshReadiness} disabled={!sandboxId} className="px-3 py-2 rounded-sm border border-[var(--border-subtle)] text-xs font-mono uppercase tracking-wider hover:border-[var(--nvidia-green)] disabled:opacity-50 disabled:cursor-not-allowed">Refresh Readiness</button>
+            <button onClick={() => setShowRecovery((current) => !current)} className="px-3 py-2 rounded-sm border border-[var(--border-subtle)] text-xs font-mono uppercase tracking-wider hover:border-[var(--nvidia-green)]">{showRecovery ? 'Hide Recovery' : 'Recovery Commands'}</button>
             <span className="text-[11px] text-[var(--foreground-dim)] font-mono">{liveSession?.sessionId ? `session ${liveSession.sessionId.slice(0, 8)}` : 'no session'}</span>
           </div>
         </section>
 
-        <section className="grid grid-cols-1 xl:grid-cols-[1.1fr_0.9fr] gap-6">
-          <div className="panel p-6 space-y-5">
-            <div><h3 className="text-sm font-semibold uppercase tracking-wider">Direct Attach Fallbacks</h3><p className="text-xs text-[var(--foreground-dim)] mt-2">If the live dashboard terminal is degraded, these remain the authoritative escape hatches.</p></div>
+        {showRecovery && (
+          <section className="panel p-6 space-y-5">
+            <div><h3 className="text-sm font-semibold uppercase tracking-wider">Recovery Commands</h3><p className="text-xs text-[var(--foreground-dim)] mt-2">{readiness.detail}</p></div>
             <div className="space-y-3">
               <div className="rounded-sm border border-[var(--border-subtle)] bg-[var(--background-tertiary)] p-4"><p className="text-[10px] uppercase tracking-[0.2em] text-[var(--foreground-dim)] font-mono">Preferred attach command</p><code className="block mt-2 text-sm font-mono text-[var(--nvidia-green)] break-all">{aliasCommand}</code><button onClick={() => copyCommand(aliasCommand)} className="mt-3 px-3 py-2 rounded-sm border border-[var(--border-subtle)] text-xs font-mono uppercase tracking-wider hover:border-[var(--nvidia-green)]">Copy Alias Command</button></div>
               <div className="rounded-sm border border-[var(--border-subtle)] bg-[var(--background-tertiary)] p-4 space-y-3">
@@ -312,8 +317,8 @@ function OperatorTerminalInner() {
               </div>
             </div>
             {copyMessage && <div className="rounded-sm border border-[var(--border-subtle)] bg-[var(--background-tertiary)] p-3 text-xs text-[var(--foreground-dim)]">{copyMessage}</div>}
-          </div>
-        </section>
+          </section>
+        )}
       </div>
     </main>
   )

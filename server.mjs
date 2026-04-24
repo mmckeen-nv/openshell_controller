@@ -1,9 +1,24 @@
 import http from 'node:http'
 import crypto from 'node:crypto'
+import { existsSync, readFileSync } from 'node:fs'
 import net from 'node:net'
 import tls from 'node:tls'
 import next from 'next'
 import { WebSocketServer, WebSocket } from 'ws'
+
+function loadLocalEnvFile(pathname) {
+  if (!existsSync(pathname)) return
+  const lines = readFileSync(pathname, 'utf8').split(/\r?\n/)
+  for (const line of lines) {
+    const trimmed = line.trim()
+    if (!trimmed || trimmed.startsWith('#')) continue
+    const match = trimmed.match(/^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/)
+    if (!match || process.env[match[1]]) continue
+    process.env[match[1]] = match[2].replace(/^['"]|['"]$/g, '')
+  }
+}
+
+loadLocalEnvFile('.env.local')
 
 const dev = process.env.NODE_ENV !== 'production'
 const hostname = process.env.HOSTNAME || process.env.HOST || '0.0.0.0'
@@ -19,6 +34,7 @@ const defaultDashboardUrl = process.env.OPENCLAW_DASHBOARD_URL || 'http://127.0.
 const defaultInstanceId = 'default'
 const sandboxDashboardPortBase = Number.parseInt(process.env.OPENCLAW_SANDBOX_DASHBOARD_PORT_BASE || '19000', 10)
 const sandboxDashboardPortRange = 2000
+const authCookieName = 'openshell_control_session'
 
 function now() {
   return new Date().toISOString()
@@ -30,6 +46,63 @@ function logBridge(event, fields = {}) {
     .map(([key, value]) => `${key}=${JSON.stringify(value)}`)
     .join(' ')
   console.log(`[terminal-bridge] ts=${now()} event=${event}${payload ? ` ${payload}` : ''}`)
+}
+
+function isAuthDisabled() {
+  return /^(1|true|yes|on)$/i.test(process.env.OPENSHELL_CONTROL_AUTH_DISABLED || '')
+}
+
+function getAuthSecret() {
+  return process.env.OPENSHELL_CONTROL_AUTH_SECRET || process.env.OPENSHELL_CONTROL_PASSWORD || ''
+}
+
+function base64UrlDecode(value) {
+  const normalized = value.replace(/-/g, '+').replace(/_/g, '/')
+  return Buffer.from(normalized.padEnd(Math.ceil(normalized.length / 4) * 4, '='), 'base64').toString('utf8')
+}
+
+function hmac(payload) {
+  return crypto.createHmac('sha256', getAuthSecret()).update(payload).digest('base64url')
+}
+
+function safeEqual(left, right) {
+  const leftBuffer = Buffer.from(left || '')
+  const rightBuffer = Buffer.from(right || '')
+  return leftBuffer.length === rightBuffer.length && crypto.timingSafeEqual(leftBuffer, rightBuffer)
+}
+
+function parseCookies(req) {
+  return String(req.headers.cookie || '')
+    .split(';')
+    .reduce((cookies, part) => {
+      const [rawName, ...rawValue] = part.trim().split('=')
+      if (!rawName) return cookies
+      cookies[rawName] = decodeURIComponent(rawValue.join('=') || '')
+      return cookies
+    }, {})
+}
+
+function isAuthenticatedUpgrade(req) {
+  if (isAuthDisabled()) return true
+  if (!process.env.OPENSHELL_CONTROL_PASSWORD) return false
+  const value = parseCookies(req)[authCookieName]
+  if (!value) return false
+  const [payload, signature] = value.split('.')
+  if (!payload || !signature || !safeEqual(signature, hmac(payload))) return false
+  try {
+    const parsed = JSON.parse(base64UrlDecode(payload))
+    return typeof parsed.exp === 'number' && parsed.exp > Math.floor(Date.now() / 1000)
+  } catch {
+    return false
+  }
+}
+
+function rejectUnauthorizedUpgrade(req, socket, path) {
+  logBridge('upgrade-auth-rejected', {
+    path,
+    remoteAddress: req.socket.remoteAddress || 'unknown',
+  })
+  socket.end('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\nContent-Length: 0\r\n\r\n')
 }
 
 function buildTerminalUpstreamUrl(req) {
@@ -455,6 +528,10 @@ clientWss.on('connection', (client, req) => {
 
 server.on('upgrade', (req, socket, head) => {
   if ((req.url || '').startsWith(terminalProxyPath)) {
+    if (!isAuthenticatedUpgrade(req)) {
+      rejectUnauthorizedUpgrade(req, socket, req.url || '/')
+      return
+    }
     logBridge('upgrade-accepted', {
       path: req.url || '/',
       remoteAddress: req.socket.remoteAddress || 'unknown',
@@ -469,6 +546,10 @@ server.on('upgrade', (req, socket, head) => {
     (req.url || '').startsWith(legacyDashboardProxyPrefix) ||
     (req.url || '').startsWith(instancesProxyPrefix)
   ) {
+    if (!isAuthenticatedUpgrade(req)) {
+      rejectUnauthorizedUpgrade(req, socket, req.url || '/')
+      return
+    }
     const { upstreamWsUrl, instanceId, controlUiOrigin } = resolveDashboardUpstream(req)
     logBridge('dashboard-upgrade-accepted', {
       path: req.url || '/',
@@ -496,6 +577,10 @@ dashboardWsProxyServer.on('upgrade', (req, socket, head) => {
     (req.url || '').startsWith(legacyDashboardProxyPrefix) ||
     (req.url || '').startsWith(instancesProxyPrefix)
   ) {
+    if (!isAuthenticatedUpgrade(req)) {
+      rejectUnauthorizedUpgrade(req, socket, req.url || '/')
+      return
+    }
     const { upstreamWsUrl, instanceId, controlUiOrigin } = resolveDashboardUpstream(req)
     logBridge('dashboard-sidecar-upgrade-accepted', {
       path: req.url || '/',

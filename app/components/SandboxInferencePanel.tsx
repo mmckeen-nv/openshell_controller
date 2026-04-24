@@ -54,7 +54,15 @@ function dedupeRoutes(routes: SandboxInferenceRoute[]) {
     .map((route) => [route.id || routeKey(route), { ...route, id: route.id || routeKey(route) }])).values())
 }
 
-export default function SandboxInferencePanel({ sandbox }: { sandbox: SandboxInventoryItem }) {
+export default function SandboxInferencePanel({
+  sandbox,
+  embedded = false,
+  showHeader = true,
+}: {
+  sandbox: SandboxInventoryItem
+  embedded?: boolean
+  showHeader?: boolean
+}) {
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [applying, setApplying] = useState(false)
@@ -221,29 +229,42 @@ export default function SandboxInferencePanel({ sandbox }: { sandbox: SandboxInv
   }
 
   return (
-    <div className="panel p-6">
-      <div className="flex items-center justify-between gap-4 border-b border-[var(--border-subtle)] pb-4">
-        <div>
-          <h4 className="text-sm font-semibold text-[var(--foreground)] uppercase tracking-wider">
-            {sandbox.name} - INFERENCE ROUTES
-          </h4>
-          <p className="mt-1 text-xs text-[var(--foreground-dim)]">
-            Enable multiple endpoint/model routes for this sandbox.
-          </p>
+    <div className={embedded ? "" : "panel p-6"}>
+      {showHeader && (
+        <div className="flex items-center justify-between gap-4 border-b border-[var(--border-subtle)] pb-4">
+          <div>
+            <h4 className="text-sm font-semibold text-[var(--foreground)] uppercase tracking-wider">
+              {sandbox.name} - INFERENCE ROUTES
+            </h4>
+            <p className="mt-1 text-xs text-[var(--foreground-dim)]">
+              Enable multiple endpoint/model routes for this sandbox.
+            </p>
+          </div>
+          <button
+            onClick={load}
+            disabled={loading || saving}
+            className="px-3 py-2 rounded-sm bg-[var(--background-tertiary)] text-[var(--foreground)] text-xs font-mono uppercase tracking-wider hover:border-[var(--nvidia-green)] border border-[var(--border-subtle)] disabled:opacity-50"
+          >
+            Refresh
+          </button>
         </div>
-        <button
-          onClick={load}
-          disabled={loading || saving}
-          className="px-3 py-2 rounded-sm bg-[var(--background-tertiary)] text-[var(--foreground)] text-xs font-mono uppercase tracking-wider hover:border-[var(--nvidia-green)] border border-[var(--border-subtle)] disabled:opacity-50"
-        >
-          Refresh
-        </button>
-      </div>
+      )}
 
       {loading ? (
         <div className="py-8 text-xs uppercase tracking-wider text-[var(--foreground-dim)]">Loading inference routes...</div>
       ) : (
-        <div className="mt-5 space-y-5">
+        <div className={`${showHeader ? "mt-5" : ""} space-y-5`}>
+          {!showHeader && (
+            <div className="flex justify-end">
+              <button
+                onClick={load}
+                disabled={loading || saving}
+                className="px-3 py-2 rounded-sm bg-[var(--background-tertiary)] text-[var(--foreground)] text-xs font-mono uppercase tracking-wider hover:border-[var(--nvidia-green)] border border-[var(--border-subtle)] disabled:opacity-50"
+              >
+                Refresh
+              </button>
+            </div>
+          )}
           {primaryRoute && (
             <div className="metric p-4">
               <p className="text-[10px] uppercase tracking-wider text-[var(--foreground-dim)]">Primary Route</p>
