@@ -6,16 +6,20 @@ const root = process.cwd()
 const createRoutePath = path.join(root, 'app/api/sandbox/create/route.ts')
 const deleteRoutePath = path.join(root, 'app/api/sandbox/delete/route.ts')
 const telemetryRoutePath = path.join(root, 'app/api/telemetry/real/route.ts')
+const inferenceRoutePath = path.join(root, 'app/api/inference/route.ts')
 const hookPath = path.join(root, 'app/hooks/useSandboxInventory.ts')
 const pagePath = path.join(root, 'app/page.tsx')
 const configPanelPath = path.join(root, 'app/components/ConfigurationPanel.tsx')
+const inferencePanelPath = path.join(root, 'app/components/InferenceEndpointPanel.tsx')
 
 const createRouteSource = await readFile(createRoutePath, 'utf8')
 const deleteRouteSource = await readFile(deleteRoutePath, 'utf8')
 const telemetryRouteSource = await readFile(telemetryRoutePath, 'utf8')
+const inferenceRouteSource = await readFile(inferenceRoutePath, 'utf8')
 const hookSource = await readFile(hookPath, 'utf8')
 const pageSource = await readFile(pagePath, 'utf8')
 const configPanelSource = await readFile(configPanelPath, 'utf8')
+const inferencePanelSource = await readFile(inferencePanelPath, 'utf8')
 
 assert.match(
   createRouteSource,
@@ -44,6 +48,12 @@ assert.match(deleteRouteSource, /openShellAlreadyGone/, 'delete route must toler
 assert.match(deleteRouteSource, /isNemoClawSandboxNotRegistered/, 'delete route must tolerate NemoClaw registry entries that were already cleaned up')
 assert.match(telemetryRouteSource, /const names = parseOpenShellSandboxNames\(sandboxListStdout\)/, 'telemetry must derive inventory from OpenShell before consulting NemoClaw')
 assert.match(telemetryRouteSource, /names\.length > 0[\s\S]*execNemoclaw\(\["list"\]\)[\s\S]*execNemoclaw\(\["status"\]\)/, 'telemetry must skip NemoClaw list/status when OpenShell reports zero live sandboxes')
+assert.match(inferenceRouteSource, /\["provider", "create", "--name", name, "--type", type\]/, 'inference route must create OpenShell providers')
+assert.match(inferenceRouteSource, /\["provider", "update", name\]/, 'inference route must update existing OpenShell providers')
+assert.match(inferenceRouteSource, /\["inference", "set", "--provider", name, "--model", model\]/, 'inference route must set the active OpenShell inference route')
+assert.match(inferenceRouteSource, /OPENAI_BASE_URL=\$\{baseUrl\}/, 'inference route must pass endpoint URL as provider config')
+assert.match(inferencePanelSource, /INFERENCE ENDPOINTS/, 'settings UI must expose inference endpoint configuration')
+assert.match(pageSource, /<InferenceEndpointPanel \/>/, 'settings view must render inference endpoint panel')
 
 assert.match(pageSource, /fetch\('\/api\/sandbox\/delete'/, 'destroy workflow must call the real sandbox delete endpoint')
 assert.match(pageSource, /refresh\(\{ force: true \}\)/, 'create and destroy workflows must force fresh inventory reads')

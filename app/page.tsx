@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState } from 'react'
 import Sidebar from './components/Sidebar'
 import SandboxList from './components/SandboxList'
 import ConfigurationPanel from './components/ConfigurationPanel'
+import InferenceEndpointPanel from './components/InferenceEndpointPanel'
 import { useSandboxInventory } from './hooks/useSandboxInventory'
 import {
   createHydrationSafeDashboardSessionState,
@@ -200,6 +201,7 @@ export default function Dashboard() {
                     </div>
                   </div>
                 </div>
+                <InferenceEndpointPanel />
               </div>
             ) : isCreateMode ? (
               <div className="space-y-6">
