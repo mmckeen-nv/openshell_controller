@@ -57,6 +57,7 @@ function dedupeRoutes(routes: SandboxInferenceRoute[]) {
 export default function SandboxInferencePanel({ sandbox }: { sandbox: SandboxInventoryItem }) {
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
+  const [applying, setApplying] = useState(false)
   const [message, setMessage] = useState("")
   const [providers, setProviders] = useState<ProviderSummary[]>([])
   const [routes, setRoutes] = useState<SandboxInferenceRoute[]>([])
@@ -197,6 +198,28 @@ export default function SandboxInferencePanel({ sandbox }: { sandbox: SandboxInv
     }
   }
 
+  async function applyToContainer() {
+    try {
+      setApplying(true)
+      setMessage("")
+      const cleanRoutes = dedupeRoutes(routes)
+      if (cleanRoutes.length === 0) throw new Error("Add at least one provider/model route before applying.")
+      await save()
+      const response = await fetch(`/api/sandbox/${encodeURIComponent(sandbox.id)}/inference/apply`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sandboxName: sandbox.name }),
+      })
+      const data = await response.json()
+      if (!response.ok) throw new Error(data.note ? `${data.error}\n\n${data.note}` : data.error || "Failed to apply routes")
+      setMessage(`${data.routesApplied} route${data.routesApplied === 1 ? "" : "s"} applied to ${sandbox.name}. ${data.note}`)
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Failed to apply routes")
+    } finally {
+      setApplying(false)
+    }
+  }
+
   return (
     <div className="panel p-6">
       <div className="flex items-center justify-between gap-4 border-b border-[var(--border-subtle)] pb-4">
@@ -308,6 +331,9 @@ export default function SandboxInferencePanel({ sandbox }: { sandbox: SandboxInv
           <div className="flex items-center gap-3 flex-wrap">
             <button onClick={save} disabled={saving} className="px-4 py-2 rounded-sm bg-[var(--nvidia-green)] text-white text-xs font-mono uppercase tracking-wider disabled:opacity-50">
               {saving ? "Saving..." : "Save Sandbox Routes"}
+            </button>
+            <button onClick={applyToContainer} disabled={saving || applying} className="px-4 py-2 rounded-sm bg-[var(--background-tertiary)] text-[var(--foreground)] text-xs font-mono uppercase tracking-wider hover:border-[var(--nvidia-green)] border border-[var(--border-subtle)] disabled:opacity-50">
+              {applying ? "Applying..." : "Apply to Running Container"}
             </button>
             {updatedAt && <span className="text-[11px] text-[var(--foreground-dim)]">Updated {new Date(updatedAt).toLocaleString()}</span>}
             {message && <span className="text-xs text-[var(--foreground-dim)] whitespace-pre-wrap">{message}</span>}
