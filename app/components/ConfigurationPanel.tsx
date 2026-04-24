@@ -134,6 +134,7 @@ export default function ConfigurationPanel({ sandboxId, mode = 'existing', onCre
         setMessage([
           `Sandbox '${data.sandboxName}' created.`,
           data.verification?.summary,
+          data.note,
         ].filter(Boolean).join('\n\n'))
         if (createdSandboxId && onCreateSuccess) {
           await onCreateSuccess(createdSandboxId)

@@ -286,10 +286,42 @@ function hasDashboardToken(value: string | null) {
   }
 }
 
+function rewriteDashboardBootstrapOrigin(bootstrapUrl: string, dashboardUrl: string) {
+  const bootstrap = new URL(bootstrapUrl)
+  const dashboard = new URL(dashboardUrl)
+  bootstrap.protocol = dashboard.protocol
+  bootstrap.host = dashboard.host
+  return bootstrap.toString()
+}
+
 export async function resolveOpenClawDashboardBootstrap(instanceId?: string | null) {
   const instance = resolveOpenClawInstance(instanceId)
   const defaultInstance = getDefaultOpenClawInstance()
   const canMintBootstrapFromCli = instance.id === defaultInstance.id
+  const sandboxInstance = resolveSandboxInstanceId(instance.id)
+
+  if (sandboxInstance) {
+    try {
+      const { stdout, stderr } = await execSandboxSsh(sandboxInstance.sandboxId, 'openclaw dashboard --no-open', 15000)
+      const combined = `${stdout}\n${stderr}`
+      const rawBootstrapUrl = normalizeDashboardBootstrapUrl(combined)
+      const bootstrapUrl = rawBootstrapUrl
+        ? rewriteDashboardBootstrapOrigin(rawBootstrapUrl, instance.dashboardUrl)
+        : null
+      const bootstrapTokenPresent = hasDashboardToken(bootstrapUrl)
+
+      if (bootstrapUrl) {
+        return {
+          bootstrapUrl,
+          bootstrapTokenPresent,
+          bootstrapSource: 'openclaw-cli' as const,
+          bootstrapAuthority: bootstrapTokenPresent ? ('tokenized-cli' as const) : ('static-fallback' as const),
+        }
+      }
+    } catch {
+      // Fall through to configured instance URL when sandbox CLI minting is unavailable.
+    }
+  }
 
   if (canMintBootstrapFromCli) {
     try {

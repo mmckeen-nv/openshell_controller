@@ -45,9 +45,14 @@ type SandboxVerification = {
 }
 
 const AUTHORITATIVE_SUCCESS_PHASE = "Ready"
+const NO_PENDING_DEVICE_REQUESTS = /no pending device pairing requests/i
 
 function elapsedMs(start: number) {
   return Date.now() - start
+}
+
+function appendNote(...parts: Array<string | false | null | undefined>) {
+  return parts.filter(Boolean).join(" ")
 }
 
 async function verifySandboxCreation(sandboxName: string): Promise<SandboxVerification> {
@@ -207,6 +212,46 @@ async function runCreateCommandBounded(file: string, args: string[], env: NodeJS
   })
 }
 
+async function approveOpenClawDeviceRequests(sandboxName: string) {
+  const result = await runCreateCommandBounded(OPENSHELL_BIN, [
+    "sandbox",
+    "exec",
+    "-n",
+    sandboxName,
+    "--",
+    "sh",
+    "-lc",
+    "openclaw devices approve --latest --json --timeout 10000",
+  ], {
+    ...process.env,
+    PATH: HOST_PATH,
+    OPENSHELL_GATEWAY: process.env.OPENSHELL_GATEWAY || "nemoclaw",
+    NO_COLOR: "1",
+    CLICOLOR: "0",
+    CLICOLOR_FORCE: "0",
+  }, 15000)
+
+  const combinedOutput = `${result.stdout}\n${result.stderr}`.trim()
+  const noPending = NO_PENDING_DEVICE_REQUESTS.test(combinedOutput)
+  return {
+    attempted: true,
+    approved: result.completed && result.exitCode === 0,
+    noPending,
+    completed: result.completed,
+    timedOut: result.timedOut,
+    exitCode: result.exitCode,
+    signal: result.signal,
+    stdout: result.stdout,
+    stderr: result.stderr,
+    error: noPending ? undefined : result.error,
+    note: result.completed && result.exitCode === 0
+      ? "Ran openclaw devices approve --latest inside the sandbox."
+      : noPending
+        ? "Ran openclaw devices approve --latest inside the sandbox; no pending device pairing requests were present."
+        : "Attempted openclaw device approval inside the sandbox, but it did not complete successfully.",
+  }
+}
+
 async function waitForSandboxReady(sandboxName: string, timeoutMs: number, intervalMs: number) {
   const startedAt = Date.now()
   let lastVerification: SandboxVerification | null = null
@@ -306,8 +351,9 @@ export async function POST(request: Request) {
         error: "Sandbox readiness polling produced no verification result.",
       }
       const created = readiness.verified
+      const deviceApproval = created ? await approveOpenClawDeviceRequests(sandboxName) : null
       console.log(
-        `[sandbox/create] request:complete sandbox=${sandboxName} created=${created} readinessAttempts=${readiness.attempts} elapsedMs=${elapsedMs(requestStartedAt)}`,
+        `[sandbox/create] request:complete sandbox=${sandboxName} created=${created} readinessAttempts=${readiness.attempts} deviceApproval=${deviceApproval?.approved ?? false} elapsedMs=${elapsedMs(requestStartedAt)}`,
       )
 
       return NextResponse.json({
@@ -325,12 +371,16 @@ export async function POST(request: Request) {
           attempts: readiness.attempts,
           elapsedMs: readiness.elapsedMs,
         },
+        deviceApproval,
         stdout: result.stdout,
         stderr: result.stderr,
         note: created
-          ? (enableTailscale
-              ? "NemoClaw blueprint workflow completed with Tailscale-enabled prerequisites. Existing healthy OpenShell gateways are reused before any new gateway start is attempted."
-              : "NemoClaw blueprint workflow completed in local/default mode. Existing healthy OpenShell gateways are reused before any new gateway start is attempted.")
+          ? appendNote(
+              enableTailscale
+                ? "NemoClaw blueprint workflow completed with Tailscale-enabled prerequisites. Existing healthy OpenShell gateways are reused before any new gateway start is attempted."
+                : "NemoClaw blueprint workflow completed in local/default mode. Existing healthy OpenShell gateways are reused before any new gateway start is attempted.",
+              deviceApproval?.note,
+            )
           : "Blueprint command reported success, but the sandbox never reached a ready verification state afterward.",
       }, { status: created ? 200 : 502 })
     }
@@ -363,9 +413,10 @@ export async function POST(request: Request) {
         error: "Sandbox readiness polling produced no verification result.",
       }
       const created = readiness.verified
+      const deviceApproval = created ? await approveOpenClawDeviceRequests(sandboxName) : null
       const policyPrepared = Boolean(policy)
       console.log(
-        `[sandbox/create] request:complete sandbox=${sandboxName} created=${created} createTimedOut=${createAttempt.timedOut} readinessAttempts=${readiness.attempts} elapsedMs=${elapsedMs(requestStartedAt)}`,
+        `[sandbox/create] request:complete sandbox=${sandboxName} created=${created} createTimedOut=${createAttempt.timedOut} readinessAttempts=${readiness.attempts} deviceApproval=${deviceApproval?.approved ?? false} elapsedMs=${elapsedMs(requestStartedAt)}`,
       )
       return NextResponse.json({
         ok: created,
@@ -388,13 +439,17 @@ export async function POST(request: Request) {
           attempts: readiness.attempts,
           elapsedMs: readiness.elapsedMs,
         },
+        deviceApproval,
         policyPrepared,
         note: created
-          ? (createAttempt.timedOut
-              ? "Custom sandbox reached Ready even though the create CLI did not exit promptly."
-              : (policyPrepared
-                  ? "Custom sandbox created. Policy draft is prepared, but applying it live should be a follow-up action."
-                  : "Custom sandbox created."))
+          ? appendNote(
+              createAttempt.timedOut
+                ? "Custom sandbox reached Ready even though the create CLI did not exit promptly."
+                : (policyPrepared
+                    ? "Custom sandbox created. Policy draft is prepared, but applying it live should be a follow-up action."
+                    : "Custom sandbox created."),
+              deviceApproval?.note,
+            )
           : "Create command started, but the sandbox never reached a ready verification state afterward.",
       }, { status: created ? 200 : 502 })
     }

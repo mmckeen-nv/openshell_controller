@@ -1,5 +1,7 @@
 import { NextResponse } from "next/server"
 import { spawn } from "node:child_process"
+import { applySandboxInferenceProfile } from "@/app/lib/sandboxInferenceApply"
+import { getSandboxInferenceConfig } from "@/app/lib/sandboxInferenceStore"
 import { inspectSandbox, resolveSandboxRef } from "@/app/lib/openshellHost"
 
 const DOCKER_BIN = process.env.DOCKER_BIN || "docker"
@@ -67,6 +69,14 @@ export async function POST(
     }
 
     const readiness = await waitForSandboxReady(sandboxName, 90000, 2000)
+    let inferenceApply = null
+    if (readiness.ready) {
+      const inferenceConfig = await getSandboxInferenceConfig(resolved.id)
+      if (inferenceConfig.routes.some((route) => route.enabled)) {
+        inferenceApply = await applySandboxInferenceProfile(resolved.id, sandboxName)
+      }
+    }
+
     return NextResponse.json({
       ok: readiness.ready,
       restarted: readiness.ready,
@@ -74,9 +84,12 @@ export async function POST(
       sandboxName,
       deletion: deleted,
       readiness,
+      inferenceApply,
       elapsedMs: Date.now() - startedAt,
       note: readiness.ready
-        ? "Sandbox pod restarted and OpenShell reports it Ready."
+        ? inferenceApply
+          ? "Sandbox pod restarted, OpenShell reports it Ready, and the saved inference profile was reapplied."
+          : "Sandbox pod restarted and OpenShell reports it Ready."
         : "Restart was requested, but OpenShell has not reported the sandbox Ready yet.",
     }, { status: readiness.ready ? 200 : 202 })
   } catch (error) {

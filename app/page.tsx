@@ -52,6 +52,29 @@ export default function Dashboard() {
     setTheme(theme === 'light' ? 'dark' : 'light')
   }
 
+  useEffect(() => {
+    if (!inventoryEnabled || loading || isCreateMode || isDestroyMode) return
+    if (sandboxes.length === 0) {
+      if (dashboardSession.selectedSandboxId) {
+        setDashboardSession((current) => updateDashboardSessionSelection(current, null))
+      }
+      return
+    }
+
+    const selectedStillExists = sandboxes.some((sandbox) => sandbox.id === dashboardSession.selectedSandboxId)
+    if (selectedStillExists) return
+
+    const nextSelection = sandboxes.find((sandbox) => sandbox.isDefault)?.id || sandboxes[0]?.id || null
+    setDashboardSession((current) => updateDashboardSessionSelection(current, nextSelection))
+  }, [
+    dashboardSession.selectedSandboxId,
+    inventoryEnabled,
+    isCreateMode,
+    isDestroyMode,
+    loading,
+    sandboxes,
+  ])
+
   const handleSandboxSelect = (id: string | null) => {
     if (isDestroyMode && id) {
       setDeletingSandboxId(id)
