@@ -1,7 +1,7 @@
 import { execFile, spawn } from "node:child_process"
 import { existsSync } from "node:fs"
 import { promisify } from "node:util"
-import { getDefaultOpenClawInstance, resolveOpenClawInstance } from "./openclawInstances"
+import { getDefaultOpenClawInstance, getOpenClawDashboardPortForSandbox, resolveOpenClawInstance } from "./openclawInstances"
 
 const execFileAsync = promisify(execFile)
 
@@ -30,6 +30,7 @@ const OPENCLAW_BIN =
   OPENCLAW_BIN_CANDIDATES.find((candidate) => existsSync(candidate)) ?? OPENCLAW_BIN_CANDIDATES[0] ?? "openclaw"
 const OPENSHELL_GATEWAY = process.env.OPENSHELL_GATEWAY || "openshell"
 const OPENSHELL_NAMESPACE = "agent-sandbox-system"
+const SANDBOX_DASHBOARD_REMOTE_PORT = Number.parseInt(process.env.OPENCLAW_SANDBOX_DASHBOARD_REMOTE_PORT || "18789", 10)
 
 export type HostTelemetry = {
   cpu: number
@@ -324,6 +325,8 @@ export async function resolveOpenClawDashboardBootstrap(instanceId?: string | nu
 async function ensureOpenClawDashboardListener(instanceId: string, port: number) {
   const instance = resolveOpenClawInstance(instanceId)
   const defaultInstance = getDefaultOpenClawInstance()
+  const sandboxInstance = resolveSandboxInstanceId(instance.id)
+  if (sandboxInstance) return ensureSandboxOpenClawDashboardTunnel(sandboxInstance.sandboxId)
   if (instance.id !== defaultInstance.id) return inspectListeningPort(port)
 
   const initial = await inspectListeningPort(port)
@@ -337,6 +340,79 @@ async function ensureOpenClawDashboardListener(instanceId: string, port: number)
   child.unref()
 
   return waitForListeningPort(port)
+}
+
+function resolveSandboxInstanceId(instanceId: string) {
+  const match = instanceId.match(/^sandbox-(\d+)-(.+)$/)
+  if (!match) return null
+  const port = Number.parseInt(match[1], 10)
+  const sandboxId = match[2]
+  if (!Number.isFinite(port) || !sandboxId) return null
+  return { port, sandboxId }
+}
+
+function buildSandboxSshArgs(sandboxName: string, extraArgs: string[]) {
+  return [
+    "-o", "BatchMode=yes",
+    "-o", "StrictHostKeyChecking=no",
+    "-o", "UserKnownHostsFile=/dev/null",
+    "-o", "GlobalKnownHostsFile=/dev/null",
+    "-o", "LogLevel=ERROR",
+    "-o", `ProxyCommand=${OPENSHELL_BIN} ssh-proxy --gateway-name nemoclaw --name ${sandboxName}`,
+    `sandbox@openshell-${sandboxName}`,
+    ...extraArgs,
+  ]
+}
+
+async function execSandboxSsh(sandboxName: string, command: string, timeoutMs = 10000) {
+  return execFileAsync("ssh", buildSandboxSshArgs(sandboxName, [command]), {
+    timeout: timeoutMs,
+    maxBuffer: 2 * 1024 * 1024,
+    env: buildOpenClawEnv(),
+  })
+}
+
+async function ensureRemoteSandboxOpenClawDashboard(sandboxName: string) {
+  const command = [
+    `curl -fsS --max-time 2 http://127.0.0.1:${SANDBOX_DASHBOARD_REMOTE_PORT}/ >/dev/null 2>&1`,
+    "||",
+    `(nohup /usr/local/bin/openclaw gateway run --allow-unconfigured --bind loopback --port ${SANDBOX_DASHBOARD_REMOTE_PORT} >/tmp/gateway.log 2>&1 &)`
+  ].join(" ")
+
+  await execSandboxSsh(sandboxName, command).catch(() => null)
+
+  for (let attempt = 0; attempt < 16; attempt += 1) {
+    try {
+      await execSandboxSsh(sandboxName, `curl -fsS --max-time 2 http://127.0.0.1:${SANDBOX_DASHBOARD_REMOTE_PORT}/ >/dev/null`, 5000)
+      return true
+    } catch {
+      await sleep(500)
+    }
+  }
+
+  return false
+}
+
+async function ensureSandboxOpenClawDashboardTunnel(sandboxName: string) {
+  const port = getOpenClawDashboardPortForSandbox(sandboxName)
+  if (!port) return inspectListeningPort(SANDBOX_DASHBOARD_REMOTE_PORT)
+
+  const initial = await inspectListeningPort(port)
+  if (initial.listenerPresent) return initial
+
+  await ensureRemoteSandboxOpenClawDashboard(sandboxName)
+
+  const child = spawn("ssh", buildSandboxSshArgs(sandboxName, [
+    "-N",
+    "-L", `127.0.0.1:${port}:127.0.0.1:${SANDBOX_DASHBOARD_REMOTE_PORT}`,
+  ]), {
+    detached: true,
+    env: buildOpenClawEnv(),
+    stdio: "ignore",
+  })
+  child.unref()
+
+  return waitForListeningPort(port, 8000)
 }
 
 export async function probeOpenClawDashboard(instanceId?: string | null): Promise<DashboardProbe> {

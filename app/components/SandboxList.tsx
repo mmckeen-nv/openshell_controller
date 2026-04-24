@@ -167,7 +167,7 @@ export default function SandboxList({
                       onClick={async () => {
                         try {
                           const searchParams = new URLSearchParams()
-                          searchParams.set('sandboxId', selectedSandbox.id)
+                          searchParams.set('sandboxId', selectedSandbox.name)
                           searchParams.set('inventoryCount', String(sandboxes.length))
                           const res = await fetch(`/api/openshell/dashboard/open?${searchParams.toString()}`)
                           const data = await res.json()

@@ -17,6 +17,8 @@ const instancesProxyPrefix = '/api/openshell/instances/'
 const dashboardProxySuffix = '/dashboard/proxy'
 const defaultDashboardUrl = process.env.OPENCLAW_DASHBOARD_URL || 'http://127.0.0.1:18789/'
 const defaultInstanceId = 'default'
+const sandboxDashboardPortBase = Number.parseInt(process.env.OPENCLAW_SANDBOX_DASHBOARD_PORT_BASE || '19000', 10)
+const sandboxDashboardPortRange = 2000
 
 function now() {
   return new Date().toISOString()
@@ -115,7 +117,7 @@ function parseOpenClawInstanceRegistry() {
 function parseSandboxInstanceMap() {
   const defaultMap = process.env.MY_ASSISTANT_OPENCLAW_INSTANCE_ID?.trim()
     ? { 'my-assistant': process.env.MY_ASSISTANT_OPENCLAW_INSTANCE_ID.trim() }
-    : { 'my-assistant': defaultInstanceId }
+    : {}
   const raw = process.env.OPENCLAW_SANDBOX_INSTANCE_MAP_JSON?.trim()
   if (!raw) return defaultMap
 
@@ -144,12 +146,46 @@ function getDefaultOpenClawInstance() {
 function resolveOpenClawInstance(instanceId) {
   const requested = typeof instanceId === 'string' ? instanceId.trim() : ''
   if (!requested) return getDefaultOpenClawInstance()
+  const sandboxInstance = resolveSandboxOpenClawInstance(requested)
+  if (sandboxInstance) return sandboxInstance
   return openClawInstances.find((entry) => entry.id === requested) || getDefaultOpenClawInstance()
 }
 
 function getMappedOpenClawInstanceId(sandboxId) {
   const requested = typeof sandboxId === 'string' ? sandboxId.trim() : ''
-  return requested ? openClawSandboxInstanceMap[requested] || null : null
+  return requested ? openClawSandboxInstanceMap[requested] || buildSandboxOpenClawInstanceId(requested) : null
+}
+
+function hashSandboxId(value) {
+  let hash = 0
+  for (let index = 0; index < value.length; index += 1) {
+    hash = ((hash << 5) - hash + value.charCodeAt(index)) | 0
+  }
+  return Math.abs(hash)
+}
+
+function getSandboxOpenClawPort(sandboxId) {
+  return sandboxDashboardPortBase + (hashSandboxId(sandboxId) % sandboxDashboardPortRange)
+}
+
+function buildSandboxOpenClawInstanceId(sandboxId) {
+  return `sandbox-${getSandboxOpenClawPort(sandboxId)}-${sandboxId}`
+}
+
+function resolveSandboxOpenClawInstance(instanceId) {
+  const requested = typeof instanceId === 'string' ? instanceId.trim() : ''
+  const match = requested.match(/^sandbox-(\d+)-(.+)$/)
+  if (!match) return null
+  const port = Number.parseInt(match[1], 10)
+  if (!Number.isFinite(port)) return null
+  return {
+    id: requested,
+    label: `OpenClaw for ${match[2]}`,
+    dashboardUrl: `http://127.0.0.1:${port}/`,
+    terminalServerUrl: process.env.TERMINAL_SERVER_URL || 'http://127.0.0.1:3011',
+    loopbackOnly: true,
+    default: false,
+  }
 }
 
 function resolveDashboardUpstream(req) {

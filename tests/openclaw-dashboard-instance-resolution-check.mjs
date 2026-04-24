@@ -10,13 +10,23 @@ const sandboxListPath = path.join(root, 'app/components/SandboxList.tsx')
 const instancesSource = await readFile(instancesPath, 'utf8')
 assert.match(
   instancesSource,
-  /MY_ASSISTANT_OPENCLAW_INSTANCE_ID/,
-  'openclaw instance registry should expose a dedicated my-assistant env mapping seam'
+  /buildSandboxOpenClawInstanceId/,
+  'openclaw instance registry should synthesize per-sandbox dashboard instance ids'
+)
+assert.doesNotMatch(
+  instancesSource,
+  /: \{ 'my-assistant': DEFAULT_INSTANCE_ID \}/,
+  'my-assistant must not silently collapse to the default host dashboard'
 )
 assert.match(
   instancesSource,
   /OPENCLAW_SANDBOX_INSTANCE_MAP_JSON/,
   'openclaw instance registry should allow additive sandbox->instance JSON mappings'
+)
+assert.match(
+  instancesSource,
+  /getOpenClawDashboardPortForSandbox/,
+  'openclaw instance registry should allocate stable local tunnel ports per sandbox'
 )
 assert.match(
   instancesSource,
@@ -64,8 +74,8 @@ assert.match(
 const sandboxListSource = await readFile(sandboxListPath, 'utf8')
 assert.match(
   sandboxListSource,
-  /searchParams\.set\('sandboxId', selectedSandbox\.id\)/,
-  'sandbox list must pass selected sandboxId when opening the dashboard'
+  /searchParams\.set\('sandboxId', selectedSandbox\.name\)/,
+  'sandbox list must pass the selected sandbox name when opening the dashboard'
 )
 assert.match(
   sandboxListSource,

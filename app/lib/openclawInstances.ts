@@ -10,6 +10,9 @@ export type OpenClawInstanceRecord = {
 const DEFAULT_OPENCLAW_DASHBOARD_URL = 'http://127.0.0.1:18789/'
 const DEFAULT_TERMINAL_SERVER_URL = process.env.TERMINAL_SERVER_URL || 'http://127.0.0.1:3011'
 const DEFAULT_INSTANCE_ID = 'default'
+const SANDBOX_INSTANCE_PREFIX = 'sandbox'
+const SANDBOX_DASHBOARD_PORT_BASE = Number.parseInt(process.env.OPENCLAW_SANDBOX_DASHBOARD_PORT_BASE || '19000', 10)
+const SANDBOX_DASHBOARD_PORT_RANGE = 2000
 
 const DEFAULT_INSTANCE: OpenClawInstanceRecord = {
   id: DEFAULT_INSTANCE_ID,
@@ -72,9 +75,9 @@ function parseRegistryFromEnv(): OpenClawInstanceRecord[] {
 }
 
 const OPENCLAW_INSTANCE_REGISTRY = parseRegistryFromEnv()
-const DEFAULT_SANDBOX_INSTANCE_MAP = process.env.MY_ASSISTANT_OPENCLAW_INSTANCE_ID?.trim()
+const DEFAULT_SANDBOX_INSTANCE_MAP: Record<string, string> = process.env.MY_ASSISTANT_OPENCLAW_INSTANCE_ID?.trim()
   ? { 'my-assistant': process.env.MY_ASSISTANT_OPENCLAW_INSTANCE_ID.trim() }
-  : { 'my-assistant': DEFAULT_INSTANCE_ID }
+  : {}
 
 function parseSandboxInstanceMapFromEnv(): Record<string, string> {
   const raw = process.env.OPENCLAW_SANDBOX_INSTANCE_MAP_JSON?.trim()
@@ -105,6 +108,54 @@ function parseSandboxInstanceMapFromEnv(): Record<string, string> {
 
 const OPENCLAW_SANDBOX_INSTANCE_MAP = parseSandboxInstanceMapFromEnv()
 
+function normalizeSandboxId(value?: string | null) {
+  if (typeof value !== 'string') return ''
+  return value.trim()
+}
+
+function hashSandboxId(value: string) {
+  let hash = 0
+  for (let index = 0; index < value.length; index += 1) {
+    hash = ((hash << 5) - hash + value.charCodeAt(index)) | 0
+  }
+  return Math.abs(hash)
+}
+
+export function getOpenClawDashboardPortForSandbox(sandboxId?: string | null) {
+  const normalized = normalizeSandboxId(sandboxId)
+  if (!normalized) return null
+  return SANDBOX_DASHBOARD_PORT_BASE + (hashSandboxId(normalized) % SANDBOX_DASHBOARD_PORT_RANGE)
+}
+
+export function buildSandboxOpenClawInstanceId(sandboxId?: string | null) {
+  const normalized = normalizeSandboxId(sandboxId)
+  const port = getOpenClawDashboardPortForSandbox(normalized)
+  if (!normalized || !port) return null
+  return `${SANDBOX_INSTANCE_PREFIX}-${port}-${normalized}`
+}
+
+function parseSandboxOpenClawInstanceId(instanceId: string) {
+  const match = instanceId.match(/^sandbox-(\d+)-(.+)$/)
+  if (!match) return null
+  const port = Number.parseInt(match[1], 10)
+  const sandboxId = match[2]
+  if (!Number.isFinite(port) || !sandboxId) return null
+  return { port, sandboxId }
+}
+
+function resolveSandboxOpenClawInstance(instanceId: string): OpenClawInstanceRecord | null {
+  const parsed = parseSandboxOpenClawInstanceId(instanceId)
+  if (!parsed) return null
+  return {
+    id: instanceId,
+    label: `OpenClaw for ${parsed.sandboxId}`,
+    dashboardUrl: `http://127.0.0.1:${parsed.port}/`,
+    terminalServerUrl: DEFAULT_TERMINAL_SERVER_URL,
+    loopbackOnly: true,
+    default: false,
+  }
+}
+
 export function listOpenClawInstances() {
   return OPENCLAW_INSTANCE_REGISTRY.map((entry) => ({ ...entry }))
 }
@@ -116,13 +167,15 @@ export function getDefaultOpenClawInstance() {
 export function resolveOpenClawInstance(instanceId?: string | null) {
   const requested = typeof instanceId === 'string' ? instanceId.trim() : ''
   if (!requested) return getDefaultOpenClawInstance()
+  const sandboxInstance = resolveSandboxOpenClawInstance(requested)
+  if (sandboxInstance) return sandboxInstance
   return OPENCLAW_INSTANCE_REGISTRY.find((entry) => entry.id === requested) || getDefaultOpenClawInstance()
 }
 
 export function getOpenClawInstanceIdForSandbox(sandboxId?: string | null) {
-  const requestedSandboxId = typeof sandboxId === 'string' ? sandboxId.trim() : ''
+  const requestedSandboxId = normalizeSandboxId(sandboxId)
   if (!requestedSandboxId) return null
-  return OPENCLAW_SANDBOX_INSTANCE_MAP[requestedSandboxId] || null
+  return OPENCLAW_SANDBOX_INSTANCE_MAP[requestedSandboxId] || buildSandboxOpenClawInstanceId(requestedSandboxId)
 }
 
 export function resolveOpenClawInstanceForSandbox(sandboxId?: string | null) {

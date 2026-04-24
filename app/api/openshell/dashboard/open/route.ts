@@ -79,7 +79,7 @@ export async function GET(request: Request) {
         ? 'bridged'
         : 'verified'
 
-  const proxiedUrl = authority.explicitInstanceOverride ? instanceQualifiedProxyBase : '/api/openshell/dashboard/proxy'
+  const proxiedUrl = authority.bridgeActive ? instanceQualifiedProxyBase : '/api/openshell/dashboard/proxy'
   const launchUrl = buildLaunchUrl(request, requestUrl, proxiedUrl, probe.bootstrapUrl)
 
   return NextResponse.json({
