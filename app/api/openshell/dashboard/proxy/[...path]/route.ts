@@ -1,4 +1,4 @@
-import { proxyErrorResponse, proxyOpenClawDashboard } from './shared'
+import { proxyErrorResponse, proxyOpenClawDashboard } from '../shared'
 
 export async function GET(request: Request) {
   try {

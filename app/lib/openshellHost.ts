@@ -1,160 +1,443 @@
-import { execFile } from 'node:child_process'
-import type { ExecFileException } from 'node:child_process'
-import { promisify } from 'node:util'
+import { execFile, spawn } from "node:child_process"
+import { existsSync } from "node:fs"
+import { promisify } from "node:util"
+import { getDefaultOpenClawInstance, resolveOpenClawInstance } from "./openclawInstances"
 
 const execFileAsync = promisify(execFile)
 
-const DOCKER_BIN = '/Applications/Docker.app/Contents/Resources/bin/docker'
-const OPENSHELL_CONTAINER = 'openshell-cluster-openshell'
-const OPENSHELL_NAMESPACE = 'agent-sandbox-system'
-const OPENCLAW_DASHBOARD_URL = 'http://127.0.0.1:18789/'
-const DEFAULT_EXEC_TIMEOUT_MS = 10000
-const MAX_COMMAND_LENGTH = 400
-const SANDBOX_ID_PATTERN = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/
+const OPENSHELL_BIN_CANDIDATES = [
+  process.env.OPENSHELL_BIN,
+  process.env.HOME ? `${process.env.HOME}/.local/bin/openshell` : undefined,
+  "/Users/markmckeen/.local/bin/openshell",
+  "/Users/markmckeen/OpenShell/target/release/openshell",
+  "/Users/markmckeen/openshell/target/release/openshell",
+  "/Users/markmckeen/openshell/scripts/bin/openshell",
+  "/usr/local/bin/openshell",
+  "/opt/homebrew/bin/openshell",
+].filter((value): value is string => Boolean(value))
 
-type ExecResult = {
-  stdout: string
-  stderr: string
-  exitCode: number
+const OPENCLAW_BIN_CANDIDATES = [
+  process.env.OPENCLAW_BIN,
+  process.env.HOME ? `${process.env.HOME}/NemoClaw/node_modules/.bin/openclaw` : undefined,
+  process.env.HOME ? `${process.env.HOME}/.local/bin/openclaw` : undefined,
+  "/usr/local/bin/openclaw",
+  "/opt/homebrew/bin/openclaw",
+].filter((value): value is string => Boolean(value))
+
+const OPENSHELL_BIN =
+  OPENSHELL_BIN_CANDIDATES.find((candidate) => existsSync(candidate)) ?? OPENSHELL_BIN_CANDIDATES[0]
+const OPENCLAW_BIN =
+  OPENCLAW_BIN_CANDIDATES.find((candidate) => existsSync(candidate)) ?? OPENCLAW_BIN_CANDIDATES[0] ?? "openclaw"
+const OPENSHELL_GATEWAY = process.env.OPENSHELL_GATEWAY || "openshell"
+const OPENSHELL_NAMESPACE = "agent-sandbox-system"
+
+export type HostTelemetry = {
+  cpu: number
+  memory: number
+  disk: number
+  gpuMemoryUsed?: number
+  gpuMemoryTotal?: number
+  gpuTemperature?: number
+  timestamp: string
+  source: "macos-host"
 }
 
-function normalizeExecError(error: unknown): ExecResult {
-  const execError = error as ExecFileException & { stdout?: string, stderr?: string, code?: number | string | null }
+type SandboxInspection = {
+  name: string
+  id: string | null
+  namespace: string | null
+  phase: string | null
+  rawPhase: string | null
+  sshHostAlias: string
+  sshConfig: string
+  rawDetails: string
+}
+
+export type DashboardProbe = {
+  reachable: boolean
+  status: number | null
+  statusText: string
+  listenerPresent: boolean
+  listenerSummary: string | null
+  bootstrapUrl: string | null
+  bootstrapTokenPresent: boolean
+  bootstrapSource: 'openclaw-cli' | 'static-dashboard-url' | 'unavailable'
+  bootstrapAuthority: 'tokenized-cli' | 'static-fallback' | 'none'
+}
+
+export async function execOpenShell(args: string[]) {
+  const { stdout, stderr } = await execFileAsync(OPENSHELL_BIN, args, {
+    env: {
+      ...process.env,
+      NO_COLOR: "1",
+      CLICOLOR: "0",
+      CLICOLOR_FORCE: "0",
+    },
+  })
+  return { stdout, stderr }
+}
+
+function buildOpenClawEnv() {
+  const pathEntries = [
+    process.env.HOME ? `${process.env.HOME}/NemoClaw/node_modules/.bin` : null,
+    process.env.HOME ? `${process.env.HOME}/.local/bin` : null,
+    process.env.PATH,
+  ].filter(Boolean)
+
   return {
-    stdout: typeof execError?.stdout === 'string' ? execError.stdout : '',
-    stderr: typeof execError?.stderr === 'string' ? execError.stderr : '',
-    exitCode: typeof execError?.code === 'number' ? execError.code : -1,
+    ...process.env,
+    PATH: pathEntries.join(":"),
+    NO_COLOR: "1",
+    CLICOLOR: "0",
+    CLICOLOR_FORCE: "0",
   }
 }
 
-export async function dockerExecInOpenShell(command: string, timeoutMs = DEFAULT_EXEC_TIMEOUT_MS): Promise<ExecResult> {
+async function execOpenClaw(args: string[]) {
+  const { stdout, stderr } = await execFileAsync(OPENCLAW_BIN, args, {
+    env: buildOpenClawEnv(),
+  })
+  return { stdout, stderr }
+}
+
+async function execBash(command: string) {
+  const { stdout } = await execFileAsync("/bin/bash", ["-lc", command])
+  return stdout.trim()
+}
+
+function clampPercentage(value: number) {
+  if (!Number.isFinite(value)) return 0
+  return Math.max(0, Math.min(100, value))
+}
+
+function stripAnsi(value: string) {
+  return value.replace(/\u001b\[[0-9;]*m/g, "")
+}
+
+function parseField(output: string, label: string) {
+  const normalizedLabel = label.toLowerCase()
+  const line = output
+    .split(/\r?\n/)
+    .map((entry) => stripAnsi(entry).trim())
+    .find((entry) => entry.toLowerCase().startsWith(`${normalizedLabel}:`))
+
+  return line ? line.slice(label.length + 1).trim() : null
+}
+
+function parseSshHostAlias(sshConfig: string, fallbackName: string) {
+  const hostLine = sshConfig
+    .split(/\r?\n/)
+    .map((entry) => entry.trim())
+    .find((entry) => entry.toLowerCase().startsWith("host "))
+
+  const alias = hostLine
+    ?.split(/\s+/)
+    .slice(1)
+    .find((entry) => entry !== "*")
+
+  return alias || `openshell-${fallbackName}`
+}
+
+function parseOpenShellSandboxNames(output: string) {
+  return output
+    .split(/\r?\n/)
+    .map((entry) => stripAnsi(entry).trim())
+    .filter((entry) => entry && !/^name\s+/i.test(entry) && !/^[-=]+$/.test(entry))
+    .map((entry) => entry.split(/\s{2,}/)[0]?.trim())
+    .filter((entry): entry is string => Boolean(entry))
+}
+
+export async function resolveSandboxRef(ref: string) {
+  const requested = ref.trim()
+
   try {
-    const { stdout, stderr } = await execFileAsync(
-      DOCKER_BIN,
-      [
-        'exec',
-        OPENSHELL_CONTAINER,
-        'sh',
-        '-lc',
-        command,
-      ],
-      {
-        timeout: timeoutMs,
-        maxBuffer: 1024 * 1024,
-      }
-    )
-    return { stdout, stderr, exitCode: 0 }
-  } catch (error) {
-    const normalized = normalizeExecError(error)
-    if (normalized.exitCode !== -1 || normalized.stdout || normalized.stderr) {
-      return normalized
+    const { stdout } = await execOpenShell(["sandbox", "get", requested])
+    return {
+      requested,
+      name: parseField(stdout, "Name") ?? requested,
+      id: parseField(stdout, "Id") ?? requested,
+      details: stdout.trim(),
+      resolvedBy: "direct" as const,
     }
-    throw error
+  } catch (directError) {
+    const { stdout: sandboxListStdout } = await execOpenShell(["sandbox", "list"])
+    const names = parseOpenShellSandboxNames(sandboxListStdout)
+
+    for (const name of names) {
+      try {
+        const { stdout } = await execOpenShell(["sandbox", "get", name])
+        const sandboxId = parseField(stdout, "Id")
+        const sandboxName = parseField(stdout, "Name") ?? name
+
+        if (requested === sandboxId || requested === sandboxName) {
+          return {
+            requested,
+            name: sandboxName,
+            id: sandboxId ?? sandboxName,
+            details: stdout.trim(),
+            resolvedBy: requested === sandboxName ? ("list-name" as const) : ("list-id" as const),
+          }
+        }
+      } catch {
+        // Ignore individual sandbox lookup failures while resolving a ref.
+      }
+    }
+
+    throw directError
   }
 }
 
-type SandboxExecPlan = {
-  command: string
-  mode: 'shell' | 'env'
+export function normalizeSandboxPhase(phase: string | null) {
+  const value = (phase ?? "Unknown").toLowerCase()
+
+  switch (value) {
+    case "ready":
+      return "Running"
+    case "provisioning":
+      return "Pending"
+    case "deleting":
+      return "Stopping"
+    case "error":
+      return "Error"
+    default:
+      return phase ?? "Unknown"
+  }
 }
 
-function buildSandboxExecPlans(podName: string, shellCommand: string, options?: { allowEnvFallback?: boolean }): SandboxExecPlan[] {
-  const escaped = quoteForSingleQuotedShell(shellCommand)
-  const attempts: SandboxExecPlan[] = [
-    {
-      command: `kubectl -n ${OPENSHELL_NAMESPACE} exec ${podName} -- /bin/sh -lc '${escaped}'`,
-      mode: 'shell',
-    },
-    {
-      command: `kubectl -n ${OPENSHELL_NAMESPACE} exec ${podName} -- /busybox/sh -lc '${escaped}'`,
-      mode: 'shell',
-    },
-  ]
+async function readCpuUsage() {
+  const output = await execBash("top -l 1 -n 0 | grep CPU")
+  const match = output.match(/([\d.]+)% idle/)
+  const idle = match ? Number.parseFloat(match[1]) : 0
+  return clampPercentage(100 - idle)
+}
 
-  if (options?.allowEnvFallback) {
-    attempts.push({
-      command: `kubectl -n ${OPENSHELL_NAMESPACE} exec ${podName} -- env`,
-      mode: 'env',
+async function readMemoryUsage() {
+  const output = await execBash("vm_stat")
+  const pageSize = Number.parseInt(output.match(/page size of (\d+) bytes/i)?.[1] ?? "4096", 10)
+  const valueFor = (label: string) => {
+    const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+    const match = output.match(new RegExp(`${escaped}:\\s+(\\d+)\\.?`, "i"))
+    return Number.parseInt(match?.[1] ?? "0", 10)
+  }
+
+  const active = valueFor("Pages active")
+  const wired = valueFor("Pages wired down")
+  const compressed = valueFor("Pages occupied by compressor")
+  const speculative = valueFor("Pages speculative")
+  const inactive = valueFor("Pages inactive")
+  const free = valueFor("Pages free")
+  const totalPages = active + wired + compressed + speculative + inactive + free
+  const usedPages = active + wired + compressed + speculative
+
+  if (totalPages === 0) {
+    return 0
+  }
+
+  return clampPercentage((usedPages * pageSize * 100) / (totalPages * pageSize))
+}
+
+async function readDiskUsage() {
+  const output = await execBash("df -k / | tail -1")
+  const columns = output.split(/\s+/)
+  const usedPercent = columns[4]?.replace("%", "") ?? "0"
+  return clampPercentage(Number.parseFloat(usedPercent))
+}
+
+async function inspectListeningPort(port: number) {
+  const summary = await execBash(`lsof -nP -iTCP:${port} -sTCP:LISTEN 2>/dev/null || true`)
+
+  return {
+    listenerPresent: summary.length > 0,
+    listenerSummary: summary || null,
+  }
+}
+
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+async function waitForListeningPort(port: number, timeoutMs = 5000) {
+  const deadline = Date.now() + timeoutMs
+  let latest = await inspectListeningPort(port)
+
+  while (!latest.listenerPresent && Date.now() < deadline) {
+    await sleep(250)
+    latest = await inspectListeningPort(port)
+  }
+
+  return latest
+}
+
+function normalizeDashboardBootstrapUrl(value: string) {
+  const trimmed = value.trim()
+  if (!trimmed) return null
+  const match = trimmed.match(/https?:\/\/\S+/)
+  return match ? match[0] : null
+}
+
+function hasDashboardToken(value: string | null) {
+  if (!value) return false
+  try {
+    const parsed = new URL(value)
+    return parsed.hash.includes('token=') || parsed.searchParams.has('token')
+  } catch {
+    return /[#?&]token=/.test(value)
+  }
+}
+
+export async function resolveOpenClawDashboardBootstrap(instanceId?: string | null) {
+  const instance = resolveOpenClawInstance(instanceId)
+  const defaultInstance = getDefaultOpenClawInstance()
+  const canMintBootstrapFromCli = instance.id === defaultInstance.id
+
+  if (canMintBootstrapFromCli) {
+    try {
+      const { stdout, stderr } = await execOpenClaw(['dashboard', '--no-open'])
+      const combined = `${stdout}\n${stderr}`
+      const bootstrapUrl = normalizeDashboardBootstrapUrl(combined)
+      const bootstrapTokenPresent = hasDashboardToken(bootstrapUrl)
+
+      if (bootstrapUrl) {
+        return {
+          bootstrapUrl,
+          bootstrapTokenPresent,
+          bootstrapSource: 'openclaw-cli' as const,
+          bootstrapAuthority: bootstrapTokenPresent ? ('tokenized-cli' as const) : ('static-fallback' as const),
+        }
+      }
+    } catch {
+      // Fall through to configured instance URL when CLI minting is unavailable.
+    }
+  }
+
+  const bootstrapTokenPresent = hasDashboardToken(instance.dashboardUrl)
+  return {
+    bootstrapUrl: instance.dashboardUrl,
+    bootstrapTokenPresent,
+    bootstrapSource: instance.dashboardUrl ? ('static-dashboard-url' as const) : ('unavailable' as const),
+    bootstrapAuthority: instance.dashboardUrl
+      ? (bootstrapTokenPresent ? ('tokenized-cli' as const) : ('static-fallback' as const))
+      : ('none' as const),
+  }
+}
+
+async function ensureOpenClawDashboardListener(instanceId: string, port: number) {
+  const instance = resolveOpenClawInstance(instanceId)
+  const defaultInstance = getDefaultOpenClawInstance()
+  if (instance.id !== defaultInstance.id) return inspectListeningPort(port)
+
+  const initial = await inspectListeningPort(port)
+  if (initial.listenerPresent) return initial
+
+  const child = spawn(OPENCLAW_BIN, ['gateway', 'run', '--allow-unconfigured', '--bind', 'loopback', '--port', String(port)], {
+    detached: true,
+    env: buildOpenClawEnv(),
+    stdio: 'ignore',
+  })
+  child.unref()
+
+  return waitForListeningPort(port)
+}
+
+export async function probeOpenClawDashboard(instanceId?: string | null): Promise<DashboardProbe> {
+  const instance = resolveOpenClawInstance(instanceId)
+  const target = new URL(instance.dashboardUrl)
+  const port = Number.parseInt(target.port || (target.protocol === 'https:' ? '443' : '80'), 10)
+  const listener = await ensureOpenClawDashboardListener(instance.id, port)
+  const bootstrap = await resolveOpenClawDashboardBootstrap(instance.id)
+
+  try {
+    const response = await fetch(instance.dashboardUrl, {
+      method: 'GET',
+      cache: 'no-store',
+      headers: {
+        accept: 'text/html,application/json;q=0.9,*/*;q=0.8',
+      },
     })
-  }
 
-  return attempts
-}
-
-async function execInSandboxWithFallback(podName: string, shellCommand: string, options?: { allowEnvFallback?: boolean }) {
-  const attempts = buildSandboxExecPlans(podName, shellCommand, options)
-
-  let lastFailure: ({ mode: SandboxExecPlan['mode'] } & ExecResult) | undefined
-  for (const plan of attempts) {
-    const result = await dockerExecInOpenShell(plan.command)
-    if (result.exitCode === 0) {
-      return {
-        ...result,
-        mode: plan.mode,
-      }
+    return {
+      reachable: response.ok,
+      status: response.status,
+      statusText: response.statusText,
+      listenerPresent: listener.listenerPresent,
+      listenerSummary: listener.listenerSummary,
+      bootstrapUrl: bootstrap.bootstrapUrl,
+      bootstrapTokenPresent: bootstrap.bootstrapTokenPresent,
+      bootstrapSource: bootstrap.bootstrapSource,
+      bootstrapAuthority: bootstrap.bootstrapAuthority,
     }
-
-    lastFailure = {
-      ...result,
-      mode: plan.mode,
+  } catch (error) {
+    return {
+      reachable: false,
+      status: null,
+      statusText: error instanceof Error ? error.message : 'Dashboard probe failed',
+      listenerPresent: listener.listenerPresent,
+      listenerSummary: listener.listenerSummary,
+      bootstrapUrl: bootstrap.bootstrapUrl,
+      bootstrapTokenPresent: bootstrap.bootstrapTokenPresent,
+      bootstrapSource: bootstrap.bootstrapSource,
+      bootstrapAuthority: bootstrap.bootstrapAuthority,
     }
   }
+}
 
-  if (lastFailure) {
-    return lastFailure
+export async function readHostTelemetry(): Promise<HostTelemetry> {
+  const [cpu, memory, disk] = await Promise.all([readCpuUsage(), readMemoryUsage(), readDiskUsage()])
+
+  return {
+    cpu,
+    memory,
+    disk,
+    timestamp: new Date().toISOString(),
+    source: "macos-host",
   }
-
-  throw new Error('Failed to probe sandbox shell')
 }
 
-export async function probeSandboxShell(podName: string) {
-  const result = await execInSandboxWithFallback(podName, 'echo OPENSHELL_OK && pwd && whoami', { allowEnvFallback: true })
-  if (result.exitCode !== 0) {
-    throw new Error(result.stderr.trim() || result.stdout.trim() || `Shell probe failed with exit code ${result.exitCode}`)
+export async function inspectSandbox(ref: string): Promise<SandboxInspection> {
+  const resolved = await resolveSandboxRef(ref)
+  const [{ stdout: detailsStdout }, { stdout: sshStdout }] = await Promise.all([
+    Promise.resolve({ stdout: resolved.details }),
+    execOpenShell(["sandbox", "ssh-config", resolved.name]),
+  ])
+
+  const sshConfig = sshStdout.trim()
+
+  const rawPhase = parseField(detailsStdout, "Phase")
+
+  return {
+    name: parseField(detailsStdout, "Name") ?? resolved.name,
+    id: parseField(detailsStdout, "Id") ?? resolved.id,
+    namespace: parseField(detailsStdout, "Namespace"),
+    phase: normalizeSandboxPhase(rawPhase),
+    rawPhase,
+    sshHostAlias: parseSshHostAlias(sshConfig, resolved.name),
+    sshConfig,
+    rawDetails: detailsStdout.trim(),
   }
-  return result
 }
 
-function quoteForSingleQuotedShell(command: string) {
-  return command.replace(/'/g, `'"'"'`)
+export async function probeSandboxShell(name: string) {
+  return inspectSandbox(name)
 }
 
-export function validateSandboxId(sandboxId: string) {
-  const trimmed = sandboxId.trim()
+export function isOpenShellTransportError(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error ?? "")
+  const normalized = message.toLowerCase()
 
-  if (!trimmed) {
-    throw new Error('sandboxId is required')
-  }
-
-  if (!SANDBOX_ID_PATTERN.test(trimmed)) {
-    throw new Error('sandboxId must be a valid lowercase DNS-style identifier')
-  }
-
-  return trimmed
+  return (
+    normalized.includes("transport error") ||
+    normalized.includes("connection refused") ||
+    normalized.includes("tcp connect error")
+  )
 }
 
-export function validateTerminalCommand(command: string) {
-  const trimmed = command.trim()
-
-  if (!trimmed) {
-    throw new Error('command is required')
-  }
-
-  if (trimmed.length > MAX_COMMAND_LENGTH) {
-    throw new Error(`command exceeds ${MAX_COMMAND_LENGTH} characters`)
-  }
-
-  return trimmed
+export function getOpenClawDashboardUrl(instanceId?: string | null) {
+  return resolveOpenClawInstance(instanceId).dashboardUrl
 }
 
-export async function runSandboxCommand(podName: string, command: string) {
-  const trimmed = validateTerminalCommand(command)
-
-  return await execInSandboxWithFallback(podName, trimmed)
+export function getDefaultOpenClawDashboardInstanceId() {
+  return getDefaultOpenClawInstance().id
 }
 
-export function getOpenClawDashboardUrl() {
-  return OPENCLAW_DASHBOARD_URL
-}
-
-export { DEFAULT_EXEC_TIMEOUT_MS, DOCKER_BIN, MAX_COMMAND_LENGTH, OPENSHELL_CONTAINER, OPENSHELL_NAMESPACE }
+export { OPENSHELL_BIN, OPENSHELL_GATEWAY, OPENSHELL_NAMESPACE }
+export { OPENCLAW_BIN }

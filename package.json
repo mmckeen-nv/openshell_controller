@@ -3,9 +3,10 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev",
+    "dev": "node server.mjs",
+    "dev:proxy": "node server.mjs",
     "build": "next build",
-    "start": "next start",
+    "start": "node server.mjs",
     "lint": "next lint",
     "terminal-server": "node terminal-server.mjs"
   },

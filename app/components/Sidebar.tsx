@@ -1,16 +1,13 @@
 "use client"
-import { useState, useEffect } from 'react'
 
-interface Sandbox {
-  id: string
-  name: string
-  ip: string
-  status: 'running' | 'stopped' | 'unknown'
-}
+import type { NemoClawSummary, SandboxInventoryItem } from '../hooks/useSandboxInventory'
 
 interface SidebarProps {
   hostIP: string
-  selectedSandbox: string | null
+  sandboxes: SandboxInventoryItem[]
+  nemoclaw: NemoClawSummary | null
+  dashboardSessionId: string
+  selectedSandboxId: string | null
   onSandboxSelect: (id: string | null) => void
   isSubmenuOpen: boolean
   onToggleSubmenu: () => void
@@ -26,7 +23,10 @@ interface SidebarProps {
 
 export default function Sidebar({
   hostIP,
-  selectedSandbox,
+  sandboxes,
+  nemoclaw,
+  dashboardSessionId,
+  selectedSandboxId,
   onSandboxSelect,
   isSubmenuOpen,
   onToggleSubmenu,
@@ -39,49 +39,9 @@ export default function Sidebar({
   onSettingsClick,
   onExitMode
 }: SidebarProps) {
-  const [sandboxes, setSandboxes] = useState<Sandbox[]>([])
-
-  useEffect(() => {
-    const fetchSandboxes = async () => {
-      try {
-        const response = await fetch('/api/telemetry/real')
-        const data = await response.json()
-        
-        const items = data?.pods?.items || []
-        if (!Array.isArray(items)) {
-          setSandboxes([])
-          return
-        }
-        
-        const sandboxList = items
-          .filter((pod: any) => pod?.metadata?.namespace === 'agent-sandbox-system')
-          .map((pod: any) => ({
-            id: pod.metadata?.name || 'unknown',
-            name: pod.metadata?.name || 'Unknown Sandbox',
-            ip: pod.status?.podIP || 'N/A',
-            status: pod.status?.phase === 'Running' ? 'running' : 
-                    pod.status?.phase === 'Pending' ? 'pending' : 
-                    pod.status?.phase === 'Stopped' ? 'stopped' : 'unknown' as const
-          }))
-        
-        setSandboxes(sandboxList)
-      } catch (error) {
-        console.error('Error fetching sandboxes in Sidebar:', error)
-        setSandboxes([])
-      }
-    }
-
-    if (isSubmenuOpen || isDestroyMode || isCreateMode) {
-      fetchSandboxes()
-      const interval = setInterval(fetchSandboxes, 10000)
-      return () => clearInterval(interval)
-    }
-  }, [isSubmenuOpen, isDestroyMode, isCreateMode])
   return (
     <>
-      {/* Main Sidebar */}
       <aside className="fixed left-0 top-0 h-screen w-64 bg-[var(--background-secondary)] border-r border-[var(--border-subtle)] flex flex-col z-20">
-        {/* Host IP Header - Industrial Style */}
         <div className="p-4 border-b border-[var(--border-subtle)]">
           <div className="flex items-center gap-3">
             <div className="w-8 h-8 bg-[var(--nvidia-green)] rounded-sm flex items-center justify-center">
@@ -92,11 +52,11 @@ export default function Sidebar({
             <div>
               <p className="text-[10px] text-[var(--foreground-dim)] uppercase tracking-wider font-semibold">Host</p>
               <p className="text-sm font-mono text-[var(--nvidia-green)] tracking-tight">{hostIP}</p>
+              <p className="text-[10px] text-[var(--foreground-dim)] font-mono mt-1">session {dashboardSessionId.slice(0, 8)}</p>
             </div>
           </div>
         </div>
 
-        {/* Navigation Menu - Technical */}
         <nav className="flex-1 p-2">
           <button
             onClick={onToggleSubmenu}
@@ -112,19 +72,18 @@ export default function Sidebar({
               </svg>
               <span className="text-sm font-medium tracking-tight">Sandboxes</span>
             </span>
-            <svg 
-              className={`w-4 h-4 transition-transform ${isSubmenuOpen ? 'rotate-90' : ''}`} 
-              fill="none" 
-              stroke="currentColor" 
+            <svg
+              className={`w-4 h-4 transition-transform ${isSubmenuOpen ? 'rotate-90' : ''}`}
+              fill="none"
+              stroke="currentColor"
               viewBox="0 0 24 24"
             >
               <path strokeLinecap="square" strokeLinejoin="miter" strokeWidth={2} d="M9 5l7 7-7 7" />
             </svg>
           </button>
 
-          {/* Quick Actions - Technical Icons */}
           <div className="mt-4 space-y-1">
-            <button 
+            <button
               onClick={onCreateClick}
               className={`w-full flex items-center gap-3 px-3 py-2 rounded-sm transition-colors ${
                 isCreateMode
@@ -137,8 +96,8 @@ export default function Sidebar({
               </svg>
               <span className="text-sm">Create Sandbox</span>
             </button>
-            
-            <button 
+
+            <button
               onClick={onDestroyClick}
               className={`w-full flex items-center gap-3 px-3 py-2 rounded-sm transition-colors ${
                 isDestroyMode
@@ -153,7 +112,7 @@ export default function Sidebar({
             </button>
 
             {(isCreateMode || isDestroyMode) && (
-              <button 
+              <button
                 onClick={onExitMode}
                 className="w-full flex items-center gap-3 px-3 py-2 rounded-sm bg-[var(--background-tertiary)] text-[var(--foreground-dim)] hover:bg-[var(--background-panel)] transition-colors"
               >
@@ -163,27 +122,29 @@ export default function Sidebar({
                 <span className="text-sm">Cancel</span>
               </button>
             )}
-            
-            <button 
+
+            <button
               onClick={onSettingsClick}
               className={`w-full flex items-center gap-3 px-3 py-2 rounded-sm transition-colors ${
                 activeView === 'settings'
                   ? 'bg-[var(--nvidia-green)] text-white'
                   : 'hover:bg-[var(--background-tertiary)] text-[var(--foreground-dim)]'
-              }`}>
+              }`}
+            >
               <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="square" strokeLinejoin="miter" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
                 <path strokeLinecap="square" strokeLinejoin="miter" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
               </svg>
               <span className="text-sm">Settings</span>
             </button>
-            <button 
+            <button
               onClick={onOverviewClick}
               className={`w-full flex items-center gap-3 px-3 py-2 rounded-sm transition-colors ${
                 activeView === 'overview'
                   ? 'bg-[var(--nvidia-green)] text-white'
                   : 'hover:bg-[var(--background-tertiary)] text-[var(--foreground-dim)]'
-              }`}>
+              }`}
+            >
               <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="square" strokeLinejoin="miter" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
               </svg>
@@ -192,14 +153,12 @@ export default function Sidebar({
           </div>
         </nav>
 
-        {/* Footer - Technical */}
         <div className="p-4 border-t border-[var(--border-subtle)]">
           <p className="text-[10px] text-[var(--foreground-dim)] uppercase tracking-wider">OpenShell Control</p>
           <p className="text-[10px] text-[var(--foreground-dim)] font-mono">v1.0.0</p>
         </div>
       </aside>
 
-      {/* Slide-out Sandbox Submenu - Technical Data Panel */}
       <div
         className={`fixed left-64 top-0 h-screen w-72 bg-[var(--background)] border-r border-[var(--border-subtle)] transform transition-transform duration-200 ease-in-out z-10 ${
           isSubmenuOpen ? 'translate-x-0' : '-translate-x-full'
@@ -213,6 +172,25 @@ export default function Sidebar({
             {isDestroyMode && 'SELECT A SANDBOX BELOW'}
             {!isCreateMode && !isDestroyMode && `${sandboxes.filter(s => s.status === 'running').length} RUNNING / ${sandboxes.length} TOTAL`}
           </p>
+          {!isCreateMode && !isDestroyMode && (
+            <div className="mt-3 rounded-sm border border-[var(--border-subtle)] bg-[var(--background-tertiary)] p-2">
+              <p className="text-[10px] uppercase tracking-wider text-[var(--foreground-dim)]">Inventory Source</p>
+              <p className="mt-1 text-[11px] text-[var(--foreground)] font-mono">Live OpenShell sandboxes</p>
+              <p className="mt-2 text-[10px] uppercase tracking-wider text-[var(--foreground-dim)]">NemoClaw Operator</p>
+              <p className="mt-1 text-[11px] text-[var(--foreground)] font-mono">
+                {nemoclaw?.available ? 'Registry/service summary available' : 'No NemoClaw summary detected'}
+              </p>
+              <p className="mt-1 text-[10px] text-[var(--foreground-dim)] font-mono">Dashboard session: {dashboardSessionId.slice(0, 8)}</p>
+              {nemoclaw?.defaultSandboxNames?.length ? (
+                <p className="mt-1 text-[10px] text-[var(--foreground-dim)] font-mono">
+                  Default: {nemoclaw.defaultSandboxNames.join(', ')}
+                </p>
+              ) : null}
+              {nemoclaw?.serviceLines?.slice(0, 2).map((line) => (
+                <p key={line} className="mt-1 text-[10px] text-[var(--foreground-dim)] font-mono truncate" title={line}>{line}</p>
+              ))}
+            </div>
+          )}
         </div>
 
         <div className="p-2 overflow-y-auto h-[calc(100vh-80px)]">
@@ -257,7 +235,7 @@ export default function Sidebar({
               <button
                 onClick={() => onSandboxSelect(null)}
                 className={`w-full px-3 py-2 rounded-sm text-left transition-colors ${
-                  selectedSandbox === null
+                  selectedSandboxId === null
                     ? 'bg-[var(--nvidia-green)] text-white'
                     : 'hover:bg-[var(--background-tertiary)] text-[var(--foreground)]'
                 }`}
@@ -275,7 +253,7 @@ export default function Sidebar({
                   key={sandbox.id}
                   onClick={() => onSandboxSelect(sandbox.id)}
                   className={`w-full px-3 py-2 rounded-sm text-left transition-colors ${
-                    selectedSandbox === sandbox.id
+                    selectedSandboxId === sandbox.id
                       ? 'bg-[var(--nvidia-green)] text-white'
                       : 'hover:bg-[var(--background-tertiary)] text-[var(--foreground)]'
                   }`}
@@ -286,17 +264,24 @@ export default function Sidebar({
                         className={`w-2 h-2 rounded-sm ${
                           sandbox.status === 'running'
                             ? 'bg-[var(--status-running)]'
-                            : 'bg-[var(--status-pending)]'
+                            : sandbox.status === 'stopped'
+                              ? 'bg-[var(--status-stopped)]'
+                              : sandbox.status === 'error'
+                                ? 'bg-red-500'
+                                : 'bg-[var(--status-pending)]'
                         }`}
                       />
                       <span className="text-sm font-mono truncate">{sandbox.name}</span>
+                      {sandbox.isDefault ? (
+                        <span className="rounded-sm border border-[var(--border-subtle)] px-1.5 py-0.5 text-[9px] uppercase tracking-wider text-[var(--foreground-dim)]">default</span>
+                      ) : null}
                     </div>
                     <svg className="w-3 h-3 opacity-75" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path strokeLinecap="square" strokeLinejoin="miter" strokeWidth={2} d="M9 5l7 7-7 7" />
                     </svg>
                   </div>
                   <p className="text-[10px] text-[var(--foreground-dim)] font-mono mt-1 ml-4">
-                    {sandbox.ip}
+                    {sandbox.namespace} · {sandbox.ip}
                   </p>
                 </button>
               ))}

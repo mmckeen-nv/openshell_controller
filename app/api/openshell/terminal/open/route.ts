@@ -16,14 +16,19 @@ export async function GET(request: Request) {
       ok: true,
       sandboxId,
       attached: true,
-      output: result.stdout.trim(),
-      stderr: result.stderr.trim(),
-      note: 'Backend-local terminal probe succeeded. Next step is persistent interactive terminal transport.'
+      name: result.name,
+      resolvedId: result.id,
+      namespace: result.namespace,
+      phase: result.phase,
+      sshHostAlias: result.sshHostAlias,
+      sshConfig: result.sshConfig,
+      output: result.rawDetails,
+      note: 'Sandbox inspection succeeded. Next step is persistent interactive terminal transport.',
     })
   } catch (error) {
     return NextResponse.json({
       ok: false,
-      error: error instanceof Error ? error.message : 'Failed to probe terminal attach'
+      error: error instanceof Error ? error.message : 'Failed to probe terminal attach',
     }, { status: 500 })
   }
 }

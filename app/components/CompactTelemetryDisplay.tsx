@@ -1,5 +1,5 @@
 "use client"
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import CompactGauge from './CompactGauge'
 
 interface TelemetryData {
@@ -9,6 +9,7 @@ interface TelemetryData {
   gpuMemoryUsed?: number
   gpuMemoryTotal?: number
   gpuTemperature?: number
+  timestamp?: string
 }
 
 interface Sandbox {
@@ -30,25 +31,6 @@ export default function CompactTelemetryDisplay() {
     fetchSandboxes()
   }, [])
 
-  useEffect(() => {
-    if (selectedSandbox) {
-      fetchTelemetry()
-    } else {
-      fetchCombinedTelemetry()
-    }
-  }, [selectedSandbox])
-
-  useEffect(() => {
-    const interval = setInterval(() => {
-      if (selectedSandbox) {
-        fetchTelemetry()
-      } else {
-        fetchCombinedTelemetry()
-      }
-    }, 5000)
-    return () => clearInterval(interval)
-  }, [selectedSandbox])
-
   const fetchSandboxes = async () => {
     try {
       const response = await fetch('/api/telemetry/real')
@@ -67,7 +49,7 @@ export default function CompactTelemetryDisplay() {
     }
   }
 
-  const fetchTelemetry = async () => {
+  const fetchTelemetry = useCallback(async () => {
     try {
       const response = await fetch('/api/telemetry/combined')
       const data = await response.json()
@@ -75,9 +57,28 @@ export default function CompactTelemetryDisplay() {
     } catch (error) {
       console.error('Error fetching telemetry:', error)
     }
-  }
+  }, [])
 
   const fetchCombinedTelemetry = fetchTelemetry
+
+  useEffect(() => {
+    if (selectedSandbox) {
+      fetchTelemetry()
+    } else {
+      fetchCombinedTelemetry()
+    }
+  }, [selectedSandbox, fetchTelemetry, fetchCombinedTelemetry])
+
+  useEffect(() => {
+    const interval = setInterval(() => {
+      if (selectedSandbox) {
+        fetchTelemetry()
+      } else {
+        fetchCombinedTelemetry()
+      }
+    }, 5000)
+    return () => clearInterval(interval)
+  }, [selectedSandbox, fetchTelemetry, fetchCombinedTelemetry])
 
   if (loading) {
     return (

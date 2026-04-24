@@ -1,5 +1,5 @@
 "use client"
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import CompactGauge from './CompactGauge'
 
 interface TelemetryData {
@@ -9,6 +9,7 @@ interface TelemetryData {
   gpuMemoryUsed?: number
   gpuMemoryTotal?: number
   gpuTemperature?: number
+  timestamp?: string
 }
 
 interface SandboxConfig {
@@ -42,15 +43,7 @@ export default function SandboxDetails({
     { name: 'debugMode', description: 'Enable debug logging', enabled: false }
   ])
 
-  useEffect(() => {
-    if (sandboxId) {
-      fetchTelemetry()
-      const interval = setInterval(fetchTelemetry, 5000)
-      return () => clearInterval(interval)
-    }
-  }, [sandboxId])
-
-  const fetchTelemetry = async () => {
+  const fetchTelemetry = useCallback(async () => {
     if (!sandboxId) return
     setLoading(true)
     try {
@@ -62,7 +55,15 @@ export default function SandboxDetails({
     } finally {
       setLoading(false)
     }
-  }
+  }, [sandboxId])
+
+  useEffect(() => {
+    if (sandboxId) {
+      fetchTelemetry()
+      const interval = setInterval(fetchTelemetry, 5000)
+      return () => clearInterval(interval)
+    }
+  }, [sandboxId, fetchTelemetry])
 
   const toggleConfig = (name: string) => {
     setConfig(config.map(item =>

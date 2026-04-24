@@ -1,5 +1,5 @@
 "use client"
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import SpeedometerGauge from './SpeedometerGauge'
 
 interface TelemetryData {
@@ -36,15 +36,6 @@ export default function TelemetryDisplay() {
     fetchSandboxes()
   }, [])
 
-  // Fetch telemetry when sandbox changes
-  useEffect(() => {
-    if (selectedSandbox) {
-      fetchTelemetry(selectedSandbox)
-    } else {
-      fetchCombinedTelemetry()
-    }
-  }, [selectedSandbox])
-
   const fetchSandboxes = async () => {
     try {
       const response = await fetch('/api/telemetry/real')
@@ -64,7 +55,7 @@ export default function TelemetryDisplay() {
     }
   }
 
-  const fetchTelemetry = async (sandboxId: string) => {
+  const fetchTelemetry = useCallback(async (sandboxId: string) => {
     try {
       const response = await fetch(`/api/telemetry/sandbox/${sandboxId}`)
       const data = await response.json()
@@ -72,9 +63,9 @@ export default function TelemetryDisplay() {
     } catch (error) {
       console.error('Error fetching telemetry:', error)
     }
-  }
+  }, [])
 
-  const fetchCombinedTelemetry = async () => {
+  const fetchCombinedTelemetry = useCallback(async () => {
     try {
       const response = await fetch('/api/telemetry/combined')
       const data = await response.json()
@@ -82,11 +73,20 @@ export default function TelemetryDisplay() {
     } catch (error) {
       console.error('Error fetching telemetry:', error)
     }
+  }, [])
+
+  const handleSandboxClick = (sandboxId: string | null) => {
+    setSelectedSandbox(current => current === sandboxId ? null : sandboxId)
   }
 
-  const handleSandboxClick = (sandboxId: string) => {
-    setSelectedSandbox(selectedSandbox === sandboxId ? null : sandboxId)
-  }
+  // Fetch telemetry when sandbox changes
+  useEffect(() => {
+    if (selectedSandbox) {
+      fetchTelemetry(selectedSandbox)
+    } else {
+      fetchCombinedTelemetry()
+    }
+  }, [selectedSandbox, fetchTelemetry, fetchCombinedTelemetry])
 
   if (loading) {
     return <div className="text-center text-gray-600 dark:text-gray-400">Loading telemetry...</div>
@@ -165,7 +165,7 @@ export default function TelemetryDisplay() {
       </div>
 
       {/* Additional Metrics */}
-      {telemetry.gpuTemperature && (
+      {telemetry.gpuTemperature !== undefined && telemetry.gpuMemoryUsed !== undefined && telemetry.gpuMemoryTotal !== undefined && (
         <div className="bg-white dark:bg-gray-800 rounded-lg shadow p-6">
           <h3 className="text-lg font-semibold mb-4 dark:text-white">GPU Metrics</h3>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">

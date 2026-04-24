@@ -1,19 +1,47 @@
 "use client"
-import { useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import Sidebar from './components/Sidebar'
 import SandboxList from './components/SandboxList'
 import ConfigurationPanel from './components/ConfigurationPanel'
+import { useSandboxInventory } from './hooks/useSandboxInventory'
+import {
+  createHydrationSafeDashboardSessionState,
+  loadDashboardSessionState,
+  persistDashboardSessionState,
+  updateDashboardSessionSelection,
+} from './lib/dashboardSession'
 
 export default function Dashboard() {
   const [theme, setTheme] = useState<'light' | 'dark'>('dark')
   const [isSubmenuOpen, setIsSubmenuOpen] = useState(false)
   const [hostIP] = useState('192.168.50.173')
-  const [selectedSandbox, setSelectedSandbox] = useState<string | null>(null)
+  const [dashboardSession, setDashboardSession] = useState(() => createHydrationSafeDashboardSessionState())
   const [isCreateMode, setIsCreateMode] = useState(false)
   const [isDestroyMode, setIsDestroyMode] = useState(false)
   const [activeView, setActiveView] = useState<'overview' | 'settings' | 'sandboxes'>('sandboxes')
   const [deletingSandboxId, setDeletingSandboxId] = useState<string | null>(null)
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
+  const inventoryEnabled = isSubmenuOpen || activeView === 'sandboxes' || isCreateMode || isDestroyMode
+  const { sandboxes, nemoclaw, loading, error, refresh } = useSandboxInventory({
+    enabled: inventoryEnabled,
+  })
+
+  useEffect(() => {
+    setDashboardSession(loadDashboardSessionState())
+  }, [])
+
+  useEffect(() => {
+    persistDashboardSessionState(dashboardSession)
+  }, [dashboardSession])
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme
+  }, [theme])
+
+  const selectedSandbox = useMemo(
+    () => sandboxes.find((sandbox) => sandbox.id === dashboardSession.selectedSandboxId) ?? null,
+    [sandboxes, dashboardSession.selectedSandboxId]
+  )
 
   const toggleTheme = () => {
     setTheme(theme === 'light' ? 'dark' : 'light')
@@ -24,12 +52,25 @@ export default function Dashboard() {
       setDeletingSandboxId(id)
       setShowDeleteConfirm(true)
     } else {
-      setSelectedSandbox(id)
+      setDashboardSession((current) => updateDashboardSessionSelection(current, id))
     }
   }
 
+  const clearSelection = () => {
+    setDashboardSession((current) => updateDashboardSessionSelection(current, null))
+  }
+
+  const handleCreateSuccess = async (createdSandboxId: string) => {
+    setIsCreateMode(false)
+    setIsDestroyMode(false)
+    setActiveView('sandboxes')
+    setIsSubmenuOpen(true)
+    const latest = await refresh()
+    const created = latest.find((sandbox) => sandbox.id === createdSandboxId || sandbox.name === createdSandboxId)
+    setDashboardSession((current) => updateDashboardSessionSelection(current, created?.id ?? createdSandboxId))
+  }
+
   const confirmDelete = () => {
-    // TODO: Call destroy sandbox API
     console.log('Destroying sandbox:', deletingSandboxId)
     setShowDeleteConfirm(false)
     setDeletingSandboxId(null)
@@ -49,10 +90,12 @@ export default function Dashboard() {
           : 'bg-[var(--background)] text-[var(--foreground)]'
       }`}
     >
-      {/* Sidebar */}
       <Sidebar
         hostIP={hostIP}
-        selectedSandbox={selectedSandbox}
+        sandboxes={sandboxes}
+        nemoclaw={nemoclaw}
+        dashboardSessionId={dashboardSession.dashboardSessionId}
+        selectedSandboxId={dashboardSession.selectedSandboxId}
         onSandboxSelect={handleSandboxSelect}
         isSubmenuOpen={isSubmenuOpen}
         onToggleSubmenu={() => {
@@ -67,7 +110,7 @@ export default function Dashboard() {
           setActiveView('sandboxes')
           setIsCreateMode(true)
           setIsDestroyMode(false)
-          setSelectedSandbox(null)
+          clearSelection()
           setIsSubmenuOpen(true)
         }}
         onDestroyClick={() => {
@@ -80,24 +123,23 @@ export default function Dashboard() {
           setActiveView('overview')
           setIsCreateMode(false)
           setIsDestroyMode(false)
-          setSelectedSandbox(null)
+          clearSelection()
           setIsSubmenuOpen(false)
         }}
         onSettingsClick={() => {
           setActiveView('settings')
           setIsCreateMode(false)
           setIsDestroyMode(false)
-          setSelectedSandbox(null)
+          clearSelection()
           setIsSubmenuOpen(false)
         }}
         onExitMode={() => {
           setIsCreateMode(false)
           setIsDestroyMode(false)
-          setSelectedSandbox(null)
+          clearSelection()
         }}
       />
 
-      {/* Main Content */}
       <main className="ml-64 transition-all duration-300">
         <div className={isSubmenuOpen ? 'ml-72' : ''}>
           <div className="p-8">
@@ -145,8 +187,11 @@ export default function Dashboard() {
                   <p className="text-sm text-[var(--foreground-dim)] mb-6">
                     Global defaults and preset-driven policy controls for this dashboard instance.
                   </p>
+                  <p className="text-[11px] text-[var(--foreground-dim)] font-mono">
+                    Dashboard session {dashboardSession.dashboardSessionId.slice(0, 8)}
+                  </p>
                 </div>
-                <ConfigurationPanel sandboxId="global-settings" mode="create" />
+                <ConfigurationPanel sandboxId="global-settings" mode="create" onCreateSuccess={handleCreateSuccess} onInventoryRefresh={refresh} />
               </div>
             ) : isCreateMode ? (
               <div className="space-y-6">
@@ -158,7 +203,7 @@ export default function Dashboard() {
                     Start from a named security preset, then refine the OpenShell policy before creating the sandbox.
                   </p>
                 </div>
-                <ConfigurationPanel sandboxId="new-sandbox" mode="create" />
+                <ConfigurationPanel sandboxId="new-sandbox" mode="create" onCreateSuccess={handleCreateSuccess} onInventoryRefresh={refresh} />
               </div>
             ) : isDestroyMode ? (
               <div className="panel p-8 border-2 border-[var(--status-stopped)]">
@@ -172,7 +217,7 @@ export default function Dashboard() {
                   <button
                     onClick={() => {
                       setIsDestroyMode(false)
-                      setSelectedSandbox(null)
+                      clearSelection()
                     }}
                     className="px-4 py-2 rounded-sm bg-[var(--background-tertiary)] text-[var(--foreground)] text-xs font-mono uppercase tracking-wider hover:bg-[var(--background-panel)]"
                   >
@@ -190,6 +235,9 @@ export default function Dashboard() {
                     <p className="text-xs text-[var(--foreground-dim)] mt-1">
                       Real-time OpenShell sandbox monitoring
                     </p>
+                    <p className="text-[11px] text-[var(--foreground-dim)] font-mono mt-2">
+                      Dashboard session {dashboardSession.dashboardSessionId.slice(0, 8)}
+                    </p>
                   </div>
                   <button
                     onClick={toggleTheme}
@@ -199,18 +247,45 @@ export default function Dashboard() {
                   </button>
                 </div>
 
-                <SandboxList 
-                  selectedSandbox={selectedSandbox}
-                  onSandboxSelect={handleSandboxSelect}
-                  isDestroyMode={isDestroyMode}
-                />
+                {inventoryEnabled && loading ? (
+                  <div className="flex items-center justify-center h-64" data-testid="inventory-loading-state">
+                    <div className="text-xs text-[var(--foreground-dim)] font-mono uppercase tracking-wider">
+                      INITIALIZING...
+                    </div>
+                  </div>
+                ) : inventoryEnabled && error ? (
+                  <div className="panel p-8 text-center" data-testid="inventory-error-state">
+                    <h3 className="text-sm font-semibold text-[var(--status-stopped)] uppercase tracking-wider">Inventory Unavailable</h3>
+                    <p className="text-xs text-[var(--foreground-dim)] mt-2 font-mono">{error}</p>
+                  </div>
+                ) : sandboxes.length === 0 ? (
+                  <div className="panel p-8 text-center" data-testid="inventory-empty-state">
+                    <svg className="w-12 h-12 mx-auto mb-4 text-[var(--foreground-dim)]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="square" strokeLinejoin="miter" strokeWidth={1.5} d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4" />
+                    </svg>
+                    <h3 className="text-sm font-semibold text-[var(--foreground)] uppercase tracking-wider">No Sandboxes Detected</h3>
+                    <p className="text-xs text-[var(--foreground-dim)] mt-2">
+                      No live OpenShell sandboxes reported yet
+                    </p>
+                  </div>
+                ) : (
+                  <SandboxList
+                    sandboxes={sandboxes}
+                    nemoclaw={nemoclaw}
+                    dashboardSessionId={dashboardSession.dashboardSessionId}
+                    selectedSandboxId={dashboardSession.selectedSandboxId}
+                    selectedSandbox={selectedSandbox}
+                    onSandboxSelect={handleSandboxSelect}
+                    isDestroyMode={isDestroyMode}
+                    onInventoryRefresh={refresh}
+                  />
+                )}
               </>
             )}
           </div>
         </div>
       </main>
 
-      {/* Delete Confirmation Overlay */}
       {showDeleteConfirm && (
         <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-50">
           <div className="panel p-8 max-w-md border-2 border-[var(--status-stopped)]">
