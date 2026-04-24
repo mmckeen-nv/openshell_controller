@@ -51,6 +51,7 @@ export default function SandboxList({
 }: SandboxListProps) {
   const [terminalMessage, setTerminalMessage] = useState<string>('')
   const [dashboardMessage, setDashboardMessage] = useState<string>('')
+  const [restartInProgress, setRestartInProgress] = useState(false)
   const [telemetry, setTelemetry] = useState<TelemetryData>({
     cpu: 0, memory: 0, disk: 0, timestamp: new Date().toISOString()
   })
@@ -70,6 +71,25 @@ export default function SandboxList({
       setTelemetry(data)
     } catch (error) {
       console.error('Error fetching telemetry:', error)
+    }
+  }
+
+  const restartSandbox = async () => {
+    if (!selectedSandbox || restartInProgress) return
+    try {
+      setRestartInProgress(true)
+      setDashboardMessage(`Restarting sandbox ${selectedSandbox.name}...`)
+      const response = await fetch(`/api/sandbox/${encodeURIComponent(selectedSandbox.id)}/restart`, {
+        method: 'POST',
+      })
+      const data = await response.json()
+      if (!response.ok) throw new Error(data.error || data.note || 'Failed to restart sandbox')
+      setDashboardMessage(data.note || `Sandbox ${selectedSandbox.name} restarted.`)
+      await onInventoryRefresh()
+    } catch (error) {
+      setDashboardMessage(error instanceof Error ? error.message : 'Failed to restart sandbox.')
+    } finally {
+      setRestartInProgress(false)
     }
   }
 
@@ -187,6 +207,13 @@ export default function SandboxList({
                       className="px-3 py-2 rounded-sm bg-[var(--background-tertiary)] text-[var(--foreground)] text-xs font-mono uppercase tracking-wider hover:border-[var(--nvidia-green)] border border-[var(--border-subtle)]"
                     >
                       Start OpenClaw Gateway Dashboard
+                    </button>
+                    <button
+                      onClick={restartSandbox}
+                      disabled={restartInProgress}
+                      className="px-3 py-2 rounded-sm bg-[var(--background-tertiary)] text-[var(--foreground)] text-xs font-mono uppercase tracking-wider hover:border-[var(--nvidia-green)] border border-[var(--border-subtle)] disabled:opacity-50"
+                    >
+                      {restartInProgress ? 'Restarting Sandbox...' : 'Restart Sandbox'}
                     </button>
                     <button
                       onClick={() => {
