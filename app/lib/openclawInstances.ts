@@ -2,6 +2,7 @@ export type OpenClawInstanceRecord = {
   id: string
   label: string
   dashboardUrl: string
+  controlUiOrigin?: string | null
   terminalServerUrl?: string | null
   loopbackOnly: boolean
   default?: boolean
@@ -52,6 +53,7 @@ function parseRegistryFromEnv(): OpenClawInstanceRecord[] {
           id,
           label: typeof entry.label === 'string' && entry.label.trim() ? entry.label.trim() : id,
           dashboardUrl,
+          controlUiOrigin: typeof entry.controlUiOrigin === 'string' && entry.controlUiOrigin.trim() ? entry.controlUiOrigin.trim() : null,
           terminalServerUrl: typeof entry.terminalServerUrl === 'string' && entry.terminalServerUrl.trim() ? entry.terminalServerUrl.trim() : DEFAULT_TERMINAL_SERVER_URL,
           loopbackOnly: parseBoolean(typeof entry.loopbackOnly === 'string' ? entry.loopbackOnly : undefined, entry.loopbackOnly ?? true),
           default: Boolean(entry.default),
@@ -150,6 +152,7 @@ function resolveSandboxOpenClawInstance(instanceId: string): OpenClawInstanceRec
     id: instanceId,
     label: `OpenClaw for ${parsed.sandboxId}`,
     dashboardUrl: `http://127.0.0.1:${parsed.port}/`,
+    controlUiOrigin: process.env.OPENCLAW_SANDBOX_CONTROL_UI_ORIGIN || 'http://127.0.0.1:18789',
     terminalServerUrl: DEFAULT_TERMINAL_SERVER_URL,
     loopbackOnly: true,
     default: false,

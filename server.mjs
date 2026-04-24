@@ -69,6 +69,7 @@ function defaultOpenClawInstance() {
     id: defaultInstanceId,
     label: 'Default local OpenClaw',
     dashboardUrl: defaultDashboardUrl,
+    controlUiOrigin: null,
     terminalServerUrl: process.env.TERMINAL_SERVER_URL || 'http://127.0.0.1:3011',
     loopbackOnly: true,
     default: true,
@@ -95,6 +96,7 @@ function parseOpenClawInstanceRegistry() {
           id,
           label: typeof entry.label === 'string' && entry.label.trim() ? entry.label.trim() : id,
           dashboardUrl,
+          controlUiOrigin: typeof entry.controlUiOrigin === 'string' && entry.controlUiOrigin.trim() ? entry.controlUiOrigin.trim() : null,
           terminalServerUrl: typeof entry.terminalServerUrl === 'string' && entry.terminalServerUrl.trim()
             ? entry.terminalServerUrl.trim()
             : process.env.TERMINAL_SERVER_URL || 'http://127.0.0.1:3011',
@@ -182,6 +184,7 @@ function resolveSandboxOpenClawInstance(instanceId) {
     id: requested,
     label: `OpenClaw for ${match[2]}`,
     dashboardUrl: `http://127.0.0.1:${port}/`,
+    controlUiOrigin: process.env.OPENCLAW_SANDBOX_CONTROL_UI_ORIGIN || 'http://127.0.0.1:18789',
     terminalServerUrl: process.env.TERMINAL_SERVER_URL || 'http://127.0.0.1:3011',
     loopbackOnly: true,
     default: false,
@@ -216,6 +219,7 @@ function resolveDashboardUpstream(req) {
   return {
     proxyPrefix,
     upstreamWsUrl,
+    controlUiOrigin: resolvedInstance.controlUiOrigin || new URL(resolvedInstance.dashboardUrl).origin,
     instanceId: resolvedInstance.id,
   }
 }
@@ -241,12 +245,7 @@ const dashboardWsProxyServer = http.createServer((_, res) => {
 })
 const clientWss = new WebSocketServer({ noServer: true })
 
-function buildRawDashboardUpgradeHeaders(req, upstreamWsUrl) {
-  const upstreamOrigin = new URL(upstreamWsUrl.toString())
-  upstreamOrigin.protocol = upstreamOrigin.protocol === 'wss:' ? 'https:' : 'http:'
-  upstreamOrigin.pathname = '/'
-  upstreamOrigin.search = ''
-  upstreamOrigin.hash = ''
+function buildRawDashboardUpgradeHeaders(req, upstreamWsUrl, controlUiOrigin) {
   const headers = []
   const seen = new Set()
 
@@ -258,18 +257,18 @@ function buildRawDashboardUpgradeHeaders(req, upstreamWsUrl) {
     if (lowerName === 'host') {
       headers.push(`Host: ${upstreamWsUrl.host}`)
     } else if (lowerName === 'origin') {
-      headers.push(`Origin: ${upstreamOrigin.origin}`)
+      headers.push(`Origin: ${controlUiOrigin}`)
     } else {
       headers.push(`${name}: ${value}`)
     }
   }
 
   if (!seen.has('host')) headers.push(`Host: ${upstreamWsUrl.host}`)
-  if (!seen.has('origin')) headers.push(`Origin: ${upstreamOrigin.origin}`)
+  if (!seen.has('origin')) headers.push(`Origin: ${controlUiOrigin}`)
   return headers
 }
 
-function tunnelDashboardUpgrade(req, socket, head, upstreamWsUrl, instanceId) {
+function tunnelDashboardUpgrade(req, socket, head, upstreamWsUrl, instanceId, controlUiOrigin) {
   const isSecure = upstreamWsUrl.protocol === 'wss:'
   const port = Number(upstreamWsUrl.port || (isSecure ? 443 : 80))
   const upstreamSocket = isSecure
@@ -278,7 +277,7 @@ function tunnelDashboardUpgrade(req, socket, head, upstreamWsUrl, instanceId) {
   const upstreamPath = `${upstreamWsUrl.pathname || '/'}${upstreamWsUrl.search || ''}`
   const requestHead = [
     `GET ${upstreamPath} HTTP/1.1`,
-    ...buildRawDashboardUpgradeHeaders(req, upstreamWsUrl),
+    ...buildRawDashboardUpgradeHeaders(req, upstreamWsUrl, controlUiOrigin),
     '',
     '',
   ].join('\r\n')
@@ -470,14 +469,14 @@ server.on('upgrade', (req, socket, head) => {
     (req.url || '').startsWith(legacyDashboardProxyPrefix) ||
     (req.url || '').startsWith(instancesProxyPrefix)
   ) {
-    const { upstreamWsUrl, instanceId } = resolveDashboardUpstream(req)
+    const { upstreamWsUrl, instanceId, controlUiOrigin } = resolveDashboardUpstream(req)
     logBridge('dashboard-upgrade-accepted', {
       path: req.url || '/',
       upstreamUrl: upstreamWsUrl.toString(),
       instanceId,
       remoteAddress: req.socket.remoteAddress || 'unknown',
     })
-    tunnelDashboardUpgrade(req, socket, head, upstreamWsUrl, instanceId)
+    tunnelDashboardUpgrade(req, socket, head, upstreamWsUrl, instanceId, controlUiOrigin)
     return
   }
 
@@ -497,14 +496,14 @@ dashboardWsProxyServer.on('upgrade', (req, socket, head) => {
     (req.url || '').startsWith(legacyDashboardProxyPrefix) ||
     (req.url || '').startsWith(instancesProxyPrefix)
   ) {
-    const { upstreamWsUrl, instanceId } = resolveDashboardUpstream(req)
+    const { upstreamWsUrl, instanceId, controlUiOrigin } = resolveDashboardUpstream(req)
     logBridge('dashboard-sidecar-upgrade-accepted', {
       path: req.url || '/',
       upstreamUrl: upstreamWsUrl.toString(),
       instanceId,
       remoteAddress: req.socket.remoteAddress || 'unknown',
     })
-    tunnelDashboardUpgrade(req, socket, head, upstreamWsUrl, instanceId)
+    tunnelDashboardUpgrade(req, socket, head, upstreamWsUrl, instanceId, controlUiOrigin)
     return
   }
 

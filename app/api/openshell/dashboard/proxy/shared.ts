@@ -23,6 +23,7 @@ type ProxyTargetResolution = {
   instanceId: string | null
   proxyPrefix: string
   targetBaseUrl: string
+  controlUiOrigin: string
   authorityMode: 'direct-host' | 'bridged-sandbox-map' | 'bridged-instance-override'
   bridgeActive: boolean
 }
@@ -49,6 +50,7 @@ function resolveProxyTarget(requestUrl: URL): ProxyTargetResolution {
         instanceId: authority.openclaw.id,
         proxyPrefix: `/api/openshell/instances/${encodeURIComponent(decodedInstanceId)}/dashboard/proxy`,
         targetBaseUrl: authority.openclaw.dashboardUrl,
+        controlUiOrigin: authority.openclaw.controlUiOrigin || new URL(authority.openclaw.dashboardUrl).origin,
         authorityMode: authority.authorityMode,
         bridgeActive: authority.bridgeActive,
       }
@@ -63,13 +65,14 @@ function resolveProxyTarget(requestUrl: URL): ProxyTargetResolution {
     instanceId: authority.bridgeActive ? authority.openclaw.id : null,
     proxyPrefix: LEGACY_PROXY_PREFIX,
     targetBaseUrl: authority.openclaw.dashboardUrl,
+    controlUiOrigin: authority.openclaw.controlUiOrigin || new URL(authority.openclaw.dashboardUrl).origin,
     authorityMode: authority.authorityMode,
     bridgeActive: authority.bridgeActive,
   }
 }
 
 function buildTargetUrl(requestUrl: URL) {
-  const { proxyPrefix, targetBaseUrl, authorityMode, bridgeActive } = resolveProxyTarget(requestUrl)
+  const { proxyPrefix, targetBaseUrl, controlUiOrigin, authorityMode, bridgeActive } = resolveProxyTarget(requestUrl)
   const pathParam = requestUrl.searchParams.get('path')
   const bootstrapUrl = requestUrl.searchParams.get('bootstrapUrl')
   const pathname = requestUrl.pathname.startsWith(proxyPrefix)
@@ -87,12 +90,11 @@ function buildTargetUrl(requestUrl: URL) {
     })
   }
 
-  return { target, proxyPrefix, authorityMode, bridgeActive }
+  return { target, proxyPrefix, controlUiOrigin, authorityMode, bridgeActive }
 }
 
-function copyRequestHeaders(request: Request, target: URL) {
+function copyRequestHeaders(request: Request, target: URL, controlUiOrigin: string) {
   const headers = new Headers()
-  const targetOrigin = target.origin
 
   request.headers.forEach((value, key) => {
     const lowerKey = key.toLowerCase()
@@ -107,8 +109,8 @@ function copyRequestHeaders(request: Request, target: URL) {
   })
 
   headers.set('host', target.host)
-  headers.set('origin', targetOrigin)
-  headers.set('referer', `${targetOrigin}/`)
+  headers.set('origin', controlUiOrigin)
+  headers.set('referer', `${controlUiOrigin}/`)
   return headers
 }
 
@@ -214,9 +216,9 @@ export async function proxyOpenClawDashboard(request: Request) {
     return bootstrapScriptResponse(resolution.proxyPrefix)
   }
 
-  const { target, proxyPrefix, authorityMode, bridgeActive } = buildTargetUrl(requestUrl)
+  const { target, proxyPrefix, controlUiOrigin, authorityMode, bridgeActive } = buildTargetUrl(requestUrl)
   const method = request.method.toUpperCase()
-  const headers = copyRequestHeaders(request, target)
+  const headers = copyRequestHeaders(request, target, controlUiOrigin)
   const shouldSendBody = !['GET', 'HEAD'].includes(method)
   const upstreamInit: RequestInit & { duplex?: 'half' } = {
     method,
