@@ -6,7 +6,17 @@ export type SandboxInferenceConfig = {
   provider: string
   primaryModel: string
   models: string[]
+  routes: SandboxInferenceRoute[]
+  primaryRouteId: string
   updatedAt: string | null
+}
+
+export type SandboxInferenceRoute = {
+  id: string
+  provider: string
+  model: string
+  enabled: boolean
+  label: string
 }
 
 type StoreShape = {
@@ -39,16 +49,42 @@ async function writeStore(store: StoreShape) {
 }
 
 export function normalizeSandboxInferenceConfig(sandboxId: string, input?: Partial<SandboxInferenceConfig> | null): SandboxInferenceConfig {
-  const models = Array.from(new Set([
+  const legacyProvider = typeof input?.provider === "string" ? input.provider.trim() : ""
+  const legacyModels = Array.from(new Set([
     input?.primaryModel,
     ...(Array.isArray(input?.models) ? input.models : []),
   ].map((item) => typeof item === "string" ? item.trim() : "").filter(Boolean)))
+  const rawRoutes: any[] = [
+    ...(Array.isArray(input?.routes) ? input.routes : []),
+    ...legacyModels.map((model) => ({ provider: legacyProvider, model, enabled: true, label: "" })),
+  ]
+  const routeEntries: Array<[string, SandboxInferenceRoute]> = rawRoutes.map((route) => {
+    const provider = typeof route?.provider === "string" ? route.provider.trim() : ""
+    const model = typeof route?.model === "string" ? route.model.trim() : ""
+    const id = typeof route?.id === "string" && route.id.trim()
+      ? route.id.trim()
+      : `${provider}::${model}`
+    return [id, {
+      id,
+      provider,
+      model,
+      enabled: route?.enabled !== false,
+      label: typeof route?.label === "string" ? route.label.trim() : "",
+    }] as [string, SandboxInferenceRoute]
+  }).filter(([, route]) => route.provider && route.model)
+  const routes = Array.from(new Map(routeEntries).values())
+  const primaryRouteId = typeof input?.primaryRouteId === "string" && routes.some((route) => route.id === input.primaryRouteId)
+    ? input.primaryRouteId
+    : routes[0]?.id || ""
+  const primaryRoute = routes.find((route) => route.id === primaryRouteId) || routes[0]
 
   return {
     sandboxId,
-    provider: typeof input?.provider === "string" ? input.provider.trim() : "",
-    primaryModel: models[0] || "",
-    models,
+    provider: primaryRoute?.provider || legacyProvider,
+    primaryModel: primaryRoute?.model || legacyModels[0] || "",
+    models: routes.map((route) => route.model),
+    routes,
+    primaryRouteId,
     updatedAt: input?.updatedAt || null,
   }
 }

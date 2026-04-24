@@ -2,6 +2,7 @@ import { NextResponse } from "next/server"
 import {
   getSandboxInferenceConfig,
   saveSandboxInferenceConfig,
+  type SandboxInferenceRoute,
 } from "@/app/lib/sandboxInferenceStore"
 
 function validateSandboxId(value: string) {
@@ -17,6 +18,24 @@ function parseModels(value: unknown) {
   return value
     .map((item) => typeof item === "string" ? item.trim() : "")
     .filter(Boolean)
+}
+
+function parseRoutes(value: unknown): SandboxInferenceRoute[] {
+  if (!Array.isArray(value)) return []
+  return value.map((item) => {
+    const provider = typeof item?.provider === "string" ? item.provider.trim() : ""
+    const model = typeof item?.model === "string" ? item.model.trim() : ""
+    const id = typeof item?.id === "string" && item.id.trim()
+      ? item.id.trim()
+      : `${provider}::${model}`
+    return {
+      id,
+      provider,
+      model,
+      enabled: item?.enabled !== false,
+      label: typeof item?.label === "string" ? item.label.trim() : "",
+    }
+  }).filter((item) => item.provider && item.model)
 }
 
 export async function GET(
@@ -43,14 +62,18 @@ export async function POST(
     const provider = typeof body?.provider === "string" ? body.provider.trim() : ""
     const primaryModel = typeof body?.primaryModel === "string" ? body.primaryModel.trim() : ""
     const models = parseModels(body?.models)
+    const routes = parseRoutes(body?.routes)
+    const primaryRouteId = typeof body?.primaryRouteId === "string" ? body.primaryRouteId.trim() : ""
 
-    if (!provider) throw new Error("provider is required")
-    if (!primaryModel && models.length === 0) throw new Error("at least one model is required")
+    if (routes.length === 0 && !provider) throw new Error("provider is required")
+    if (routes.length === 0 && !primaryModel && models.length === 0) throw new Error("at least one model is required")
 
     const config = await saveSandboxInferenceConfig(validateSandboxId(sandboxId), {
       provider,
       primaryModel: primaryModel || models[0],
       models,
+      routes,
+      primaryRouteId,
     })
     return NextResponse.json({ ok: true, config })
   } catch (error) {
