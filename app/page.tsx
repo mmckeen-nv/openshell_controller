@@ -4,6 +4,8 @@ import Sidebar from './components/Sidebar'
 import SandboxList from './components/SandboxList'
 import ConfigurationPanel from './components/ConfigurationPanel'
 import InferenceEndpointPanel from './components/InferenceEndpointPanel'
+import HelpPanel from './components/HelpPanel'
+import WizardPanel from './components/WizardPanel'
 import { useSandboxInventory } from './hooks/useSandboxInventory'
 import {
   createHydrationSafeDashboardSessionState,
@@ -18,12 +20,12 @@ export default function Dashboard() {
   const [dashboardSession, setDashboardSession] = useState(() => createHydrationSafeDashboardSessionState())
   const [isCreateMode, setIsCreateMode] = useState(false)
   const [isDestroyMode, setIsDestroyMode] = useState(false)
-  const [activeView, setActiveView] = useState<'settings' | 'sandboxes'>('sandboxes')
+  const [activeView, setActiveView] = useState<'settings' | 'sandboxes' | 'help' | 'wizards'>('sandboxes')
   const [deletingSandboxId, setDeletingSandboxId] = useState<string | null>(null)
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
   const [lifecycleMessage, setLifecycleMessage] = useState<string | null>(null)
   const [deleteInProgress, setDeleteInProgress] = useState(false)
-  const inventoryEnabled = activeView === 'sandboxes' || isCreateMode || isDestroyMode
+  const inventoryEnabled = activeView === 'sandboxes' || activeView === 'wizards' || isCreateMode || isDestroyMode
   const { sandboxes, nemoclaw, loading, error, refresh } = useSandboxInventory({
     enabled: inventoryEnabled,
   })
@@ -202,6 +204,18 @@ export default function Dashboard() {
           setIsDestroyMode(false)
           clearSelection()
         }}
+        onWizardsClick={() => {
+          setActiveView('wizards')
+          setIsCreateMode(false)
+          setIsDestroyMode(false)
+          clearSelection()
+        }}
+        onHelpClick={() => {
+          setActiveView('help')
+          setIsCreateMode(false)
+          setIsDestroyMode(false)
+          clearSelection()
+        }}
         onExitMode={() => {
           setIsCreateMode(false)
           setIsDestroyMode(false)
@@ -213,9 +227,9 @@ export default function Dashboard() {
         }}
       />
 
-      <main className="ml-64 transition-all duration-300">
+      <main className="ml-64 min-h-screen transition-all duration-300 max-lg:ml-0 max-lg:pb-28">
         <div>
-          <div className="p-8">
+          <div className="mx-auto max-w-7xl p-8 max-sm:p-4">
             {activeView === 'settings' ? (
               <div className="space-y-6">
                 <div className="panel p-8">
@@ -239,6 +253,10 @@ export default function Dashboard() {
                 </div>
                 <InferenceEndpointPanel />
               </div>
+            ) : activeView === 'help' ? (
+              <HelpPanel />
+            ) : activeView === 'wizards' ? (
+              <WizardPanel sandboxes={sandboxes} onInventoryRefresh={refresh} />
             ) : isCreateMode ? (
               <div className="space-y-6">
                 <div className="panel p-8">
@@ -304,9 +322,12 @@ export default function Dashboard() {
               </div>
             ) : (
               <>
-                <div className="flex items-center justify-between mb-8">
-                  <div>
-                    <h1 className="text-lg font-semibold text-[var(--foreground)] uppercase tracking-wider">
+                <div className="mb-8 flex items-center justify-between gap-4 rounded border border-[var(--border-subtle)] bg-[var(--surface-raised)]/70 p-5 shadow-[var(--shadow-soft)] backdrop-blur max-sm:flex-col max-sm:items-start">
+                  <div className="min-w-0">
+                    <p className="text-[10px] font-mono uppercase tracking-wider text-[var(--nvidia-green)]">
+                      {sandboxes.filter((sandbox) => sandbox.status === 'running').length} online / {sandboxes.length} total
+                    </p>
+                    <h1 className="mt-1 text-xl font-semibold text-[var(--foreground)] uppercase tracking-wider">
                       OPENSHELL CONTROL
                     </h1>
                     <p className="text-xs text-[var(--foreground-dim)] mt-1">
@@ -315,7 +336,7 @@ export default function Dashboard() {
                   </div>
                   <button
                     onClick={toggleTheme}
-                    className="px-4 py-2 rounded-sm bg-[var(--background-tertiary)] text-[var(--foreground)] text-xs font-mono uppercase tracking-wider hover:bg-[var(--background-panel)]"
+                    className="action-button px-4 py-2"
                   >
                     {theme === 'dark' ? 'LIGHT' : 'DARK'}
                   </button>
@@ -367,7 +388,7 @@ export default function Dashboard() {
 
       {showDeleteConfirm && (
         <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-50">
-          <div className="panel p-8 max-w-md border-2 border-[var(--status-stopped)]">
+          <div className="panel w-[min(92vw,28rem)] p-8 border-2 border-[var(--status-stopped)]">
             <div className="flex items-center gap-4 mb-4">
               <svg className="w-12 h-12 text-[var(--status-stopped)]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="square" strokeLinejoin="miter" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />

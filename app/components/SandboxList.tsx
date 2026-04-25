@@ -2,6 +2,7 @@
 import { useEffect, useState } from 'react'
 import type { ReactNode } from 'react'
 import ConfigurationPanel from './ConfigurationPanel'
+import SandboxArchivePanel from './SandboxArchivePanel'
 import SandboxFilesPanel from './SandboxFilesPanel'
 import SandboxInferencePanel from './SandboxInferencePanel'
 import type { NemoClawSummary, SandboxInventoryItem } from '../hooks/useSandboxInventory'
@@ -26,7 +27,7 @@ interface SandboxListProps {
   onInventoryRefresh: () => Promise<SandboxInventoryItem[]>
 }
 
-type DrawerKey = 'operations' | 'files' | 'inference' | 'policy'
+type DrawerKey = 'operations' | 'files' | 'inference' | 'policy' | 'archive'
 type NetworkRuleRequest = {
   chunkId: string
   status: string
@@ -121,6 +122,7 @@ export default function SandboxList({
     files: false,
     inference: false,
     policy: false,
+    archive: false,
   })
   const [telemetry, setTelemetry] = useState<TelemetryData>({
     cpu: 0, memory: 0, disk: 0, timestamp: new Date().toISOString()
@@ -232,29 +234,34 @@ export default function SandboxList({
         </div>
       ) : (
         <>
-          <div className="flex items-center justify-between">
-            <h3 className="text-sm font-semibold text-[var(--foreground)] uppercase tracking-wider">
-              {isDestroyMode ? 'SELECT SANDBOX TO DESTROY' : 'ACTIVE SANDBOXES'}
-            </h3>
-            <span className="text-[10px] text-[var(--foreground-dim)] font-mono">
-              REFRESH: 10s
+          <div className="flex items-end justify-between gap-4">
+            <div>
+              <p className="text-[10px] font-mono uppercase tracking-wider text-[var(--nvidia-green)]">
+                Inventory
+              </p>
+              <h3 className="mt-1 text-sm font-semibold text-[var(--foreground)] uppercase tracking-wider">
+                {isDestroyMode ? 'SELECT SANDBOX TO DESTROY' : 'ACTIVE SANDBOXES'}
+              </h3>
+            </div>
+            <span className="status-chip border border-[var(--border-subtle)] bg-[var(--background-tertiary)] px-2.5 py-1 text-[var(--foreground-dim)]">
+              REFRESH 10s
             </span>
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
             {sandboxes.map((sandbox) => (
               <div
                 key={sandbox.id}
-                className={`p-4 rounded-sm text-left transition-all border-2 ${
+                className={`group overflow-hidden rounded border text-left transition-all ${
                   isDestroyMode
-                    ? 'border-[var(--status-stopped)] hover:bg-[var(--status-stopped-bg)]'
+                    ? 'border-[var(--status-stopped)] bg-[var(--status-stopped-bg)] hover:shadow-[0_18px_60px_rgba(220,38,38,0.16)]'
                     : selectedSandboxId === sandbox.id
-                      ? 'bg-[var(--nvidia-green)] text-white border-[var(--nvidia-green)]'
-                      : 'panel hover:border-[var(--nvidia-green)]'
+                      ? 'border-[var(--nvidia-green)] bg-[var(--surface-hover)] shadow-[var(--shadow-glow)]'
+                      : 'border-[var(--border-subtle)] bg-[var(--surface-raised)] shadow-[var(--shadow-soft)] hover:border-[var(--nvidia-green)] hover:bg-[var(--surface-hover)]'
                 }`}
               >
-                <button type="button" onClick={() => onSandboxSelect(sandbox.id)} className="w-full text-left">
-                  <div className="flex items-center justify-between mb-3">
+                <button type="button" onClick={() => onSandboxSelect(sandbox.id)} className="w-full p-4 text-left">
+                  <div className="flex items-center justify-between gap-3 mb-3">
                     <div className="flex items-center gap-2 min-w-0">
                       {(() => {
                         const feed = permissionFeeds[sandbox.id]
@@ -270,22 +277,22 @@ export default function SandboxList({
                         )
                       })()}
                       <span className={`text-sm font-mono font-semibold truncate ${
-                        isDestroyMode ? 'text-[var(--status-stopped)]' : ''
+                        isDestroyMode ? 'text-[var(--status-stopped)]' : 'text-[var(--foreground)]'
                       }`}>
                         {sandbox.name}
                       </span>
                       {sandbox.isDefault ? (
-                        <span className={`rounded-sm border px-1.5 py-0.5 text-[9px] uppercase tracking-wider ${selectedSandboxId === sandbox.id && !isDestroyMode ? 'border-black/30 text-black' : 'border-[var(--border-subtle)] text-[var(--foreground-dim)]'}`}>default</span>
+                        <span className="rounded-full border border-[var(--border-subtle)] px-1.5 py-0.5 text-[9px] uppercase tracking-wider text-[var(--foreground-dim)]">default</span>
                       ) : null}
                     </div>
-                    <div className={`px-2 py-0.5 rounded-sm text-[10px] font-mono uppercase ${
+                    <div className={`status-chip shrink-0 px-2.5 py-1 ${
                       isDestroyMode
                         ? 'bg-[var(--status-stopped)] text-white animate-pulse'
                         : sandbox.status === 'running' && sandbox.ready
-                          ? 'bg-[var(--status-running)] text-white'
-                          : sandbox.status === 'stopped'
-                            ? 'bg-[var(--status-stopped)] text-white'
-                            : sandbox.status === 'error'
+                          ? 'bg-[var(--status-running-bg)] text-[var(--status-running)] border border-[var(--status-running)]/40'
+                        : sandbox.status === 'stopped'
+                          ? 'bg-[var(--status-stopped)] text-white'
+                        : sandbox.status === 'error'
                               ? 'bg-red-500 text-white'
                               : 'bg-[var(--status-pending)] text-white'
                     }`}>
@@ -301,13 +308,13 @@ export default function SandboxList({
                       ['Sandbox ID', sandbox.id, '140px'],
                     ] as Array<[string, string, string]>).map(([label, value, width]) => (
                       <div key={label} className="flex items-center justify-between gap-3">
-                        <span className={`text-[10px] uppercase ${selectedSandboxId === sandbox.id && !isDestroyMode ? 'text-black' : 'text-[var(--foreground-dim)]'}`}>{label}</span>
-                        <span className={`text-xs font-mono truncate ${selectedSandboxId === sandbox.id && !isDestroyMode ? 'text-black' : ''}`} style={{ maxWidth: width }} title={value}>{value}</span>
+                        <span className="text-[10px] uppercase text-[var(--foreground-dim)]">{label}</span>
+                        <span className="text-xs font-mono truncate text-[var(--foreground)]" style={{ maxWidth: width }} title={value}>{value}</span>
                       </div>
                     ))}
                   </div>
                 </button>
-                <div className="mt-3 pt-3 border-t border-black/10">
+                <div className="border-t border-[var(--border-subtle)] p-3">
                   <select
                     value=""
                     disabled={grantingSandboxId === sandbox.id}
@@ -317,7 +324,7 @@ export default function SandboxList({
                       event.currentTarget.value = ''
                       resolvePermissionRequest(sandbox, 'approve', value)
                     }}
-                    className={`w-full rounded-sm border px-3 py-2 text-xs font-mono uppercase tracking-wider focus:outline-none ${selectedSandboxId === sandbox.id && !isDestroyMode ? 'border-black/30 bg-white/30 text-black' : 'border-[var(--border-subtle)] bg-[var(--background-tertiary)] text-[var(--foreground)]'}`}
+                    className="w-full rounded border border-[var(--border-subtle)] bg-[var(--background-tertiary)] px-3 py-2 text-xs font-mono uppercase tracking-wider text-[var(--foreground)] focus:outline-none focus:ring-1 focus:ring-[var(--nvidia-green)]"
                   >
                     <option value="">
                       {grantingSandboxId === sandbox.id
@@ -373,14 +380,14 @@ export default function SandboxList({
                           setDashboardMessage('Failed to resolve OpenClaw Dashboard endpoint.')
                         }
                       }}
-                      className="px-3 py-2 rounded-sm bg-[var(--background-tertiary)] text-[var(--foreground)] text-xs font-mono uppercase tracking-wider hover:border-[var(--nvidia-green)] border border-[var(--border-subtle)]"
+                      className="action-button px-3 py-2"
                     >
                       Start OpenClaw Gateway Dashboard
                     </button>
                     <button
                       onClick={restartSandbox}
                       disabled={restartInProgress}
-                      className="px-3 py-2 rounded-sm bg-[var(--background-tertiary)] text-[var(--foreground)] text-xs font-mono uppercase tracking-wider hover:border-[var(--nvidia-green)] border border-[var(--border-subtle)] disabled:opacity-50"
+                      className="action-button px-3 py-2"
                     >
                       {restartInProgress ? 'Restarting Sandbox...' : 'Restart Sandbox'}
                     </button>
@@ -388,11 +395,11 @@ export default function SandboxList({
                       onClick={async () => {
                         await onInventoryRefresh()
                       }}
-                      className="px-3 py-2 rounded-sm bg-[var(--background-tertiary)] text-[var(--foreground)] text-xs font-mono uppercase tracking-wider hover:border-[var(--nvidia-green)] border border-[var(--border-subtle)]"
+                      className="action-button px-3 py-2"
                     >
                       Refresh Inventory
                     </button>
-                    <span className="text-[10px] text-[var(--foreground-dim)] font-mono">
+                    <span className="status-chip border border-[var(--status-running)]/40 bg-[var(--status-running-bg)] px-2.5 py-1 text-[var(--status-running)]">
                       LIVE
                     </span>
                   </div>
@@ -503,6 +510,15 @@ export default function SandboxList({
                   })()}
                   <ConfigurationPanel sandboxId={selectedSandbox.id} mode="existing" embedded showHeader={false} />
                 </div>
+              </DrawerSection>
+
+              <DrawerSection
+                title="Backup / Restore"
+                summary="Download a compressed archive or restore one into this sandbox."
+                open={openDrawers.archive}
+                onToggle={() => toggleDrawer('archive')}
+              >
+                <SandboxArchivePanel sandbox={selectedSandbox} onRestoreComplete={async () => { await onInventoryRefresh() }} />
               </DrawerSection>
             </>
           )}
