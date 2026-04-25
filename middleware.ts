@@ -34,49 +34,12 @@ function isStateChangingMethod(method: string) {
   return !["GET", "HEAD", "OPTIONS"].includes(method.toUpperCase())
 }
 
-function firstForwardedValue(value: string | null) {
-  return value?.split(",")[0]?.trim() || null
-}
-
-function originFromHost(host: string | null, protocol: string) {
-  if (!host) return null
-  try {
-    const normalizedProtocol = protocol.endsWith(":") ? protocol : `${protocol}:`
-    return new URL(`${normalizedProtocol}//${host}`).origin
-  } catch {
-    return null
-  }
-}
-
-function publicBaseOrigin() {
-  if (!process.env.PUBLIC_BASE_URL) return null
-  try {
-    return new URL(process.env.PUBLIC_BASE_URL).origin
-  } catch {
-    return null
-  }
-}
-
-function trustedRequestOrigins(request: NextRequest) {
-  const forwardedProto = firstForwardedValue(request.headers.get("x-forwarded-proto"))
-  const forwardedHost = firstForwardedValue(request.headers.get("x-forwarded-host"))
-  const host = firstForwardedValue(request.headers.get("host"))
-  const protocol = forwardedProto || request.nextUrl.protocol || "http:"
-
-  return new Set([
-    request.nextUrl.origin,
-    originFromHost(host, protocol),
-    originFromHost(forwardedHost, protocol),
-    publicBaseOrigin(),
-  ].filter((origin): origin is string => Boolean(origin)))
-}
-
 function hasTrustedOrigin(request: NextRequest) {
   const origin = request.headers.get("origin")
   if (!origin) return true
 
   try {
-    return trustedRequestOrigins(request).has(new URL(origin).origin)
+    return new URL(origin).origin === request.nextUrl.origin
   } catch {
     return false
   }
