@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server"
-import { restoreSandboxArchive } from "@/app/lib/sandboxFiles"
+import { assertRequestContentLength, restoreSandboxArchive } from "@/app/lib/sandboxFiles"
 import { recordActivity } from "@/app/lib/activityLog"
 
 export async function POST(
@@ -8,6 +8,7 @@ export async function POST(
 ) {
   try {
     const { sandboxId } = await params
+    assertRequestContentLength(request)
     const form = await request.formData()
     const file = form.get("archive")
     const rawTargetPath = form.get("targetPath")
