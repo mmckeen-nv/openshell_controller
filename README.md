@@ -72,17 +72,22 @@ From the repository root:
 
 The installer:
 
-- checks Node, npm, Docker, and OpenShell CLI availability;
-- installs npm dependencies;
+- checks Node, npm, Docker, OpenShell CLI availability, sandbox inventory reachability, and default port occupancy;
+- installs npm dependencies with `npm ci` when `package-lock.json` exists;
+- runs a non-blocking `npm audit` summary;
 - creates `.env.local` if needed;
 - generates a local dashboard password, signing secret, and recovery token if they are missing;
-- runs `npm run build` as a verification step;
-- removes `.next` afterward so the development server starts cleanly.
+- runs `npm run build` as a verification step.
+
+It refuses to run as root unless `--allow-root` is supplied. It does not install or manage a systemd service.
 
 Options:
 
 ```bash
 ./install.sh --no-build
+./install.sh --no-audit
+./install.sh --clean-next
+./install.sh --allow-root
 ./install.sh --start
 ./install.sh --help
 ```

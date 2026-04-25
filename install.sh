@@ -3,6 +3,7 @@
 # Development installer for the local OpenShell sandbox control dashboard.
 
 set -euo pipefail
+umask 077
 
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -16,6 +17,9 @@ MIN_NODE_MAJOR=20
 
 DO_BUILD=1
 DO_START=0
+DO_AUDIT=1
+DO_CLEAN_NEXT=0
+ALLOW_ROOT=0
 
 usage() {
   cat <<EOF
@@ -26,11 +30,14 @@ Usage:
 
 Options:
   --no-build      Install and configure without running npm run build
+  --no-audit      Skip the non-blocking npm audit summary
+  --clean-next    Remove .next after a successful build for a clean dev start
+  --allow-root    Permit running as root
   --start         Start the development server after install
-  --help         Show this help
+  --help          Show this help
 
 This project is in development. The installer prepares a local dev/operator
-environment; it is not a hardened production deployment.
+environment; it is not a systemd/production service installer.
 EOF
 }
 
@@ -38,6 +45,18 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --no-build)
       DO_BUILD=0
+      shift
+      ;;
+    --no-audit)
+      DO_AUDIT=0
+      shift
+      ;;
+    --clean-next)
+      DO_CLEAN_NEXT=1
+      shift
+      ;;
+    --allow-root)
+      ALLOW_ROOT=1
       shift
       ;;
     --start)
@@ -73,6 +92,40 @@ require_command() {
   command -v "$1" >/dev/null 2>&1 || fail "$1 is required but was not found."
 }
 
+port_owner() {
+  local port="$1"
+  if command -v lsof >/dev/null 2>&1; then
+    lsof -nP -iTCP:"$port" -sTCP:LISTEN 2>/dev/null | awk 'NR == 2 {print $1 " pid=" $2}'
+    return
+  fi
+
+  if command -v ss >/dev/null 2>&1; then
+    ss -ltnp "sport = :$port" 2>/dev/null | awk 'NR == 2 {print $NF}'
+    return
+  fi
+}
+
+check_port() {
+  local port="$1"
+  local label="$2"
+  local owner
+  owner="$(port_owner "$port" || true)"
+  if [[ -n "$owner" ]]; then
+    warn "Port $port ($label) is already in use by $owner."
+    warn "If you use --start, stop the existing process first or expect startup to fail."
+  else
+    log "Port $port ($label) is available"
+  fi
+}
+
+find_openshell() {
+  if command -v openshell >/dev/null 2>&1; then
+    command -v openshell
+  elif [[ -x "$HOME/.local/bin/openshell" ]]; then
+    printf '%s\n' "$HOME/.local/bin/openshell"
+  fi
+}
+
 node_major() {
   node -p "Number(process.versions.node.split('.')[0])"
 }
@@ -95,6 +148,10 @@ echo -e "${GREEN}=== ${APP_NAME} Installer ===${NC}"
 echo "Development build: expect sharp edges; do not expose this UI broadly without hardening."
 echo ""
 
+if [[ "${EUID:-$(id -u)}" -eq 0 && "$ALLOW_ROOT" -ne 1 ]]; then
+  fail "Refusing to run as root. Rerun as the dashboard user, or pass --allow-root if you really mean it."
+fi
+
 require_command node
 require_command npm
 require_command docker
@@ -111,14 +168,23 @@ if ! docker ps >/dev/null 2>&1; then
 fi
 log "Docker is reachable: $(docker --version)"
 
-if command -v openshell >/dev/null 2>&1; then
-  log "OpenShell CLI: $(openshell --version 2>/dev/null || echo installed)"
-elif [[ -x "$HOME/.local/bin/openshell" ]]; then
-  log "OpenShell CLI: $("$HOME/.local/bin/openshell" --version 2>/dev/null || echo "$HOME/.local/bin/openshell")"
+OPENSHELL_BIN="$(find_openshell || true)"
+if [[ -n "$OPENSHELL_BIN" ]]; then
+  log "OpenShell CLI: $("$OPENSHELL_BIN" --version 2>/dev/null || echo "$OPENSHELL_BIN")"
+  if "$OPENSHELL_BIN" sandbox list >/dev/null 2>&1; then
+    log "OpenShell sandbox inventory command is reachable"
+  else
+    warn "OpenShell CLI exists, but 'openshell sandbox list' did not complete successfully."
+    warn "The dashboard can install, but inventory and lifecycle operations may be degraded."
+  fi
 else
   warn "OpenShell CLI was not found on PATH or at ~/.local/bin/openshell."
   warn "Sandbox create/delete, policy grants, terminal, and dashboard proxy features require it."
 fi
+
+check_port 3000 "dashboard HTTP"
+check_port 3001 "OpenClaw dashboard websocket sidecar"
+check_port 3011 "operator terminal upstream"
 
 if docker ps --format '{{.Names}}' | grep -Eq '^openshell-cluster-'; then
   log "OpenShell gateway container detected:"
@@ -128,8 +194,20 @@ else
   warn "Install can continue, but the UI will show limited inventory until OpenShell is started."
 fi
 
-log "Installing npm dependencies"
-npm install
+if [[ -f package-lock.json ]]; then
+  log "Installing npm dependencies with npm ci"
+  npm ci
+else
+  log "Installing npm dependencies with npm install"
+  npm install
+fi
+
+if [[ "$DO_AUDIT" -eq 1 ]]; then
+  log "Running non-blocking npm audit summary"
+  if ! npm audit --audit-level=moderate; then
+    warn "npm audit reported vulnerabilities. Review the output above before exposing this UI beyond a trusted LAN."
+  fi
+fi
 
 if [[ ! -f "$ENV_FILE" ]]; then
   log "Creating $ENV_FILE"
@@ -159,8 +237,10 @@ chmod 600 "$ENV_FILE" || true
 if [[ "$DO_BUILD" -eq 1 ]]; then
   log "Running production build check"
   npm run build
-  rm -rf .next
-  log "Removed production .next cache so npm run dev starts cleanly"
+  if [[ "$DO_CLEAN_NEXT" -eq 1 ]]; then
+    rm -rf .next
+    log "Removed production .next cache because --clean-next was requested"
+  fi
 fi
 
 echo ""
@@ -172,6 +252,8 @@ echo "Recovery token: read OPENSHELL_CONTROL_RECOVERY_TOKEN from $ENV_FILE"
 echo ""
 echo "Start the development server:"
 echo "  npm run dev"
+echo ""
+echo "This installer does not install or manage a systemd service."
 echo ""
 echo "Open:"
 echo "  http://localhost:3000"
