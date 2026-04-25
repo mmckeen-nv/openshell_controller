@@ -19,6 +19,12 @@ function sanitizeSegment(value: string) {
   return value.trim().replace(/[^\w.@:+-]/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "") || "backup"
 }
 
+function normalizeBackupId(value: string) {
+  const safeId = sanitizeSegment(value)
+  if (safeId !== value) throw new Error("backup id contains unsupported characters")
+  return safeId
+}
+
 function archivePath(id: string) {
   return path.join(BACKUP_DIR, `${id}.tar.gz`)
 }
@@ -28,7 +34,7 @@ function metadataPath(id: string) {
 }
 
 async function ensureBackupDirectory() {
-  await mkdir(BACKUP_DIR, { recursive: true })
+  await mkdir(BACKUP_DIR, { recursive: true, mode: 0o700 })
 }
 
 export async function listBackupCatalog() {
@@ -67,8 +73,8 @@ export async function createCatalogBackup(sandboxId: string, sourcePath: string)
     createdAt: archive.createdAt,
   }
 
-  await writeFile(archivePath(id), archive.bytes)
-  await writeFile(metadataPath(id), `${JSON.stringify(entry, null, 2)}\n`)
+  await writeFile(archivePath(id), archive.bytes, { mode: 0o600 })
+  await writeFile(metadataPath(id), `${JSON.stringify(entry, null, 2)}\n`, { mode: 0o600 })
 
   const entries = await listBackupCatalog()
   await Promise.all(entries.slice(MAX_BACKUP_COUNT).map((stale) => deleteCatalogBackup(stale.id).catch(() => undefined)))
@@ -77,7 +83,7 @@ export async function createCatalogBackup(sandboxId: string, sourcePath: string)
 }
 
 export async function getCatalogBackup(id: string) {
-  const safeId = sanitizeSegment(id)
+  const safeId = normalizeBackupId(id)
   const metadata = JSON.parse(await readFile(metadataPath(safeId), "utf8")) as BackupCatalogEntry
   const bytes = await readFile(archivePath(safeId))
   return { metadata, bytes }
@@ -89,7 +95,7 @@ export async function restoreCatalogBackup(id: string, targetSandboxId: string, 
 }
 
 export async function deleteCatalogBackup(id: string) {
-  const safeId = sanitizeSegment(id)
+  const safeId = normalizeBackupId(id)
   await Promise.all([
     rm(archivePath(safeId), { force: true }),
     rm(metadataPath(safeId), { force: true }),

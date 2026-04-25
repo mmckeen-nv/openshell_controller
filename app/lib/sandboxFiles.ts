@@ -14,7 +14,8 @@ const HOST_PATH = [
   process.env.PATH || "",
 ].filter(Boolean).join(":")
 
-const MAX_FILE_BYTES = Number.parseInt(process.env.SANDBOX_FILE_TRANSFER_MAX_BYTES || String(128 * 1024 * 1024), 10)
+export const MAX_FILE_BYTES = Number.parseInt(process.env.SANDBOX_FILE_TRANSFER_MAX_BYTES || String(128 * 1024 * 1024), 10)
+export const MAX_MULTIPART_REQUEST_BYTES = MAX_FILE_BYTES + Math.min(10 * 1024 * 1024, Math.max(1024 * 1024, Math.floor(MAX_FILE_BYTES / 10)))
 const ALLOWED_ROOTS = ["/sandbox", "/tmp"]
 const MAX_LIST_ENTRIES = Number.parseInt(process.env.SANDBOX_FILE_LIST_MAX_ENTRIES || "200", 10)
 
@@ -44,6 +45,15 @@ export function normalizeSandboxPath(input: string, fallbackFileName?: string) {
   const allowed = ALLOWED_ROOTS.some((root) => normalized === root || normalized.startsWith(`${root}/`))
   if (!allowed) throw new Error("sandbox path must be under /sandbox or /tmp")
   return normalized
+}
+
+export function assertRequestContentLength(request: Request, maxBytes = MAX_MULTIPART_REQUEST_BYTES) {
+  const raw = request.headers.get("content-length")
+  if (!raw) return
+  const size = Number.parseInt(raw, 10)
+  if (Number.isFinite(size) && size > maxBytes) {
+    throw new Error(`request is too large; max transfer size is ${Math.floor(MAX_FILE_BYTES / 1024 / 1024)} MiB`)
+  }
 }
 
 function runSandboxExec(sandboxName: string, script: string, input?: Buffer, timeoutMs = 60000) {
@@ -224,14 +234,17 @@ export async function restoreSandboxArchive(
     `tmp_archive="$(mktemp /tmp/openshell-restore.XXXXXX.tar.gz)"`,
     `cat > "$tmp_archive"`,
     `tar -tzf "$tmp_archive" >/tmp/openshell-restore-list.$$`,
-    `while IFS= read -r entry; do case "$entry" in ""|/*|../*|*/../*|*"/..") rm -f "$tmp_archive" /tmp/openshell-restore-list.$$; exit 42;; esac; done < /tmp/openshell-restore-list.$$`,
+    `tar -tvzf "$tmp_archive" >/tmp/openshell-restore-verbose.$$`,
+    `while IFS= read -r entry; do case "$entry" in ""|/*|../*|*/../*|*"/..") rm -f "$tmp_archive" /tmp/openshell-restore-list.$$ /tmp/openshell-restore-verbose.$$; exit 42;; esac; done < /tmp/openshell-restore-list.$$`,
+    `while IFS= read -r entry; do case "$entry" in [-d]*) :;; *) rm -f "$tmp_archive" /tmp/openshell-restore-list.$$ /tmp/openshell-restore-verbose.$$; exit 43;; esac; done < /tmp/openshell-restore-verbose.$$`,
     `mkdir -p ${shellQuote(targetPath)}`,
     replace ? `find ${shellQuote(targetPath)} -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +` : `:`,
     `if grep -q '^payload/' /tmp/openshell-restore-list.$$; then tar -xzf "$tmp_archive" -C ${shellQuote(targetPath)} --strip-components=1 --wildcards 'payload/*'; else tar -xzf "$tmp_archive" -C ${shellQuote(targetPath)}; fi`,
-    `rm -f "$tmp_archive" /tmp/openshell-restore-list.$$`,
+    `rm -f "$tmp_archive" /tmp/openshell-restore-list.$$ /tmp/openshell-restore-verbose.$$`,
   ].join(" && ")
   const result = await runSandboxExec(sandboxName, script, payload, 120000)
   if (result.code === 42) throw new Error("archive contains unsafe paths")
+  if (result.code === 43) throw new Error("archive contains unsupported entry types")
   if (result.code !== 0) throw new Error(result.stderr || "failed to restore sandbox archive")
 
   return {

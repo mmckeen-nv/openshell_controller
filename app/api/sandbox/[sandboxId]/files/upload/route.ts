@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server"
-import { uploadSandboxFile } from "@/app/lib/sandboxFiles"
+import { assertRequestContentLength, uploadSandboxFile } from "@/app/lib/sandboxFiles"
 
 export async function POST(
   request: Request,
@@ -7,6 +7,7 @@ export async function POST(
 ) {
   try {
     const { sandboxId } = await params
+    assertRequestContentLength(request)
     const form = await request.formData()
     const file = form.get("file")
     const rawPath = form.get("path")
