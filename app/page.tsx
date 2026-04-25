@@ -25,7 +25,7 @@ export default function Dashboard() {
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
   const [lifecycleMessage, setLifecycleMessage] = useState<string | null>(null)
   const [deleteInProgress, setDeleteInProgress] = useState(false)
-  const inventoryEnabled = activeView === 'sandboxes' || activeView === 'wizards' || isCreateMode || isDestroyMode
+  const inventoryEnabled = activeView === 'sandboxes' || activeView === 'wizards' || activeView === 'help' || isCreateMode || isDestroyMode
   const { sandboxes, nemoclaw, loading, error, refresh } = useSandboxInventory({
     enabled: inventoryEnabled,
   })
@@ -254,7 +254,7 @@ export default function Dashboard() {
                 <InferenceEndpointPanel />
               </div>
             ) : activeView === 'help' ? (
-              <HelpPanel />
+              <HelpPanel sandboxes={sandboxes} />
             ) : activeView === 'wizards' ? (
               <WizardPanel sandboxes={sandboxes} onInventoryRefresh={refresh} />
             ) : isCreateMode ? (
