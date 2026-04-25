@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server"
 import { backupSandboxArchive } from "@/app/lib/sandboxFiles"
+import { recordActivity } from "@/app/lib/activityLog"
 
 function contentDisposition(fileName: string) {
   const fallback = fileName.replace(/[^\w.-]/g, "_") || "sandbox-backup.tar.gz"
@@ -15,6 +16,14 @@ export async function GET(
     const requestUrl = new URL(request.url)
     const sourcePath = requestUrl.searchParams.get("path") || "/sandbox"
     const backup = await backupSandboxArchive(sandboxId, sourcePath)
+    await recordActivity({
+      type: "backup.download",
+      status: "success",
+      sandboxId,
+      sandboxName: backup.sandboxName,
+      message: `Created downloadable backup ${backup.fileName}.`,
+      metadata: { sourcePath: backup.sourcePath, size: backup.bytes.byteLength },
+    }).catch(() => undefined)
 
     return new NextResponse(new Uint8Array(backup.bytes), {
       status: 200,
@@ -30,6 +39,11 @@ export async function GET(
     })
   } catch (error) {
     const message = error instanceof Error ? error.message : "Failed to create sandbox backup"
+    await recordActivity({
+      type: "backup.download",
+      status: "error",
+      message,
+    }).catch(() => undefined)
     return NextResponse.json({ ok: false, error: message }, { status: /required|path|large|exist|directory/.test(message) ? 400 : 500 })
   }
 }
