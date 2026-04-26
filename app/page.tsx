@@ -6,6 +6,7 @@ import ConfigurationPanel from './components/ConfigurationPanel'
 import InferenceEndpointPanel from './components/InferenceEndpointPanel'
 import HelpPanel from './components/HelpPanel'
 import WizardPanel from './components/WizardPanel'
+import McpConfigurationPanel from './components/McpConfigurationPanel'
 import { useSandboxInventory } from './hooks/useSandboxInventory'
 import {
   createHydrationSafeDashboardSessionState,
@@ -20,12 +21,12 @@ export default function Dashboard() {
   const [dashboardSession, setDashboardSession] = useState(() => createHydrationSafeDashboardSessionState())
   const [isCreateMode, setIsCreateMode] = useState(false)
   const [isDestroyMode, setIsDestroyMode] = useState(false)
-  const [activeView, setActiveView] = useState<'settings' | 'sandboxes' | 'help' | 'wizards'>('sandboxes')
+  const [activeView, setActiveView] = useState<'settings' | 'sandboxes' | 'help' | 'wizards' | 'mcp'>('sandboxes')
   const [deletingSandboxId, setDeletingSandboxId] = useState<string | null>(null)
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
   const [lifecycleMessage, setLifecycleMessage] = useState<string | null>(null)
   const [deleteInProgress, setDeleteInProgress] = useState(false)
-  const inventoryEnabled = activeView === 'sandboxes' || activeView === 'wizards' || activeView === 'help' || isCreateMode || isDestroyMode
+  const inventoryEnabled = activeView === 'sandboxes' || activeView === 'wizards' || activeView === 'help' || activeView === 'mcp' || isCreateMode || isDestroyMode
   const { sandboxes, nemoclaw, loading, error, refresh } = useSandboxInventory({
     enabled: inventoryEnabled,
   })
@@ -204,6 +205,12 @@ export default function Dashboard() {
           setIsDestroyMode(false)
           clearSelection()
         }}
+        onMcpClick={() => {
+          setActiveView('mcp')
+          setIsCreateMode(false)
+          setIsDestroyMode(false)
+          clearSelection()
+        }}
         onWizardsClick={() => {
           setActiveView('wizards')
           setIsCreateMode(false)
@@ -255,6 +262,8 @@ export default function Dashboard() {
               </div>
             ) : activeView === 'help' ? (
               <HelpPanel sandboxes={sandboxes} />
+            ) : activeView === 'mcp' ? (
+              <McpConfigurationPanel sandboxes={sandboxes} />
             ) : activeView === 'wizards' ? (
               <WizardPanel sandboxes={sandboxes} onInventoryRefresh={refresh} />
             ) : isCreateMode ? (
@@ -322,24 +331,51 @@ export default function Dashboard() {
               </div>
             ) : (
               <>
-                <div className="mb-8 flex items-center justify-between gap-4 rounded border border-[var(--border-subtle)] bg-[var(--surface-raised)]/70 p-5 shadow-[var(--shadow-soft)] backdrop-blur max-sm:flex-col max-sm:items-start">
-                  <div className="min-w-0">
-                    <p className="text-[10px] font-mono uppercase tracking-wider text-[var(--nvidia-green)]">
-                      {sandboxes.filter((sandbox) => sandbox.status === 'running').length} online / {sandboxes.length} total
-                    </p>
-                    <h1 className="mt-1 text-xl font-semibold text-[var(--foreground)] uppercase tracking-wider">
-                      OPENSHELL CONTROL
-                    </h1>
-                    <p className="text-xs text-[var(--foreground-dim)] mt-1">
-                      Manage local OpenShell sandboxes and operator access.
-                    </p>
+                <div className="panel mb-8 overflow-hidden">
+                  <div className="panel-header flex items-center justify-between gap-4 p-5 max-md:flex-col max-md:items-start">
+                    <div className="min-w-0">
+                      <p className="font-mono text-[10px] uppercase tracking-wider text-[var(--nvidia-green)]">
+                        {sandboxes.filter((sandbox) => sandbox.status === 'running').length} online / {sandboxes.length} total
+                      </p>
+                      <h1 className="mt-1 text-xl font-semibold uppercase tracking-wider text-[var(--foreground)]">
+                        OPENSHELL CONTROL
+                      </h1>
+                      <p className="mt-1 text-xs text-[var(--foreground-dim)]">
+                        Manage local OpenShell sandboxes and operator access.
+                      </p>
+                    </div>
+                    <div className="flex items-center gap-2 max-sm:w-full">
+                      <button
+                        onClick={async () => {
+                          await refresh({ force: true })
+                        }}
+                        className="action-button px-4 py-2 max-sm:flex-1"
+                      >
+                        REFRESH
+                      </button>
+                      <button
+                        onClick={toggleTheme}
+                        className="action-button px-4 py-2 max-sm:flex-1"
+                        aria-label={`Switch to ${theme === 'dark' ? 'light' : 'dark'} theme`}
+                      >
+                        {theme === 'dark' ? 'LIGHT' : 'DARK'}
+                      </button>
+                    </div>
                   </div>
-                  <button
-                    onClick={toggleTheme}
-                    className="action-button px-4 py-2"
-                  >
-                    {theme === 'dark' ? 'LIGHT' : 'DARK'}
-                  </button>
+                  <div className="grid grid-cols-1 gap-px bg-[var(--border-subtle)] sm:grid-cols-3">
+                    <div className="bg-[var(--surface-raised)] p-4">
+                      <p className="text-[10px] uppercase tracking-wider text-[var(--foreground-dim)]">Selected</p>
+                      <p className="mt-1 truncate font-mono text-sm text-[var(--foreground)]">{selectedSandbox?.name ?? 'none'}</p>
+                    </div>
+                    <div className="bg-[var(--surface-raised)] p-4">
+                      <p className="text-[10px] uppercase tracking-wider text-[var(--foreground-dim)]">Ready</p>
+                      <p className="mt-1 font-mono text-sm text-[var(--foreground)]">{sandboxes.filter((sandbox) => sandbox.ready).length} sandboxes</p>
+                    </div>
+                    <div className="bg-[var(--surface-raised)] p-4">
+                      <p className="text-[10px] uppercase tracking-wider text-[var(--foreground-dim)]">Gateway</p>
+                      <p className="mt-1 font-mono text-sm text-[var(--foreground)]">{nemoclaw?.available ? 'available' : 'not detected'}</p>
+                    </div>
+                  </div>
                 </div>
 
                 {lifecycleMessage && (

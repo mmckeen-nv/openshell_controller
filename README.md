@@ -19,6 +19,8 @@ It is currently built for active development and lab use. It includes a simple p
 - Approve or reject pending OpenShell network permission requests.
 - Configure per-sandbox inference routes for Ollama, NIM, vLLM, and external endpoints.
 - Poll Ollama for available models.
+- Search the official MCP Registry, install MCP server definitions, and manage preconfigured/custom MCP servers.
+- Enforce per-sandbox MCP access through a control-plane broker so sandboxes only see allowed capabilities.
 - Upload files into sandboxes and download files back out.
 - Open an operator terminal for the selected sandbox.
 - Simple local login, setup account, forgot password, and recovery token flow.
@@ -41,7 +43,7 @@ Minimum expected versions:
 - Docker `24+`
 - OpenShell CLI and gateway compatible with OpenShell `0.0.24`
 
-The app uses Next.js `14.2.15`, React `18.3.1`, TypeScript, Tailwind CSS, `ws`, and `node-pty`.
+The app uses Next.js `14.2.35`, React `18.3.1`, TypeScript, Tailwind CSS, `ws`, `node-pty`, and the official MCP TypeScript SDK.
 
 ## Prerequisites
 
@@ -52,6 +54,12 @@ node -v
 npm -v
 docker ps
 openshell --version
+```
+
+Optional, but useful for stdio MCP servers installed through the broker:
+
+```bash
+uvx --version
 ```
 
 OpenShell must already be installed and able to reach its gateway. On this host the active gateway metadata lives under:
@@ -77,6 +85,7 @@ The installer:
 - runs a non-blocking `npm audit` summary;
 - creates `.env.local` if needed;
 - generates a local dashboard password, signing secret, and recovery token if they are missing;
+- adds MCP broker defaults for token TTL and request timeout;
 - runs `npm run build` as a verification step.
 
 It refuses to run as root unless `--allow-root` is supplied. It does not install or manage a systemd service.
@@ -179,6 +188,47 @@ Supported provider categories in the UI:
 - vLLM
 - external HTTP-compatible endpoints
 
+## MCP Access Broker
+
+OpenShell Control can install and broker MCP servers without disclosing the full MCP inventory to sandboxes.
+
+The MCP page supports:
+
+- registry search with paged results;
+- preconfigured servers, including Blender MCP;
+- custom stdio or HTTP MCP servers;
+- global enable/disable state;
+- per-sandbox `Disabled`, `Allow All`, and `Allow Only` access policy.
+
+The sandbox page shows an MCP indicator on each sandbox card. A sandbox lights up when at least one MCP server is allowed by policy.
+
+For sandbox handoff, OpenShell Control writes:
+
+```text
+/sandbox/openshell_control_mcp.md
+```
+
+That file contains only the MCP broker endpoints and a sandbox-scoped token. It does not list denied servers, launch commands, credentials, or registry metadata. The broker validates the token and enforces access policy on every capabilities and tool-call request.
+
+Broker endpoints:
+
+```text
+/api/mcp/broker/capabilities
+/api/mcp/broker/call
+```
+
+Broker configuration keys:
+
+```bash
+MCP_BROKER_TOKEN_TTL_HOURS=168
+MCP_BROKER_REQUEST_TIMEOUT_MS=45000
+OPENSHELL_CONTROL_MCP_BROKER_URL=http://localhost:3000/api/mcp/broker
+```
+
+`OPENSHELL_CONTROL_MCP_BROKER_URL` is optional. Set it when sandboxes need a routable URL that differs from the dashboard request origin.
+
+Stdio MCP servers run on the control host. Make sure their launch commands, such as `uvx`, `npx`, `node`, or `python`, are available to the dashboard process.
+
 ## File Transfer
 
 The file transfer UI is scoped to safe sandbox paths:
@@ -228,6 +278,8 @@ OPENSHELL_GATEWAY=nemoclaw
 OPENSHELL_CONTROL_PASSWORD=change-this-password
 OPENSHELL_CONTROL_AUTH_SECRET=change-this-random-secret
 OPENSHELL_CONTROL_RECOVERY_TOKEN=change-this-recovery-token
+MCP_BROKER_TOKEN_TTL_HOURS=168
+MCP_BROKER_REQUEST_TIMEOUT_MS=45000
 ```
 
 ## Security Limitations
@@ -243,6 +295,8 @@ Known limitations:
 - no audit log persistence beyond process/container logs;
 - local recovery token can reset the password;
 - assumes a trusted operator host and trusted local filesystem.
+- MCP stdio servers run as child processes on the control host; only install trusted MCP servers.
+- MCP broker tokens grant sandbox-scoped access until expiry or rotation.
 
 Before exposing this outside a trusted lab network, replace auth with a real identity provider, add role-based access control, add audit logging, use TLS, and review every shell-out path.
 

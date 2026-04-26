@@ -92,6 +92,14 @@ require_command() {
   command -v "$1" >/dev/null 2>&1 || fail "$1 is required but was not found."
 }
 
+optional_command() {
+  if command -v "$1" >/dev/null 2>&1; then
+    log "$2: $(command -v "$1")"
+  else
+    warn "$2 was not found. Related MCP servers can still be configured, but broker calls will fail until it is installed."
+  fi
+}
+
 port_owner() {
   local port="$1"
   if command -v lsof >/dev/null 2>&1; then
@@ -162,6 +170,7 @@ if [[ "$NODE_MAJOR" -lt "$MIN_NODE_MAJOR" ]]; then
 fi
 
 log "Node $(node -v), npm $(npm -v)"
+optional_command uvx "uvx MCP package runner"
 
 if ! docker ps >/dev/null 2>&1; then
   fail "Docker is not reachable. Start Docker and rerun the installer."
@@ -231,6 +240,8 @@ upsert_env "OPENSHELL_GATEWAY" "nemoclaw"
 upsert_env "OPENSHELL_CONTROL_PASSWORD" "$(random_token 18)"
 upsert_env "OPENSHELL_CONTROL_AUTH_SECRET" "$(random_token 32)"
 upsert_env "OPENSHELL_CONTROL_RECOVERY_TOKEN" "$(random_token 18)"
+upsert_env "MCP_BROKER_TOKEN_TTL_HOURS" "168"
+upsert_env "MCP_BROKER_REQUEST_TIMEOUT_MS" "45000"
 
 chmod 600 "$ENV_FILE" || true
 

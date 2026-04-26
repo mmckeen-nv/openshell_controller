@@ -27,7 +27,16 @@ interface SandboxListProps {
   onInventoryRefresh: () => Promise<SandboxInventoryItem[]>
 }
 
-type DrawerKey = 'operations' | 'files' | 'inference' | 'policy' | 'archive'
+type DrawerKey = 'operations' | 'files' | 'inference' | 'policy' | 'archive' | 'mcp'
+type McpServerAccess = {
+  id: string
+  name: string
+  command: string
+  args: string[]
+  enabled: boolean
+  accessMode: 'disabled' | 'allow_all' | 'allow_only'
+  allowedSandboxIds: string[]
+}
 type NetworkRuleRequest = {
   chunkId: string
   status: string
@@ -78,7 +87,7 @@ function DrawerSection({
         type="button"
         onClick={onToggle}
         aria-expanded={open}
-        className="flex w-full items-center justify-between gap-4 p-5 text-left"
+        className="flex w-full items-center justify-between gap-4 p-5 text-left transition-colors hover:bg-[var(--surface-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--nvidia-green)] max-sm:p-4"
       >
         <div className="min-w-0">
           <h4 className="text-sm font-semibold text-[var(--foreground)] uppercase tracking-wider">{title}</h4>
@@ -95,7 +104,7 @@ function DrawerSection({
         </svg>
       </button>
       {open && (
-        <div className="border-t border-[var(--border-subtle)] p-6">
+        <div className="border-t border-[var(--border-subtle)] p-6 max-sm:p-4">
           {children}
         </div>
       )}
@@ -117,12 +126,17 @@ export default function SandboxList({
   const [permissionMessage, setPermissionMessage] = useState('')
   const [permissionFeeds, setPermissionFeeds] = useState<Record<string, PermissionFeed>>({})
   const [grantingSandboxId, setGrantingSandboxId] = useState<string | null>(null)
+  const [mcpServers, setMcpServers] = useState<McpServerAccess[]>([])
+  const [mcpMessage, setMcpMessage] = useState('')
+  const [mcpUpdatingServerId, setMcpUpdatingServerId] = useState<string | null>(null)
+  const [mcpSyncing, setMcpSyncing] = useState(false)
   const [openDrawers, setOpenDrawers] = useState<Record<DrawerKey, boolean>>({
     operations: true,
     files: false,
     inference: false,
     policy: false,
     archive: false,
+    mcp: false,
   })
   const [telemetry, setTelemetry] = useState<TelemetryData>({
     cpu: 0, memory: 0, disk: 0, timestamp: new Date().toISOString()
@@ -164,6 +178,30 @@ export default function SandboxList({
     }
   }, [sandboxes])
 
+  useEffect(() => {
+    let active = true
+    const loadMcpAccess = async () => {
+      try {
+        const response = await fetch('/api/mcp', { cache: 'no-store' })
+        const data = await response.json()
+        if (!response.ok) throw new Error(data.error || 'Failed to load MCP access')
+        if (active) setMcpServers(Array.isArray(data.servers) ? data.servers : [])
+      } catch (error) {
+        if (active) {
+          setMcpServers([])
+          setMcpMessage(error instanceof Error ? error.message : 'Failed to load MCP access')
+        }
+      }
+    }
+
+    loadMcpAccess()
+    const interval = window.setInterval(loadMcpAccess, 12000)
+    return () => {
+      active = false
+      window.clearInterval(interval)
+    }
+  }, [])
+
   const fetchTelemetry = async () => {
     try {
       const response = await fetch('/api/telemetry/combined')
@@ -195,6 +233,84 @@ export default function SandboxList({
 
   const toggleDrawer = (key: DrawerKey) => {
     setOpenDrawers((current) => ({ ...current, [key]: !current[key] }))
+  }
+
+  const sandboxCanAccessMcpServer = (sandbox: SandboxInventoryItem, server: McpServerAccess) => {
+    if (!server.enabled || server.accessMode === 'disabled') return false
+    if (server.accessMode === 'allow_all') return true
+    return server.allowedSandboxIds.includes(sandbox.id) || server.allowedSandboxIds.includes(sandbox.name)
+  }
+
+  const allowedMcpServersForSandbox = (sandbox: SandboxInventoryItem) => (
+    mcpServers.filter((server) => sandboxCanAccessMcpServer(sandbox, server))
+  )
+
+  const updateMcpServerAccess = async (
+    server: McpServerAccess,
+    body: Partial<Pick<McpServerAccess, 'enabled' | 'accessMode' | 'allowedSandboxIds'>>,
+    success: string,
+  ) => {
+    try {
+      setMcpUpdatingServerId(server.id)
+      setMcpMessage('')
+      const response = await fetch('/api/mcp', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'update-access', serverId: server.id, ...body }),
+      })
+      const data = await response.json()
+      if (!response.ok) throw new Error(data.error || 'Failed to update MCP access')
+      setMcpServers(Array.isArray(data.servers) ? data.servers : [])
+      setMcpMessage(success)
+    } catch (error) {
+      setMcpMessage(error instanceof Error ? error.message : 'Failed to update MCP access')
+    } finally {
+      setMcpUpdatingServerId(null)
+    }
+  }
+
+  const syncMcpManifest = async (sandbox: SandboxInventoryItem) => {
+    try {
+      setMcpSyncing(true)
+      setMcpMessage(`Issuing MCP broker config for ${sandbox.name}...`)
+      const response = await fetch(`/api/sandbox/${encodeURIComponent(sandbox.id)}/mcp`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sandboxName: sandbox.name }),
+      })
+      const data = await response.json()
+      if (!response.ok) throw new Error(data.error || 'Failed to issue MCP broker config')
+      setMcpMessage(data.note || 'MCP broker config issued.')
+    } catch (error) {
+      setMcpMessage(error instanceof Error ? error.message : 'Failed to issue MCP broker config')
+    } finally {
+      setMcpSyncing(false)
+    }
+  }
+
+  const enableMcpForSandbox = (sandbox: SandboxInventoryItem, server: McpServerAccess) => {
+    const current = new Set(server.allowedSandboxIds)
+    current.add(sandbox.id)
+    return updateMcpServerAccess(server, {
+      enabled: true,
+      accessMode: server.accessMode === 'allow_all' ? 'allow_all' : 'allow_only',
+      allowedSandboxIds: Array.from(current),
+    }, `${server.name} enabled for ${sandbox.name}.`).then(() => syncMcpManifest(sandbox))
+  }
+
+  const revokeMcpForSandbox = (sandbox: SandboxInventoryItem, server: McpServerAccess) => {
+    const current = new Set(server.allowedSandboxIds)
+    current.delete(sandbox.id)
+    current.delete(sandbox.name)
+    if (server.accessMode === 'allow_all') {
+      for (const item of sandboxes) {
+        if (item.id !== sandbox.id) current.add(item.id)
+      }
+    }
+    return updateMcpServerAccess(server, {
+      accessMode: 'allow_only',
+      allowedSandboxIds: Array.from(current),
+    }, `${server.name} revoked from ${sandbox.name}.`).then(() => syncMcpManifest(sandbox))
   }
 
   const resolvePermissionRequest = async (sandbox: SandboxInventoryItem, action: 'approve' | 'reject', chunkId: string) => {
@@ -234,7 +350,7 @@ export default function SandboxList({
         </div>
       ) : (
         <>
-          <div className="flex items-end justify-between gap-4">
+          <div className="flex items-end justify-between gap-4 max-sm:flex-col max-sm:items-start">
             <div>
               <p className="text-[10px] font-mono uppercase tracking-wider text-[var(--nvidia-green)]">
                 Inventory
@@ -252,16 +368,21 @@ export default function SandboxList({
             {sandboxes.map((sandbox) => (
               <div
                 key={sandbox.id}
-                className={`group overflow-hidden rounded border text-left transition-all ${
+                className={`group overflow-hidden rounded border text-left transition-all duration-150 ${
                   isDestroyMode
                     ? 'border-[var(--status-stopped)] bg-[var(--status-stopped-bg)] hover:shadow-[0_18px_60px_rgba(220,38,38,0.16)]'
                     : selectedSandboxId === sandbox.id
                       ? 'border-[var(--nvidia-green)] bg-[var(--surface-hover)] shadow-[var(--shadow-glow)]'
-                      : 'border-[var(--border-subtle)] bg-[var(--surface-raised)] shadow-[var(--shadow-soft)] hover:border-[var(--nvidia-green)] hover:bg-[var(--surface-hover)]'
+                      : 'border-[var(--border-subtle)] bg-[var(--surface-raised)] shadow-[var(--shadow-soft)] hover:-translate-y-0.5 hover:border-[var(--nvidia-green)] hover:bg-[var(--surface-hover)]'
                 }`}
               >
-                <button type="button" onClick={() => onSandboxSelect(sandbox.id)} className="w-full p-4 text-left">
-                  <div className="flex items-center justify-between gap-3 mb-3">
+                <button
+                  type="button"
+                  onClick={() => onSandboxSelect(sandbox.id)}
+                  className="w-full p-4 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--nvidia-green)]"
+                  aria-pressed={selectedSandboxId === sandbox.id}
+                >
+                  <div className="mb-3 flex items-start justify-between gap-3">
                     <div className="flex items-center gap-2 min-w-0">
                       {(() => {
                         const feed = permissionFeeds[sandbox.id]
@@ -276,7 +397,7 @@ export default function SandboxList({
                           <span className="h-2.5 w-2.5 rounded-full bg-[var(--status-running)]" title={`Policy status: ${feed?.latest?.status || 'ok'}`} />
                         )
                       })()}
-                      <span className={`text-sm font-mono font-semibold truncate ${
+                      <span className={`truncate font-mono text-sm font-semibold ${
                         isDestroyMode ? 'text-[var(--status-stopped)]' : 'text-[var(--foreground)]'
                       }`}>
                         {sandbox.name}
@@ -284,6 +405,24 @@ export default function SandboxList({
                       {sandbox.isDefault ? (
                         <span className="rounded-full border border-[var(--border-subtle)] px-1.5 py-0.5 text-[9px] uppercase tracking-wider text-[var(--foreground-dim)]">default</span>
                       ) : null}
+                      {(() => {
+                        const hasMcpAccess = allowedMcpServersForSandbox(sandbox).length > 0
+                        return (
+                          <span
+                            className={`inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-sm border ${
+                              hasMcpAccess
+                                ? 'border-[var(--nvidia-green)] bg-[var(--status-running-bg)] text-[var(--nvidia-green)]'
+                                : 'border-[var(--border-subtle)] bg-[var(--background-tertiary)] text-[var(--foreground-dim)] opacity-55'
+                            }`}
+                            title={hasMcpAccess ? 'MCP access allowed' : 'No MCP access allowed'}
+                            aria-label={hasMcpAccess ? 'MCP access allowed' : 'No MCP access allowed'}
+                          >
+                            <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                              <path strokeLinecap="square" strokeLinejoin="miter" strokeWidth={2} d="M7 8h10M7 16h10M9 4h6a2 2 0 012 2v12a2 2 0 01-2 2H9a2 2 0 01-2-2V6a2 2 0 012-2z" />
+                            </svg>
+                          </span>
+                        )
+                      })()}
                     </div>
                     <div className={`status-chip shrink-0 px-2.5 py-1 ${
                       isDestroyMode
@@ -300,15 +439,15 @@ export default function SandboxList({
                     </div>
                   </div>
 
-                  <div className="space-y-1">
+                  <div className="space-y-1.5">
                     {([
                       ['Attach Target', sandbox.ip, '180px'],
                       ['Namespace', sandbox.namespace, '120px'],
                       ['Host Alias', sandbox.sshHostAlias || 'N/A', '140px'],
                       ['Sandbox ID', sandbox.id, '140px'],
                     ] as Array<[string, string, string]>).map(([label, value, width]) => (
-                      <div key={label} className="flex items-center justify-between gap-3">
-                        <span className="text-[10px] uppercase text-[var(--foreground-dim)]">{label}</span>
+                      <div key={label} className="grid grid-cols-[6.5rem_minmax(0,1fr)] items-center gap-3">
+                        <span className="text-[10px] uppercase tracking-wider text-[var(--foreground-dim)]">{label}</span>
                         <span className="text-xs font-mono truncate text-[var(--foreground)]" style={{ maxWidth: width }} title={value}>{value}</span>
                       </div>
                     ))}
@@ -324,7 +463,7 @@ export default function SandboxList({
                       event.currentTarget.value = ''
                       resolvePermissionRequest(sandbox, 'approve', value)
                     }}
-                    className="w-full rounded border border-[var(--border-subtle)] bg-[var(--background-tertiary)] px-3 py-2 text-xs font-mono uppercase tracking-wider text-[var(--foreground)] focus:outline-none focus:ring-1 focus:ring-[var(--nvidia-green)]"
+                    className="field-control w-full px-3 py-2 font-mono text-xs uppercase tracking-wider"
                   >
                     <option value="">
                       {grantingSandboxId === sandbox.id
@@ -359,7 +498,7 @@ export default function SandboxList({
                 onToggle={() => toggleDrawer('operations')}
               >
                 <div className="space-y-6">
-                  <div className="flex items-center gap-3 flex-wrap">
+                  <div className="flex flex-wrap items-center gap-3 max-sm:[&>button]:w-full">
                     <button
                       onClick={async () => {
                         try {
@@ -410,7 +549,7 @@ export default function SandboxList({
                     </div>
                   )}
 
-                  <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                  <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
                     <div className="metric p-4">
                       <p className="text-[10px] text-[var(--foreground-dim)] uppercase tracking-wider">CPU</p>
                       <p className="text-xl font-mono text-[var(--nvidia-green)] mt-1">{telemetry.cpu.toFixed(1)}%</p>
@@ -450,6 +589,88 @@ export default function SandboxList({
               </DrawerSection>
 
               <DrawerSection
+                title="Allowed MCP Server Access"
+                summary="Enable, disable, or revoke MCP servers for this sandbox."
+                open={openDrawers.mcp}
+                onToggle={() => toggleDrawer('mcp')}
+              >
+                <div className="space-y-4">
+                  <div className="flex items-center justify-between gap-4 rounded-sm border border-[var(--border-subtle)] bg-[var(--background-tertiary)] p-4 max-sm:flex-col max-sm:items-start">
+                    <div>
+                      <h4 className="text-xs font-semibold uppercase tracking-wider text-[var(--foreground)]">Sandbox Manifest</h4>
+                      <p className="mt-1 text-xs text-[var(--foreground-dim)]">
+                        Writes <span className="font-mono text-[var(--foreground)]">/sandbox/openshell_control_mcp.md</span> with broker URL and sandbox token only.
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      disabled={mcpSyncing}
+                      onClick={() => syncMcpManifest(selectedSandbox)}
+                      className="action-button px-3 py-2 max-sm:w-full"
+                    >
+                      {mcpSyncing ? 'Issuing...' : 'Issue Broker Config'}
+                    </button>
+                  </div>
+                  {mcpMessage && (
+                    <div className="rounded-sm border border-[var(--border-subtle)] bg-[var(--background-tertiary)] p-3 text-xs text-[var(--foreground-dim)]">
+                      {mcpMessage}
+                    </div>
+                  )}
+                  {mcpServers.length === 0 ? (
+                    <div className="rounded-sm border border-[var(--border-subtle)] bg-[var(--background-tertiary)] p-4 text-xs text-[var(--foreground-dim)]">
+                      No MCP servers are installed yet.
+                    </div>
+                  ) : (
+                    <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+                      {mcpServers.map((server) => {
+                        const hasAccess = sandboxCanAccessMcpServer(selectedSandbox, server)
+                        const updating = mcpUpdatingServerId === server.id
+                        return (
+                          <div key={server.id} className="rounded-sm border border-[var(--border-subtle)] bg-[var(--background-tertiary)] p-4">
+                            <div className="flex items-start justify-between gap-3">
+                              <div className="min-w-0">
+                                <h4 className="truncate text-sm font-mono font-semibold text-[var(--foreground)]">{server.name}</h4>
+                                <p className="mt-1 break-all font-mono text-[11px] text-[var(--foreground-dim)]">{server.command} {server.args.join(' ')}</p>
+                              </div>
+                              <span className={`status-chip px-2 py-1 ${hasAccess ? 'bg-[var(--status-running-bg)] text-[var(--status-running)]' : 'bg-[var(--status-pending-bg)] text-[var(--status-pending)]'}`}>
+                                {hasAccess ? 'allowed' : 'blocked'}
+                              </span>
+                            </div>
+                            <div className="mt-4 flex gap-2 max-sm:flex-col">
+                              <button
+                                type="button"
+                                disabled={updating || hasAccess}
+                                onClick={() => enableMcpForSandbox(selectedSandbox, server)}
+                                className="action-button flex-1 px-3 py-2"
+                              >
+                                Enable
+                              </button>
+                              <button
+                                type="button"
+                                disabled={updating || !server.enabled}
+                                onClick={() => updateMcpServerAccess(server, { enabled: false }, `${server.name} disabled globally.`)}
+                                className="action-button flex-1 px-3 py-2"
+                              >
+                                Disable
+                              </button>
+                              <button
+                                type="button"
+                                disabled={updating || !hasAccess}
+                                onClick={() => revokeMcpForSandbox(selectedSandbox, server)}
+                                className="action-button flex-1 px-3 py-2"
+                              >
+                                Revoke
+                              </button>
+                            </div>
+                          </div>
+                        )
+                      })}
+                    </div>
+                  )}
+                </div>
+              </DrawerSection>
+
+              <DrawerSection
                 title="Sandbox Policy"
                 summary="Approve or reject network requests raised by the sandbox."
                 open={openDrawers.policy}
@@ -469,7 +690,7 @@ export default function SandboxList({
 
                     return pending.map((request) => (
                       <div key={request.chunkId} className="rounded-sm border border-amber-400/60 bg-amber-400/10 p-4">
-                        <div className="flex items-start justify-between gap-4">
+                        <div className="flex items-start justify-between gap-4 max-md:flex-col">
                           <div className="min-w-0 space-y-2">
                             <div className="flex items-center gap-2 flex-wrap">
                               <span className="text-xs font-mono font-semibold text-[var(--foreground)]">
@@ -486,7 +707,7 @@ export default function SandboxList({
                               {request.binary || request.binaries.join(', ') || 'unknown binary'} / {request.chunkId}
                             </p>
                           </div>
-                          <div className="flex shrink-0 items-center gap-2">
+                          <div className="flex shrink-0 items-center gap-2 max-md:w-full max-md:[&>button]:flex-1">
                             <button
                               type="button"
                               disabled={grantingSandboxId === selectedSandbox.id}
