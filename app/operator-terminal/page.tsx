@@ -46,6 +46,7 @@ interface LiveTerminalSession {
   replay?: string
   websocketUrl: string
   sshHostAlias?: string
+  reconnectKey?: string
 }
 
 type XTermModule = typeof import('xterm')
@@ -58,7 +59,6 @@ const defaultAlias = (sandboxId: string | null) => `ssh openshell-${sandboxId ||
 const defaultFallback = (sandboxId: string | null) => `ssh openshell-${sandboxId || 'my-assistant'}`
 const defaultLoginShell = (sandboxId: string | null) => `env PATH=$HOME/.local/bin:$PATH bash -l -c 'ssh openshell-${sandboxId || 'my-assistant'}'`
 const DEFAULT_SHELL_HINT = 'If your non-interactive shell misses local tooling, retry from a login shell or prepend PATH=$HOME/.local/bin:$PATH before ssh.'
-
 function OperatorTerminalInner() {
   const searchParams = useSearchParams()
   const sandboxId = searchParams.get('sandboxId')
@@ -73,6 +73,7 @@ function OperatorTerminalInner() {
   const [terminalState, setTerminalState] = useState<'idle' | 'connecting' | 'connected' | 'error'>('idle')
   const [terminalStatus, setTerminalStatus] = useState<string>('Terminal not connected yet.')
   const [liveSession, setLiveSession] = useState<LiveTerminalSession | null>(null)
+  const [terminalReady, setTerminalReady] = useState(false)
   const [showRecovery, setShowRecovery] = useState(false)
 
   const terminalContainerRef = useRef<HTMLDivElement | null>(null)
@@ -81,10 +82,14 @@ function OperatorTerminalInner() {
   const socketRef = useRef<WebSocket | null>(null)
   const liveSessionIdRef = useRef<string>('')
   const liveSessionRequestRef = useRef<Promise<void> | null>(null)
+  const reconnectCounterRef = useRef(0)
+  const resizeObserverRef = useRef<ResizeObserver | null>(null)
 
   useEffect(() => {
     setDashboardSessionId(ensureDashboardSessionId(requestedDashboardSessionId))
   }, [requestedDashboardSessionId])
+
+  const terminalDescription = sandboxId ? 'Live operator terminal for the selected sandbox, brokered through the dashboard-owned terminal bridge.' : 'Live operator terminal for host mode, brokered through the dashboard-owned terminal bridge.'
 
   const refreshReadiness = useCallback(async () => {
     if (!sandboxId) {
@@ -109,8 +114,14 @@ function OperatorTerminalInner() {
     }
   }, [sandboxId])
 
-  const ensureLiveSession = useCallback(async () => {
+  const ensureLiveSession = useCallback(async ({ reset = false }: { reset?: boolean } = {}) => {
     if (liveSessionRequestRef.current) return liveSessionRequestRef.current
+    if (reset) {
+      reconnectCounterRef.current += 1
+      liveSessionIdRef.current = ''
+      socketRef.current?.close()
+      socketRef.current = null
+    }
     setTerminalState('connecting')
     setTerminalStatus(sandboxId
       ? `Initializing live terminal session for ${sandboxId}…`
@@ -134,6 +145,7 @@ function OperatorTerminalInner() {
         replay: result.replay,
         websocketUrl: result.websocketUrl,
         sshHostAlias: result.sshHostAlias,
+        reconnectKey: String(reconnectCounterRef.current),
       })
     })()
 
@@ -171,23 +183,32 @@ function OperatorTerminalInner() {
       const fitAddon = new FitAddon()
       term.loadAddon(fitAddon)
       term.open(terminalContainerRef.current)
-      fitAddon.fit()
+      requestAnimationFrame(() => fitAddon.fit())
       term.focus()
       terminalRef.current = term
       fitAddonRef.current = fitAddon
+      setTerminalReady(true)
 
       const focusTerminal = () => term.focus()
       terminalContainerRef.current.addEventListener('click', focusTerminal)
 
       const handleResize = () => {
-        fitAddon.fit()
+        try {
+          fitAddon.fit()
+        } catch {
+          return
+        }
         if (socketRef.current?.readyState === WebSocket.OPEN) {
           socketRef.current.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }))
         }
       }
       window.addEventListener('resize', handleResize)
+      resizeObserverRef.current = new ResizeObserver(handleResize)
+      resizeObserverRef.current.observe(terminalContainerRef.current)
       cleanupResize = () => {
         window.removeEventListener('resize', handleResize)
+        resizeObserverRef.current?.disconnect()
+        resizeObserverRef.current = null
         terminalContainerRef.current?.removeEventListener('click', focusTerminal)
       }
     })().catch((error) => {
@@ -202,12 +223,17 @@ function OperatorTerminalInner() {
       terminalRef.current?.dispose()
       terminalRef.current = null
       fitAddonRef.current = null
+      setTerminalReady(false)
     }
   }, [])
 
   useEffect(() => {
-    if (!liveSession?.websocketUrl || !terminalRef.current) return
+    if (!terminalReady || !liveSession?.websocketUrl || !terminalRef.current) return
     const term = terminalRef.current
+    const previousSocket = socketRef.current
+    if (previousSocket && previousSocket.readyState !== WebSocket.CLOSED) {
+      previousSocket.close()
+    }
     term.reset()
     if (liveSession.replay) term.write(liveSession.replay)
 
@@ -220,7 +246,11 @@ function OperatorTerminalInner() {
     socket.addEventListener('open', () => {
       setTerminalState('connected')
       setTerminalStatus(`Live terminal connected for ${liveSession.sandboxId}.`)
-      fitAddonRef.current?.fit()
+      try {
+        fitAddonRef.current?.fit()
+      } catch {
+        // xterm fit can throw if the tab is backgrounded during initial layout.
+      }
       term.focus()
       socket.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }))
     })
@@ -243,13 +273,15 @@ function OperatorTerminalInner() {
     })
 
     socket.addEventListener('close', () => {
+      if (socketRef.current !== socket) return
       setTerminalState((current) => current === 'error' ? current : 'idle')
       setTerminalStatus('Terminal disconnected. Refresh session to reconnect.')
     })
 
     socket.addEventListener('error', () => {
+      if (socketRef.current !== socket) return
       setTerminalState('error')
-      setTerminalStatus('Terminal websocket error.')
+      setTerminalStatus('Terminal websocket error. Check that the dashboard websocket path is routed in production, then reconnect.')
     })
 
     return () => {
@@ -257,7 +289,7 @@ function OperatorTerminalInner() {
       socket.close()
       if (socketRef.current === socket) socketRef.current = null
     }
-  }, [liveSession])
+  }, [liveSession, terminalReady])
 
   const readiness = useMemo(() => {
     if (!sandboxId) return { tone: 'border-[var(--status-pending)] text-[var(--status-pending)]', label: 'HOST MODE', detail: 'No sandbox query was provided. The dashboard terminal stays in host mode and keeps dashboard-session diagnostics for reconnect behavior.' }
@@ -285,6 +317,7 @@ function OperatorTerminalInner() {
           <div>
             <p className="text-[10px] uppercase tracking-[0.25em] text-[var(--foreground-dim)] font-mono">OpenShell Control</p>
             <h1 className="text-xl font-semibold uppercase tracking-wider mt-2">Operator Terminal</h1>
+            <p className="mt-2 max-w-2xl text-xs text-[var(--foreground-dim)]">{terminalDescription}</p>
           </div>
           <Link href="/" className="px-4 py-2 rounded-sm bg-[var(--background-tertiary)] text-[var(--foreground)] text-xs font-mono uppercase tracking-wider hover:bg-[var(--background-panel)]">Back to Dashboard</Link>
         </div>
@@ -310,7 +343,7 @@ function OperatorTerminalInner() {
           </div>
           <div className="rounded-sm border border-[var(--border-subtle)] bg-black p-3"><div ref={terminalContainerRef} className="h-[68vh] min-h-[460px] w-full" /></div>
           <div className="flex items-center gap-3 flex-wrap">
-            <button onClick={ensureLiveSession} disabled={terminalState === 'connecting'} className="px-3 py-2 rounded-sm border border-[var(--border-subtle)] text-xs font-mono uppercase tracking-wider hover:border-[var(--nvidia-green)] disabled:opacity-50 disabled:cursor-not-allowed">{terminalState === 'connecting' ? 'Connecting…' : 'Reconnect Live Terminal'}</button>
+            <button onClick={() => ensureLiveSession({ reset: true })} disabled={terminalState === 'connecting'} className="px-3 py-2 rounded-sm border border-[var(--border-subtle)] text-xs font-mono uppercase tracking-wider hover:border-[var(--nvidia-green)] disabled:opacity-50 disabled:cursor-not-allowed">{terminalState === 'connecting' ? 'Connecting…' : 'Reconnect Live Terminal'}</button>
             <button onClick={refreshReadiness} disabled={!sandboxId} className="px-3 py-2 rounded-sm border border-[var(--border-subtle)] text-xs font-mono uppercase tracking-wider hover:border-[var(--nvidia-green)] disabled:opacity-50 disabled:cursor-not-allowed">Refresh Readiness</button>
             <button onClick={() => setShowRecovery((current) => !current)} className="px-3 py-2 rounded-sm border border-[var(--border-subtle)] text-xs font-mono uppercase tracking-wider hover:border-[var(--nvidia-green)]">{showRecovery ? 'Hide Recovery' : 'Recovery Commands'}</button>
             <span className="text-[11px] text-[var(--foreground-dim)] font-mono">{liveSession?.sessionId ? `session ${liveSession.sessionId.slice(0, 8)}` : 'no session'}</span>

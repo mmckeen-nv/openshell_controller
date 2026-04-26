@@ -4,7 +4,7 @@ import { resolveRuntimeAuthority } from '@/app/lib/runtimeAuthority'
 
 const TERMINAL_SERVER_URL = process.env.TERMINAL_SERVER_URL || 'http://127.0.0.1:3011'
 const TERMINAL_WS_PROXY_PATH = '/api/openshell/terminal/live/ws'
-const TERMINAL_WS_PROXY_PORT = process.env.TERMINAL_WS_PROXY_PORT || process.env.OPENCLAW_DASHBOARD_WS_PROXY_PORT || '3001'
+const TERMINAL_WS_PROXY_PORT = process.env.TERMINAL_WS_PROXY_PORT || ''
 const PUBLIC_BROWSER_HOST = process.env.PUBLIC_BROWSER_HOST || process.env.PUBLIC_WS_HOST || null
 const PUBLIC_BASE_URL = process.env.PUBLIC_BASE_URL || null
 
@@ -77,7 +77,9 @@ function getBrowserWebSocketUrl(request: Request, params: {
   const baseProtocol = (forwardedProto && forwardedProto.trim()) || requestUrl.protocol.replace(/:$/, '')
   const protocol = baseProtocol === 'https' ? 'wss:' : 'ws:'
   const websocketHost = new URL(`${protocol}//${host}`)
-  websocketHost.port = TERMINAL_WS_PROXY_PORT
+  if (TERMINAL_WS_PROXY_PORT.trim()) {
+    websocketHost.port = TERMINAL_WS_PROXY_PORT.trim()
+  }
   const websocketUrl = new URL(TERMINAL_WS_PROXY_PATH, websocketHost)
   websocketUrl.searchParams.set('sessionId', params.sessionId)
   websocketUrl.searchParams.set('sandboxId', params.sandboxId)
