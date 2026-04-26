@@ -60,8 +60,10 @@ body {
   margin: 0;
   color: var(--foreground);
   background:
-    radial-gradient(circle at 70% 0%, rgba(118, 185, 0, 0.13), transparent 28rem),
-    linear-gradient(180deg, var(--background-secondary), var(--background) 18rem);
+    linear-gradient(rgba(118, 185, 0, 0.045) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(118, 185, 0, 0.035) 1px, transparent 1px),
+    linear-gradient(180deg, var(--background-secondary), var(--background) 20rem);
+  background-size: 56px 56px, 56px 56px, auto;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
@@ -129,12 +131,33 @@ input {
     box-shadow: var(--shadow-soft);
     backdrop-filter: blur(14px);
   }
+
+  .panel-header {
+    border-bottom: 1px solid var(--border-subtle);
+    background:
+      linear-gradient(90deg, rgba(118, 185, 0, 0.1), transparent 55%),
+      var(--surface-raised);
+  }
   
   /* Metric display - data-dense */
   .metric {
     background: var(--metric-bg);
     border: 1px solid var(--metric-border);
     border-radius: 3px;
+  }
+
+  .field-control {
+    border: 1px solid var(--border-subtle);
+    border-radius: 3px;
+    background: var(--background-tertiary);
+    color: var(--foreground);
+    transition: border-color 150ms ease, box-shadow 150ms ease, background-color 150ms ease;
+  }
+
+  .field-control:focus {
+    border-color: var(--nvidia-green);
+    box-shadow: 0 0 0 3px var(--nvidia-green-dim);
+    outline: none;
   }
 
   .action-button {
@@ -147,6 +170,11 @@ input {
     letter-spacing: 0.05em;
     text-transform: uppercase;
     transition: border-color 150ms ease, background-color 150ms ease, color 150ms ease, transform 150ms ease;
+  }
+
+  .action-button:focus-visible {
+    box-shadow: 0 0 0 3px var(--nvidia-green-dim);
+    outline: none;
   }
 
   .action-button:hover:not(:disabled) {
@@ -166,5 +194,10 @@ input {
     font-size: 0.625rem;
     letter-spacing: 0.05em;
     text-transform: uppercase;
+  }
+
+  .subtle-divider {
+    background: linear-gradient(90deg, transparent, var(--border-subtle), transparent);
+    height: 1px;
   }
 }
