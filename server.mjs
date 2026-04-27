@@ -385,12 +385,12 @@ async function startLocalTerminalServerIfNeeded() {
 
 const app = next({ dev, hostname, port })
 const handle = app.getRequestHandler()
-const handleUpgrade = typeof app.getUpgradeHandler === 'function'
-  ? app.getUpgradeHandler()
-  : null
 
 await startLocalTerminalServerIfNeeded()
 await app.prepare()
+const handleUpgrade = typeof app.getUpgradeHandler === 'function'
+  ? app.getUpgradeHandler()
+  : null
 
 const server = http.createServer((req, res) => handle(req, res))
 const dashboardWsProxyServer = http.createServer((_, res) => {
