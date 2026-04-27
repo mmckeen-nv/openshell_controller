@@ -59,6 +59,7 @@ openshell --version
 Optional, but useful for stdio MCP servers installed through the broker:
 
 ```bash
+npx --version
 uvx --version
 ```
 
@@ -81,6 +82,7 @@ From the repository root:
 The installer:
 
 - checks Node, npm, Docker, OpenShell CLI availability, sandbox inventory reachability, and default port occupancy;
+- installs or verifies the MCP package runners used by bundled stdio servers: `npx` and `uvx`;
 - installs npm dependencies with `npm ci` when `package-lock.json` exists;
 - runs a non-blocking `npm audit` summary;
 - creates `.env.local` if needed;
@@ -225,9 +227,9 @@ MCP_BROKER_REQUEST_TIMEOUT_MS=45000
 OPENSHELL_CONTROL_MCP_BROKER_URL=http://localhost:3000/api/mcp/broker
 ```
 
-`OPENSHELL_CONTROL_MCP_BROKER_URL` is optional. Set it when sandboxes need a routable URL that differs from the dashboard request origin.
+`OPENSHELL_CONTROL_MCP_BROKER_URL` is optional. Set it only when you need to override discovery. By default the dashboard discovers the active OpenShell Docker gateway and the selected sandbox's proxy environment before writing `/sandbox/openshell_control_mcp.md`.
 
-Stdio MCP servers run on the control host. Make sure their launch commands, such as `uvx`, `npx`, `node`, or `python`, are available to the dashboard process.
+Stdio MCP servers run on the control host. The installer verifies `npx` and installs `uvx` into `~/.local/bin` when it is missing. Custom MCP server launch commands, such as `node` or `python`, must also be available to the dashboard process.
 
 ## File Transfer
 

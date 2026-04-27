@@ -86,6 +86,20 @@ export async function verifySandboxMcpBrokerToken(token: string) {
   return session
 }
 
+export async function revokeSandboxMcpBrokerSession(sandboxId: string) {
+  const store = await readStore()
+  const existing = store.sessions[sandboxId]
+  if (!existing) return null
+  store.sessions[sandboxId] = {
+    ...existing,
+    enabled: false,
+    rotatedAt: new Date().toISOString(),
+    expiresAt: new Date().toISOString(),
+  }
+  await writeStore(store)
+  return store.sessions[sandboxId]
+}
+
 export async function listAllowedBrokerServers(session: SandboxMcpBrokerSession) {
   const inventory = await listMcpServers()
   return inventory.servers.filter((server) => sandboxCanAccessMcpServer(server, session.sandboxId, session.sandboxName))

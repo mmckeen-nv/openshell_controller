@@ -85,6 +85,7 @@ export const MCP_SERVER_CATALOG: McpCatalogEntry[] = [
     tags: ["web", "utility"],
   },
 ]
+const BASELINE_MCP_SERVER_IDS = ["memory"]
 
 function emptyStore(): StoreShape {
   return { servers: {} }
@@ -164,6 +165,23 @@ async function writeStore(store: StoreShape) {
   await writeFile(STORE_PATH, JSON.stringify(store, null, 2), { mode: 0o600 })
 }
 
+async function ensureBaselineMcpServers(store: StoreShape) {
+  let changed = false
+  for (const id of BASELINE_MCP_SERVER_IDS) {
+    const entry = MCP_SERVER_CATALOG.find((candidate) => candidate.id === id)
+    if (!entry || store.servers[id]) continue
+    store.servers[id] = normalizeInstall({
+      ...entry,
+      source: "catalog",
+      enabled: true,
+      accessMode: "disabled",
+      allowedSandboxIds: [],
+    })
+    changed = true
+  }
+  if (changed) await writeStore(store)
+}
+
 export function buildMcpClientConfig(servers: McpServerInstall[]) {
   return {
     mcpServers: Object.fromEntries(
@@ -195,6 +213,7 @@ export function sandboxCanAccessMcpServer(server: McpServerInstall, sandboxId: s
 
 export async function listMcpServers() {
   const store = await readStore()
+  await ensureBaselineMcpServers(store)
   const servers = Object.values(store.servers).sort((a, b) => a.name.localeCompare(b.name))
   return {
     catalog: MCP_SERVER_CATALOG,

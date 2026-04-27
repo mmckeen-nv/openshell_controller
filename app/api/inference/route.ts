@@ -19,10 +19,11 @@ function stripAnsi(value: string) {
   return value.replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, "")
 }
 
-async function runOpenShell(args: string[]) {
+async function runOpenShell(args: string[], extraEnv: Record<string, string> = {}) {
   const { stdout, stderr } = await execFileAsync(OPENSHELL_BIN, args, {
     env: {
       ...process.env,
+      ...extraEnv,
       PATH: HOST_PATH,
       OPENSHELL_GATEWAY: process.env.OPENSHELL_GATEWAY || "nemoclaw",
       NO_COLOR: "1",
@@ -105,8 +106,12 @@ function optionalString(value: unknown) {
   return typeof value === "string" ? value.trim() : ""
 }
 
-function providerCredentialArg(credentialKey: string, apiKey: string) {
-  return apiKey ? `${credentialKey}=${apiKey}` : credentialKey
+function redactSecretOutput(value: string, secrets: string[] = []) {
+  let redacted = value
+  for (const secret of secrets) {
+    if (secret) redacted = redacted.split(secret).join("[redacted]")
+  }
+  return redacted.replace(/([A-Z_][A-Z0-9_]*=)([^\s]+)/g, "$1[redacted]")
 }
 
 export async function GET() {
@@ -151,11 +156,12 @@ export async function POST(request: Request) {
       ? ["provider", "update", name]
       : ["provider", "create", "--name", name, "--type", type]
 
+    const providerEnv = apiKey ? { [credentialKey]: apiKey } : {}
     if (!existingNames.includes(name) && !apiKey) providerArgs.push("--from-existing")
-    if (apiKey) providerArgs.push("--credential", providerCredentialArg(credentialKey, apiKey))
+    if (apiKey) providerArgs.push("--credential", credentialKey)
     if (baseUrl) providerArgs.push("--config", `OPENAI_BASE_URL=${baseUrl}`)
 
-    const providerResult = await runOpenShell(providerArgs)
+    const providerResult = await runOpenShell(providerArgs, providerEnv)
     let inferenceResult = null
     if (makeActive) {
       const routeArgs = ["inference", "set", "--provider", name, "--model", model]
@@ -172,8 +178,8 @@ export async function POST(request: Request) {
       active: makeActive,
       gateway: parseRoute(refreshed.stdout, "Gateway inference"),
       system: parseRoute(refreshed.stdout, "System inference"),
-      stdout: [providerResult.stdout, inferenceResult?.stdout].filter(Boolean).join("\n\n"),
-      stderr: [providerResult.stderr, inferenceResult?.stderr].filter(Boolean).join("\n\n"),
+      stdout: redactSecretOutput([providerResult.stdout, inferenceResult?.stdout].filter(Boolean).join("\n\n"), [apiKey]),
+      stderr: redactSecretOutput([providerResult.stderr, inferenceResult?.stderr].filter(Boolean).join("\n\n"), [apiKey]),
     })
   } catch (error) {
     const message = error instanceof Error ? error.message : "Failed to save inference endpoint"

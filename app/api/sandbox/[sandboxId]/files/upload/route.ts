@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server"
-import { assertRequestContentLength, uploadSandboxFile } from "@/app/lib/sandboxFiles"
+import { assertRequestContentLength, uploadSandboxFile, uploadSandboxFiles } from "@/app/lib/sandboxFiles"
 
 export async function POST(
   request: Request,
@@ -10,13 +10,37 @@ export async function POST(
     assertRequestContentLength(request)
     const form = await request.formData()
     const file = form.get("file")
+    const files = form.getAll("files")
     const rawPath = form.get("path")
-    if (!(file instanceof File)) throw new Error("file is required")
+    const rawRelativePaths = form.get("relativePaths")
     const destinationPath = typeof rawPath === "string" && rawPath.trim()
       ? rawPath.trim()
-      : `/sandbox/${file.name}`
+      : "/sandbox/"
+
+    if (files.length > 0) {
+      const relativePaths = typeof rawRelativePaths === "string" ? JSON.parse(rawRelativePaths) : []
+      if (!Array.isArray(relativePaths)) throw new Error("relative paths are required for directory upload")
+      const payloads = await Promise.all(files.map(async (item, index) => {
+        if (!(item instanceof File)) throw new Error("files must contain only file uploads")
+        return {
+          fileName: item.name,
+          relativePath: typeof relativePaths[index] === "string" && relativePaths[index] ? relativePaths[index] : item.name,
+          payload: Buffer.from(await item.arrayBuffer()),
+        }
+      }))
+      const uploaded = await uploadSandboxFiles(sandboxId, destinationPath, payloads)
+
+      return NextResponse.json({
+        ok: true,
+        uploaded,
+        note: `Uploaded ${uploaded.files.length} file${uploaded.files.length === 1 ? "" : "s"} to ${destinationPath}.`,
+      })
+    }
+
+    if (!(file instanceof File)) throw new Error("file is required")
+    const targetPath = destinationPath.endsWith("/") ? destinationPath : rawPath ? destinationPath : `/sandbox/${file.name}`
     const payload = Buffer.from(await file.arrayBuffer())
-    const uploaded = await uploadSandboxFile(sandboxId, destinationPath, file.name, payload)
+    const uploaded = await uploadSandboxFile(sandboxId, targetPath, file.name, payload)
 
     return NextResponse.json({
       ok: true,

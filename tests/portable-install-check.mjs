@@ -15,6 +15,7 @@ const [
   sandboxPermissionsSource,
   inferenceSource,
   supportBundleSource,
+  mcpBrokerUrlSource,
 ] = await Promise.all([
   readFile(path.join(root, 'install.sh'), 'utf8'),
   readFile(path.join(root, 'app/lib/hostCommands.ts'), 'utf8'),
@@ -26,6 +27,7 @@ const [
   readFile(path.join(root, 'app/lib/sandboxPermissions.ts'), 'utf8'),
   readFile(path.join(root, 'app/api/inference/route.ts'), 'utf8'),
   readFile(path.join(root, 'app/api/support-bundle/route.ts'), 'utf8'),
+  readFile(path.join(root, 'app/lib/mcpBrokerUrl.ts'), 'utf8'),
 ])
 
 assert.match(installSource, /find_nemoclaw_bin\(\)/, 'installer must discover NemoClaw CLI')
@@ -37,6 +39,11 @@ assert.match(installSource, /set_env "NEMOCLAW_SETUP"/, 'installer must persist 
 assert.match(installSource, /set_env "NEMOCLAW_BIN"/, 'installer must persist discovered NemoClaw CLI path')
 assert.match(installSource, /set_env "OPENSHELL_BIN"/, 'installer must persist discovered OpenShell path')
 assert.match(installSource, /upsert_env "TERMINAL_SERVER_AUTOSTART" "true"/, 'installer must enable terminal bridge autostart by default')
+assert.match(installSource, /ensure_npx\(\)/, 'installer must install or verify npx for stdio MCP servers')
+assert.match(installSource, /ensure_uvx\(\)/, 'installer must install or verify uvx for stdio MCP servers')
+assert.match(installSource, /python3 -m pip install --user --upgrade uv/, 'installer must support user-scoped uvx installation')
+assert.match(installSource, /standalone uv installer/, 'installer must fall back when Python blocks user-scoped uv installs')
+assert.match(installSource, /prepend_user_bin\(\)/, 'installer must put ~/.local/bin on PATH for user-scoped MCP runners')
 
 assert.match(hostCommandsSource, /export const HOST_PATH/, 'host command resolution must centralize PATH construction')
 assert.match(hostCommandsSource, /\.nemoclaw\/source\/bin\/nemoclaw\.js/, 'host command resolution must support standard ~/.nemoclaw installs')
@@ -45,6 +52,11 @@ assert.match(hostCommandsSource, /discoverHomeFiles\("scripts\/setup\.sh"\)/, 'r
 assert.match(hostCommandsSource, /discoverHomeFiles\("bin\/nemoclaw\.js"\)/, 'runtime command resolution must scan user home directories for nemoclaw.js')
 assert.match(hostCommandsSource, /export const NEMOCLAW_SETUP_CANDIDATES/, 'runtime command resolution must expose searched setup candidates')
 assert.doesNotMatch(hostCommandsSource, /\/Users\/markmckeen|\/home\/nvidia/, 'host command resolution must not bake in developer machine paths')
+assert.match(mcpBrokerUrlSource, /discoverOpenShellDockerGateway/, 'MCP broker URL generation must discover the active OpenShell Docker gateway')
+assert.match(mcpBrokerUrlSource, /OPEN_SHELL_CONTAINER/, 'MCP broker URL generation must respect the configured cluster container')
+assert.match(mcpBrokerUrlSource, /host\.docker\.internal/, 'MCP broker URL generation must keep a fallback for hosts without Docker inspect')
+assert.match(mcpBrokerUrlSource, /discoverSandboxProxyOrigin/, 'MCP broker URL generation must discover each sandbox proxy endpoint')
+assert.match(mcpBrokerUrlSource, /HTTP_PROXY/, 'MCP broker URL generation must use the sandbox proxy environment when available')
 
 assert.match(createRouteSource, /buildNemoClawCreateCommand\(\)/, 'NemoClaw blueprint create must resolve a current CLI command')
 assert.match(createRouteSource, /"onboard", "--non-interactive"/, 'NemoClaw blueprint create must use the supported onboard CLI flow')

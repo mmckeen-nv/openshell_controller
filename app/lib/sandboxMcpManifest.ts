@@ -1,4 +1,4 @@
-import { rotateSandboxMcpBrokerSession } from "./mcpBrokerStore"
+import { revokeSandboxMcpBrokerSession, rotateSandboxMcpBrokerSession } from "./mcpBrokerStore"
 import { uploadSandboxFile } from "./sandboxFiles"
 
 export const SANDBOX_MCP_MANIFEST_PATH = "/sandbox/openshell_control_mcp.md"
@@ -85,5 +85,42 @@ export async function syncSandboxMcpManifest(
       expiresAt: handoff.session.expiresAt,
     },
     markdown: handoff.markdown,
+  }
+}
+
+export async function revokeSandboxMcpManifest(sandbox: SandboxRef) {
+  const session = await revokeSandboxMcpBrokerSession(sandbox.id)
+  const now = new Date().toISOString()
+  const markdown = [
+    "# OpenShell Control MCP Broker",
+    "",
+    `Generated: ${now}`,
+    `Sandbox: ${sandbox.name || sandbox.id}`,
+    `Sandbox ID: ${sandbox.id}`,
+    "",
+    "MCP access is currently disabled for this sandbox.",
+    "",
+    "The previous broker token has been revoked. Ask the operator to enable an MCP server and issue a new broker config if MCP access is needed.",
+    "",
+  ].join("\n")
+  const uploaded = await uploadSandboxFile(
+    sandbox.id,
+    SANDBOX_MCP_MANIFEST_PATH,
+    "openshell_control_mcp.md",
+    Buffer.from(markdown, "utf8"),
+  )
+
+  return {
+    path: uploaded.path,
+    sandboxName: uploaded.sandboxName,
+    bytes: uploaded.bytes,
+    brokerSession: session ? {
+      sandboxId: session.sandboxId,
+      sandboxName: session.sandboxName,
+      enabled: session.enabled,
+      rotatedAt: session.rotatedAt,
+      expiresAt: session.expiresAt,
+    } : null,
+    markdown,
   }
 }

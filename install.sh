@@ -100,6 +100,55 @@ optional_command() {
   fi
 }
 
+prepend_user_bin() {
+  if [[ -n "${HOME:-}" && ":$PATH:" != *":$HOME/.local/bin:"* ]]; then
+    export PATH="$HOME/.local/bin:$PATH"
+  fi
+}
+
+ensure_npx() {
+  if command -v npx >/dev/null 2>&1; then
+    log "npx MCP package runner: $(command -v npx)"
+    return
+  fi
+
+  log "Installing npx MCP package runner with npm"
+  npm install -g npx
+  command -v npx >/dev/null 2>&1 || fail "npx installation completed, but npx is still not on PATH."
+  log "npx MCP package runner: $(command -v npx)"
+}
+
+ensure_uvx() {
+  prepend_user_bin
+  if command -v uvx >/dev/null 2>&1; then
+    log "uvx MCP package runner: $(command -v uvx)"
+    return
+  fi
+
+  log "Installing uvx MCP package runner"
+  local installed=0
+  if command -v python3 >/dev/null 2>&1 && python3 -m pip --version >/dev/null 2>&1; then
+    if python3 -m pip install --user --upgrade uv; then
+      installed=1
+    else
+      warn "Python pip could not install uv for this user; trying the standalone uv installer."
+    fi
+  fi
+
+  if [[ "$installed" -ne 1 ]] && command -v curl >/dev/null 2>&1; then
+    curl -LsSf https://astral.sh/uv/install.sh | sh
+    installed=1
+  fi
+
+  if [[ "$installed" -ne 1 ]]; then
+    fail "uvx is required for uvx-based MCP servers. Install Python pip or curl, then rerun the installer."
+  fi
+
+  prepend_user_bin
+  command -v uvx >/dev/null 2>&1 || fail "uvx installation completed, but uvx is still not on PATH."
+  log "uvx MCP package runner: $(command -v uvx)"
+}
+
 port_owner() {
   local port="$1"
   if command -v lsof >/dev/null 2>&1; then
@@ -255,6 +304,7 @@ fi
 require_command node
 require_command npm
 require_command docker
+prepend_user_bin
 
 NODE_MAJOR="$(node_major)"
 if [[ "$NODE_MAJOR" -lt "$MIN_NODE_MAJOR" ]]; then
@@ -262,7 +312,8 @@ if [[ "$NODE_MAJOR" -lt "$MIN_NODE_MAJOR" ]]; then
 fi
 
 log "Node $(node -v), npm $(npm -v)"
-optional_command uvx "uvx MCP package runner"
+ensure_npx
+ensure_uvx
 
 if ! docker ps >/dev/null 2>&1; then
   fail "Docker is not reachable. Start Docker and rerun the installer."

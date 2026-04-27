@@ -21,6 +21,16 @@ function sanitizeArchiveStem(value: string) {
   return value.trim().replace(/[^\w.@:+-]/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "") || "sandbox"
 }
 
+function normalizeRelativeArchivePath(input: string, fallbackFileName: string) {
+  const raw = input.trim() || fallbackFileName
+  if (!raw || raw.includes("\0")) throw new Error("relative file path contains unsupported characters")
+  const normalized = path.posix.normalize(raw).replace(/^\/+/, "")
+  if (!normalized || normalized === "." || normalized.startsWith("../") || normalized.includes("/../")) {
+    throw new Error("relative file path must stay inside the uploaded directory")
+  }
+  return normalized
+}
+
 export function normalizeSandboxPath(input: string, fallbackFileName?: string) {
   const raw = input.trim()
   if (!raw) throw new Error("sandbox path is required")
@@ -106,6 +116,31 @@ export async function uploadSandboxFile(sandboxId: string, destinationPath: stri
   }
 }
 
+export async function uploadSandboxFiles(
+  sandboxId: string,
+  destinationDirectory: string,
+  files: Array<{ fileName: string; relativePath: string; payload: Buffer }>
+) {
+  if (files.length === 0) throw new Error("at least one file is required")
+  const totalBytes = files.reduce((sum, file) => sum + file.payload.byteLength, 0)
+  if (totalBytes > MAX_FILE_BYTES) {
+    throw new Error(`directory upload is too large; max transfer size is ${Math.floor(MAX_FILE_BYTES / 1024 / 1024)} MiB`)
+  }
+
+  const uploaded = []
+  for (const file of files) {
+    const relativePath = normalizeRelativeArchivePath(file.relativePath, file.fileName)
+    const targetPath = path.posix.join(destinationDirectory, relativePath)
+    uploaded.push(await uploadSandboxFile(sandboxId, targetPath, file.fileName, file.payload))
+  }
+
+  return {
+    sandboxName: uploaded[0]?.sandboxName || await resolveSandboxName(sandboxId),
+    files: uploaded,
+    bytes: totalBytes,
+  }
+}
+
 export async function downloadSandboxFile(sandboxId: string, sourcePath: string) {
   const sandboxName = await resolveSandboxName(sandboxId)
   const targetPath = normalizeSandboxPath(sourcePath)
@@ -125,6 +160,36 @@ export async function downloadSandboxFile(sandboxId: string, sourcePath: string)
     path: targetPath,
     fileName: path.posix.basename(targetPath) || "download.bin",
     bytes: result.stdout,
+  }
+}
+
+export async function downloadSandboxPath(sandboxId: string, sourcePath: string) {
+  const sandboxName = await resolveSandboxName(sandboxId)
+  const targetPath = normalizeSandboxPath(sourcePath)
+  const typeScript = `if [ -f ${shellQuote(targetPath)} ]; then echo file; elif [ -d ${shellQuote(targetPath)} ]; then echo directory; else exit 1; fi`
+  const typeResult = await runSandboxExec(sandboxName, typeScript, undefined, 30000)
+  if (typeResult.code !== 0) throw new Error("sandbox path does not exist or is not readable")
+  const type = typeResult.stdout.toString("utf8").trim()
+
+  if (type === "file") {
+    return { ...(await downloadSandboxFile(sandboxId, targetPath)), archive: false }
+  }
+
+  const parent = path.posix.dirname(targetPath)
+  const base = path.posix.basename(targetPath) || "sandbox"
+  const archiveName = `${sanitizeArchiveStem(base)}.tar.gz`
+  const result = await runSandboxExec(sandboxName, `tar -C ${shellQuote(parent)} -czf - ${shellQuote(base)}`, undefined, 120000)
+  if (result.code !== 0) throw new Error(result.stderr || "failed to archive sandbox directory")
+  if (result.stdout.byteLength > MAX_FILE_BYTES) {
+    throw new Error(`directory archive is too large; max transfer size is ${Math.floor(MAX_FILE_BYTES / 1024 / 1024)} MiB`)
+  }
+
+  return {
+    sandboxName,
+    path: targetPath,
+    fileName: archiveName,
+    bytes: result.stdout,
+    archive: true,
   }
 }
 

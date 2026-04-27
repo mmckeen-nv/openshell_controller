@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server"
-import { downloadSandboxFile } from "@/app/lib/sandboxFiles"
+import { downloadSandboxPath } from "@/app/lib/sandboxFiles"
 
 function contentDisposition(fileName: string) {
   const fallback = fileName.replace(/[^\w.-]/g, "_") || "download.bin"
@@ -14,7 +14,7 @@ export async function GET(
     const { sandboxId } = await params
     const requestUrl = new URL(request.url)
     const sourcePath = requestUrl.searchParams.get("path") || ""
-    const downloaded = await downloadSandboxFile(sandboxId, sourcePath)
+    const downloaded = await downloadSandboxPath(sandboxId, sourcePath)
 
     return new NextResponse(new Uint8Array(downloaded.bytes), {
       status: 200,
@@ -22,7 +22,7 @@ export async function GET(
         "cache-control": "no-store",
         "content-disposition": contentDisposition(downloaded.fileName),
         "content-length": String(downloaded.bytes.byteLength),
-        "content-type": "application/octet-stream",
+        "content-type": downloaded.archive ? "application/gzip" : "application/octet-stream",
         "x-sandbox-name": downloaded.sandboxName,
         "x-sandbox-path": downloaded.path,
       },

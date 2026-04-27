@@ -13,12 +13,14 @@ const registryRoutePath = path.join(root, 'app/api/mcp/registry/route.ts')
 const brokerCapabilitiesRoutePath = path.join(root, 'app/api/mcp/broker/capabilities/route.ts')
 const brokerCallRoutePath = path.join(root, 'app/api/mcp/broker/call/route.ts')
 const sandboxMcpRoutePath = path.join(root, 'app/api/sandbox/[sandboxId]/mcp/route.ts')
+const brokerUrlPath = path.join(root, 'app/lib/mcpBrokerUrl.ts')
+const middlewarePath = path.join(root, 'middleware.ts')
 const panelPath = path.join(root, 'app/components/McpConfigurationPanel.tsx')
 const sidebarPath = path.join(root, 'app/components/Sidebar.tsx')
 const sandboxListPath = path.join(root, 'app/components/SandboxList.tsx')
 const pagePath = path.join(root, 'app/page.tsx')
 
-const [storeSource, brokerStoreSource, brokerClientSource, manifestSource, routeSource, registryRouteSource, brokerCapabilitiesRouteSource, brokerCallRouteSource, sandboxMcpRouteSource, panelSource, sidebarSource, sandboxListSource, pageSource] = await Promise.all([
+const [storeSource, brokerStoreSource, brokerClientSource, manifestSource, routeSource, registryRouteSource, brokerCapabilitiesRouteSource, brokerCallRouteSource, sandboxMcpRouteSource, brokerUrlSource, middlewareSource, panelSource, sidebarSource, sandboxListSource, pageSource] = await Promise.all([
   readFile(storePath, 'utf8'),
   readFile(brokerStorePath, 'utf8'),
   readFile(brokerClientPath, 'utf8'),
@@ -28,6 +30,8 @@ const [storeSource, brokerStoreSource, brokerClientSource, manifestSource, route
   readFile(brokerCapabilitiesRoutePath, 'utf8'),
   readFile(brokerCallRoutePath, 'utf8'),
   readFile(sandboxMcpRoutePath, 'utf8'),
+  readFile(brokerUrlPath, 'utf8'),
+  readFile(middlewarePath, 'utf8'),
   readFile(panelPath, 'utf8'),
   readFile(sidebarPath, 'utf8'),
   readFile(sandboxListPath, 'utf8'),
@@ -37,6 +41,8 @@ const [storeSource, brokerStoreSource, brokerClientSource, manifestSource, route
 assert.match(storeSource, /export const MCP_SERVER_CATALOG/, 'MCP store must expose an install catalog')
 assert.match(storeSource, /blendermcp\.org/, 'MCP catalog must include the requested BlenderMCP site')
 assert.match(storeSource, /args:\s*\["blender-mcp"\]/, 'MCP catalog must install BlenderMCP via uvx blender-mcp')
+assert.match(storeSource, /BASELINE_MCP_SERVER_IDS = \["memory"\]/, 'MCP dashboard should install Memory as the baseline test server')
+assert.match(storeSource, /ensureBaselineMcpServers/, 'MCP store must seed baseline servers into dashboard state')
 assert.match(storeSource, /mcp-servers\.json/, 'MCP installs must persist to dashboard state')
 assert.match(storeSource, /accessMode/, 'MCP installs must persist sandbox access mode')
 assert.match(storeSource, /allowedSandboxIds/, 'MCP installs must persist allowed sandbox lists')
@@ -59,7 +65,17 @@ assert.match(brokerCapabilitiesRouteSource, /listBrokerServerTools/, 'MCP broker
 assert.match(brokerCallRouteSource, /Requested MCP capability is unavailable/, 'MCP broker denied calls must not disclose blocked server names')
 assert.match(brokerCallRouteSource, /callBrokerServerTool/, 'MCP broker call route must forward allowed calls')
 assert.match(sandboxMcpRouteSource, /export async function POST/, 'Sandbox MCP route must write the broker handoff')
+assert.match(sandboxMcpRouteSource, /action === "revoke"/, 'Sandbox MCP route must revoke broker handoff when MCP access is removed')
+assert.match(sandboxMcpRouteSource, /syncBrokerNetworkAccess/, 'Sandbox MCP route must synchronize broker network access when MCP is enabled')
+assert.match(sandboxMcpRouteSource, /revokeBrokerNetworkAccess/, 'Sandbox MCP route must remove broker network access when MCP is revoked')
 assert.match(sandboxMcpRouteSource, /export async function GET/, 'Sandbox MCP route must preview the broker handoff')
+assert.match(sandboxMcpRouteSource, /brokerBaseUrlForSandbox/, 'Sandbox MCP broker handoff must build a sandbox-routable broker URL')
+assert.match(brokerUrlSource, /discoverOpenShellDockerGateway/, 'Sandbox MCP broker handoff must discover the active OpenShell network gateway')
+assert.match(brokerUrlSource, /LOCAL_HOSTNAMES/, 'Sandbox MCP broker handoff must rewrite local-only browser origins')
+assert.match(brokerUrlSource, /discoverSandboxProxyOrigin/, 'Sandbox MCP broker handoff must discover each sandbox proxy endpoint')
+assert.match(brokerUrlSource, /HTTP_PROXY/, 'Sandbox MCP broker handoff must derive the proxy endpoint from sandbox environment')
+assert.match(brokerUrlSource, /FALLBACK_SANDBOX_PROXY_ORIGIN/, 'Sandbox MCP broker handoff may keep a fallback for older OpenShell layouts')
+assert.match(middlewareSource, /\/api\/mcp\/broker/, 'MCP broker endpoints must bypass dashboard cookie auth and rely on broker token auth')
 assert.match(routeSource, /export async function GET/, 'MCP API must list server configuration')
 assert.match(routeSource, /export async function POST/, 'MCP API must install and update server configuration')
 assert.match(routeSource, /installMcpServer/, 'MCP API must support installing servers')
@@ -85,7 +101,8 @@ assert.match(panelSource, /Allow Only/, 'MCP security must support allow-list ac
 assert.match(panelSource, /Setup Guide/, 'MCP catalog cards should link out to app setup guides')
 assert.match(panelSource, /Client JSON/, 'MCP page must surface generated client JSON')
 assert.match(sandboxListSource, /Allowed MCP Server Access/, 'Sandbox page must expose allowed MCP server access accordion')
-assert.match(sandboxListSource, /Issue Broker Config/, 'Sandbox MCP access controls must issue broker config')
+assert.match(sandboxListSource, /Sync Broker Config/, 'Sandbox MCP access controls must sync broker config')
+assert.match(sandboxListSource, /hasOtherMcpAccess/, 'Sandbox MCP access controls must revoke broker config when no MCP servers remain')
 assert.match(sandboxListSource, /\/sandbox\/openshell_control_mcp\.md/, 'Sandbox MCP access controls must name the manifest path')
 assert.match(sandboxListSource, /sandboxCanAccessMcpServer/, 'Sandbox page must derive MCP access per sandbox')
 assert.match(sandboxListSource, /MCP access allowed/, 'Sandbox cards must show a lit MCP access indicator')

@@ -47,6 +47,8 @@ export default function SandboxFilesPanel({
   showHeader?: boolean
 }) {
   const [selectedFile, setSelectedFile] = useState<File | null>(null)
+  const [selectedDirectoryFiles, setSelectedDirectoryFiles] = useState<File[]>([])
+  const [uploadMode, setUploadMode] = useState<"file" | "directory">("file")
   const [uploadPath, setUploadPath] = useState("/sandbox/")
   const [downloadPath, setDownloadPath] = useState("/sandbox/")
   const [busy, setBusy] = useState<"upload" | "download" | null>(null)
@@ -59,6 +61,7 @@ export default function SandboxFilesPanel({
     if (!selectedFile) return uploadPath
     return uploadPath.endsWith("/") ? `${uploadPath}${selectedFile.name}` : uploadPath
   }, [selectedFile, uploadPath])
+  const uploadCount = uploadMode === "directory" ? selectedDirectoryFiles.length : selectedFile ? 1 : 0
 
   const sortedEntries = useMemo(() => {
     return [...(listing?.entries || [])].sort((left, right) => {
@@ -99,21 +102,32 @@ export default function SandboxFilesPanel({
   }, [sandbox.id])
 
   async function uploadFile() {
-    if (!selectedFile || busy) return
+    if (uploadCount === 0 || busy) return
     try {
       setBusy("upload")
       setMessage("")
       const form = new FormData()
-      form.set("file", selectedFile)
       form.set("path", uploadPath)
+      if (uploadMode === "directory") {
+        form.set("relativePaths", JSON.stringify(selectedDirectoryFiles.map((file) => file.webkitRelativePath || file.name)))
+        for (const file of selectedDirectoryFiles) {
+          form.append("files", file, file.name)
+        }
+      } else if (selectedFile) {
+        form.set("file", selectedFile)
+      }
       const response = await fetch(`/api/sandbox/${encodeURIComponent(sandbox.id)}/files/upload`, {
         method: "POST",
         body: form,
       })
       const data = await response.json()
       if (!response.ok) throw new Error(data.error || "Failed to upload file")
-      setMessage(data.note || `Uploaded to ${data.uploaded?.path || suggestedUploadPath}.`)
-      setDownloadPath(data.uploaded?.path || suggestedUploadPath)
+      setMessage(data.note || "Upload complete.")
+      if (uploadMode === "directory") {
+        setDownloadPath(uploadPath)
+      } else {
+        setDownloadPath(data.uploaded?.path || suggestedUploadPath)
+      }
       await loadFileList(listPath)
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Failed to upload file")
@@ -188,7 +202,22 @@ export default function SandboxFilesPanel({
           </div>
           <input
             type="file"
-            onChange={(event) => setSelectedFile(event.target.files?.[0] || null)}
+            onChange={(event) => {
+              setUploadMode("file")
+              setSelectedFile(event.target.files?.[0] || null)
+              setSelectedDirectoryFiles([])
+            }}
+            className="block w-full text-xs text-[var(--foreground-dim)] file:mr-3 file:rounded-sm file:border file:border-[var(--border-subtle)] file:bg-[var(--background)] file:px-3 file:py-2 file:text-xs file:font-mono file:uppercase file:text-[var(--foreground)]"
+          />
+          <input
+            type="file"
+            multiple
+            {...({ webkitdirectory: "", directory: "" } as Record<string, string>)}
+            onChange={(event) => {
+              setUploadMode("directory")
+              setSelectedDirectoryFiles(Array.from(event.target.files || []))
+              setSelectedFile(null)
+            }}
             className="block w-full text-xs text-[var(--foreground-dim)] file:mr-3 file:rounded-sm file:border file:border-[var(--border-subtle)] file:bg-[var(--background)] file:px-3 file:py-2 file:text-xs file:font-mono file:uppercase file:text-[var(--foreground)]"
           />
           <div className="space-y-2">
@@ -202,20 +231,25 @@ export default function SandboxFilesPanel({
             {selectedFile && (
               <p className="text-[11px] font-mono text-[var(--foreground-dim)]">Target: {suggestedUploadPath}</p>
             )}
+            {uploadMode === "directory" && selectedDirectoryFiles.length > 0 && (
+              <p className="text-[11px] font-mono text-[var(--foreground-dim)]">
+                Directory upload: {selectedDirectoryFiles.length} file{selectedDirectoryFiles.length === 1 ? "" : "s"} into {uploadPath}
+              </p>
+            )}
           </div>
           <button
             onClick={uploadFile}
-            disabled={!selectedFile || busy !== null}
+            disabled={uploadCount === 0 || busy !== null}
             className="rounded-sm bg-[var(--nvidia-green)] px-4 py-2 text-xs font-mono uppercase tracking-wider text-black disabled:opacity-50"
           >
-            {busy === "upload" ? "Uploading..." : "Upload File"}
+            {busy === "upload" ? "Uploading..." : uploadMode === "directory" ? "Upload Directory" : "Upload File"}
           </button>
         </section>
 
         <section className="rounded-sm border border-[var(--border-subtle)] bg-[var(--background-tertiary)] p-4 space-y-4">
           <div>
             <h5 className="text-xs font-semibold uppercase tracking-wider text-[var(--foreground)]">Download</h5>
-            <p className="mt-1 text-xs text-[var(--foreground-dim)]">Browse sandbox files or enter a regular file path under /sandbox or /tmp.</p>
+            <p className="mt-1 text-xs text-[var(--foreground-dim)]">Browse sandbox files or enter a file or directory path under /sandbox or /tmp.</p>
           </div>
           <div className="grid grid-cols-1 gap-2 md:grid-cols-[1fr_auto_auto]">
             <input
@@ -282,11 +316,9 @@ export default function SandboxFilesPanel({
                       type="button"
                       onClick={() => {
                         setDownloadPath(entry.path)
-                        if (entry.type !== "directory") {
-                          downloadFile(entry.path)
-                        }
+                        downloadFile(entry.path)
                       }}
-                      disabled={entry.type === "directory" || busy !== null}
+                      disabled={(entry.type !== "file" && entry.type !== "directory") || busy !== null}
                       className="action-button px-2 py-1 text-right disabled:opacity-30"
                     >
                       Get
@@ -315,7 +347,7 @@ export default function SandboxFilesPanel({
             disabled={!downloadPath.trim() || busy !== null}
             className="action-button px-4 py-2"
           >
-            {busy === "download" ? "Downloading..." : "Download File"}
+            {busy === "download" ? "Downloading..." : "Download Path"}
           </button>
         </section>
       </div>

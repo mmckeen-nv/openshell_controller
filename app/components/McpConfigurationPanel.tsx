@@ -361,10 +361,10 @@ export default function McpConfigurationPanel({ sandboxes = [] }: McpConfigurati
                     </div>
                   </div>
                   <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-2">
-                    {pagedRegistryResults.map((entry) => {
+                    {pagedRegistryResults.map((entry, index) => {
                       const installed = installedIds.has(entry.id)
                       return (
-                        <div key={`${entry.id}-${entry.command}`} className="metric flex min-h-44 flex-col p-4">
+                        <div key={`${entry.id}-${entry.command}-${entry.args.join("|")}-${index}`} className="metric flex min-h-44 flex-col p-4">
                           <div className="flex items-start justify-between gap-3">
                             <div className="min-w-0">
                               <h3 className="truncate text-sm font-semibold text-[var(--foreground)]">{entry.name}</h3>

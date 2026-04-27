@@ -16,6 +16,13 @@ export type SandboxNetworkRule = {
   binaries: string[]
 }
 
+type BrokerNetworkAction = {
+  action: "approve" | "reject"
+  chunkId: string
+  endpoint: string
+  status: string
+}
+
 function runOpenShell(args: string[], timeout = 60000) {
   return execFileAsync(OPENSHELL_BIN, args, {
     env: {
@@ -73,6 +80,21 @@ function parseNetworkRules(output: string): SandboxNetworkRule[] {
     .filter((rule) => rule.chunkId)
 }
 
+function brokerEndpointCandidates(brokerBaseUrl: string) {
+  const parsed = new URL(brokerBaseUrl)
+  const port = parsed.port || (parsed.protocol === "https:" ? "443" : "80")
+  const hostPort = `${parsed.hostname}:${port}`
+  const candidates = new Set([hostPort])
+  if (parsed.hostname === "host.docker.internal") candidates.add(`0.0.0.0:${port}`)
+  return candidates
+}
+
+function ruleMatchesEndpoints(rule: SandboxNetworkRule, candidates: Set<string>) {
+  return rule.endpoints.some((endpoint) => candidates.has(endpoint))
+    || Array.from(candidates).some((endpoint) => rule.rule.includes(endpoint.replace(/[^a-zA-Z0-9]/g, "_")))
+    || Array.from(candidates).some((endpoint) => rule.rationale.includes(endpoint))
+}
+
 async function listRulesForStatus(sandboxName: string, status: "pending" | "approved" | "rejected") {
   const { stdout } = await runOpenShell(["rule", "get", "--status", status, sandboxName], 30000)
   return parseNetworkRules(String(stdout))
@@ -119,5 +141,71 @@ export async function resolveSandboxNetworkRule(sandboxId: string, action: strin
     stdout: String(stdout).trim(),
     stderr: String(stderr).trim(),
     feed,
+  }
+}
+
+async function probeBrokerEndpoint(sandboxName: string, brokerBaseUrl: string) {
+  const capabilitiesUrl = `${brokerBaseUrl.replace(/\/+$/, "")}/capabilities`
+  const script = `curl --noproxy '*' -sS --max-time 5 ${JSON.stringify(capabilitiesUrl)} >/dev/null || true`
+  await runOpenShell(["sandbox", "exec", "-n", sandboxName, "--", "sh", "-lc", script], 15000).catch(() => null)
+}
+
+export async function syncBrokerNetworkAccess(sandboxId: string, brokerBaseUrl: string) {
+  const resolved = await resolveSandboxRef(sandboxId)
+  const candidates = brokerEndpointCandidates(brokerBaseUrl)
+  await probeBrokerEndpoint(resolved.name, brokerBaseUrl)
+  const pending = await listRulesForStatus(resolved.name, "pending").catch(() => [] as SandboxNetworkRule[])
+  const matchingPending = pending.filter((rule) => ruleMatchesEndpoints(rule, candidates))
+  const approved: BrokerNetworkAction[] = []
+
+  for (const rule of matchingPending) {
+    await resolveSandboxNetworkRule(resolved.name, "approve", rule.chunkId)
+    approved.push({
+      action: "approve",
+      chunkId: rule.chunkId,
+      endpoint: rule.endpoints.find((endpoint) => candidates.has(endpoint)) || Array.from(candidates)[0] || "",
+      status: rule.status,
+    })
+  }
+
+  const currentlyApproved = await listRulesForStatus(resolved.name, "approved").catch(() => [] as SandboxNetworkRule[])
+  return {
+    sandboxId,
+    sandboxName: resolved.name,
+    brokerBaseUrl,
+    approved,
+    alreadyApproved: currentlyApproved.filter((rule) => ruleMatchesEndpoints(rule, candidates)).map((rule) => ({
+      chunkId: rule.chunkId,
+      endpoints: rule.endpoints,
+      status: rule.status,
+    })),
+  }
+}
+
+export async function revokeBrokerNetworkAccess(sandboxId: string, brokerBaseUrl: string) {
+  const resolved = await resolveSandboxRef(sandboxId)
+  const candidates = brokerEndpointCandidates(brokerBaseUrl)
+  const [pending, approved] = await Promise.all([
+    listRulesForStatus(resolved.name, "pending").catch(() => [] as SandboxNetworkRule[]),
+    listRulesForStatus(resolved.name, "approved").catch(() => [] as SandboxNetworkRule[]),
+  ])
+  const matching = [...pending, ...approved].filter((rule) => ruleMatchesEndpoints(rule, candidates))
+  const rejected: BrokerNetworkAction[] = []
+
+  for (const rule of matching) {
+    await resolveSandboxNetworkRule(resolved.name, "reject", rule.chunkId, "MCP broker access revoked")
+    rejected.push({
+      action: "reject",
+      chunkId: rule.chunkId,
+      endpoint: rule.endpoints.find((endpoint) => candidates.has(endpoint)) || Array.from(candidates)[0] || "",
+      status: rule.status,
+    })
+  }
+
+  return {
+    sandboxId,
+    sandboxName: resolved.name,
+    brokerBaseUrl,
+    rejected,
   }
 }

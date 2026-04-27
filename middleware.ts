@@ -13,9 +13,16 @@ const PUBLIC_PATHS = [
   "/favicon.svg",
   "/favicon-32.png",
 ]
+const BROKER_PATHS = [
+  "/api/mcp/broker",
+]
 
 function isPublicPath(pathname: string) {
   return PUBLIC_PATHS.some((path) => pathname === path || pathname.startsWith(`${path}/`))
+}
+
+function isBrokerPath(pathname: string) {
+  return BROKER_PATHS.some((path) => pathname === path || pathname.startsWith(`${path}/`))
 }
 
 function isAssetPath(pathname: string) {
@@ -94,6 +101,10 @@ export async function middleware(request: NextRequest) {
     if (pathname === "/login") {
       return withSecurityHeaders(NextResponse.redirect(new URL("/", request.url)))
     }
+    return withSecurityHeaders(NextResponse.next())
+  }
+
+  if (isBrokerPath(pathname)) {
     return withSecurityHeaders(NextResponse.next())
   }
 
