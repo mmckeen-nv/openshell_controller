@@ -69,6 +69,8 @@ export default function InferenceEndpointPanel() {
   const [ollamaLoading, setOllamaLoading] = useState(false)
   const [ollamaMessage, setOllamaMessage] = useState("")
   const [deletingProvider, setDeletingProvider] = useState<string | null>(null)
+  const [applyingDefault, setApplyingDefault] = useState(false)
+  const [confirmDefaultOpen, setConfirmDefaultOpen] = useState(false)
 
   const activeProvider = useMemo(
     () => providers.find((provider) => provider.name === gateway.provider) ?? null,
@@ -183,6 +185,45 @@ export default function InferenceEndpointPanel() {
       setMessage(error instanceof Error ? error.message : "Failed to save inference endpoint")
     } finally {
       setSaving(false)
+    }
+  }
+
+  async function setDefaultForAllRunningSandboxes() {
+    try {
+      setConfirmDefaultOpen(false)
+      setApplyingDefault(true)
+      setMessage("")
+      const response = await fetch("/api/inference", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name,
+          type,
+          model,
+          baseUrl,
+          credentialKey,
+          apiKey,
+          route: "gateway",
+          timeout: Number(timeout || "0"),
+          noVerify,
+          makeActive: true,
+          applyToRunningSandboxes: true,
+        }),
+      })
+      const data = await response.json()
+      if (!response.ok) throw new Error(data.error || "Failed to set default inference endpoint")
+      const results = Array.isArray(data.sandboxApplyResults) ? data.sandboxApplyResults : []
+      const applied = results.filter((item: any) => item?.ok).length
+      const failed = results.length - applied
+      setGateway(data.gateway ?? gateway)
+      setSystem(data.system ?? system)
+      setApiKey("")
+      setMessage(`Default inference endpoint set to '${name}'. Applied to ${applied} running sandbox${applied === 1 ? "" : "es"}${failed ? `; ${failed} failed.` : "."}`)
+      await load()
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Failed to set default inference endpoint")
+    } finally {
+      setApplyingDefault(false)
     }
   }
 
@@ -333,6 +374,9 @@ export default function InferenceEndpointPanel() {
                 <button onClick={saveEndpoint} disabled={saving} className="px-4 py-2 rounded-sm bg-[var(--nvidia-green)] text-white text-xs font-mono uppercase tracking-wider disabled:opacity-50">
                   {saving ? "Saving..." : "Save Endpoint"}
                 </button>
+                <button type="button" onClick={() => setConfirmDefaultOpen(true)} disabled={saving || applyingDefault || !name || !model} className="px-4 py-2 rounded-sm border border-[var(--nvidia-green)] text-[var(--nvidia-green)] text-xs font-mono uppercase tracking-wider hover:bg-[rgba(118,185,0,0.08)] disabled:opacity-50">
+                  {applyingDefault ? "Applying..." : "Set as Default Inference Endpoint"}
+                </button>
                 <button type="button" onClick={useNvidiaInferencePreset} disabled={saving} className="px-4 py-2 rounded-sm bg-[var(--background-tertiary)] text-[var(--foreground)] text-xs font-mono uppercase tracking-wider hover:bg-[var(--background-secondary)] disabled:opacity-50">
                   NVIDIA Preset
                 </button>
@@ -363,6 +407,24 @@ export default function InferenceEndpointPanel() {
                 </div>
               )}
             </section>
+          </div>
+        </div>
+      )}
+      {confirmDefaultOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
+          <div className="w-full max-w-md rounded-sm border border-[var(--border-subtle)] bg-[var(--background-panel)] p-6 shadow-[var(--shadow-soft)]">
+            <h3 className="text-sm font-semibold uppercase tracking-wider text-[var(--foreground)]">Set Default Inference Endpoint</h3>
+            <p className="mt-3 text-sm text-[var(--foreground-dim)]">
+              This will change the default inference endpoint to ALL running sandboxes and newly created sandboxes.
+            </p>
+            <div className="mt-6 flex justify-end gap-3">
+              <button type="button" onClick={() => setConfirmDefaultOpen(false)} className="px-4 py-2 rounded-sm bg-[var(--background-tertiary)] text-[var(--foreground)] text-xs font-mono uppercase tracking-wider hover:bg-[var(--background-secondary)]">
+                No
+              </button>
+              <button type="button" onClick={setDefaultForAllRunningSandboxes} className="px-4 py-2 rounded-sm bg-[var(--nvidia-green)] text-black text-xs font-mono uppercase tracking-wider">
+                Yes
+              </button>
+            </div>
           </div>
         </div>
       )}

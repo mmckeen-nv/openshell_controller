@@ -2,6 +2,8 @@ import { NextResponse } from "next/server"
 import { execFile } from "node:child_process"
 import { promisify } from "node:util"
 import { HOST_PATH, OPENSHELL_BIN } from "@/app/lib/hostCommands"
+import { applySandboxInferenceProfile } from "@/app/lib/sandboxInferenceApply"
+import { saveSandboxInferenceConfig } from "@/app/lib/sandboxInferenceStore"
 
 const execFileAsync = promisify(execFile)
 
@@ -70,6 +72,38 @@ function parseProvider(output: string) {
       .map((item) => item.trim())
       .filter(Boolean),
   }
+}
+
+function parseSandboxNames(output: string) {
+  return output
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line && !/^name\s+/i.test(line) && !/^[-=]+$/.test(line) && !/^no sandboxes found\.?$/i.test(line))
+    .map((line) => line.split(/\s{2,}/)[0]?.trim())
+    .filter((name): name is string => Boolean(name))
+}
+
+async function readRunningSandboxes() {
+  const { stdout } = await runOpenShell(["sandbox", "list"])
+  const names = parseSandboxNames(stdout)
+  const sandboxes = []
+
+  for (const name of names) {
+    try {
+      const details = await runOpenShell(["sandbox", "get", name])
+      const rawPhase = readField(details.stdout, "Phase") || readField(details.stdout, "Status") || ""
+      if (!/^ready$/i.test(rawPhase)) continue
+      sandboxes.push({
+        name: readField(details.stdout, "Name") || name,
+        id: readField(details.stdout, "Id") || name,
+        phase: rawPhase,
+      })
+    } catch {
+      // Ignore sandboxes that disappear while the bulk route is being applied.
+    }
+  }
+
+  return sandboxes
 }
 
 async function readProviders() {
@@ -141,8 +175,10 @@ export async function POST(request: Request) {
     const system = body?.route === "system" || body?.system === true
     const noVerify = body?.noVerify !== false
     const timeout = Number(body?.timeout ?? 0)
+    const applyToRunningSandboxes = body?.applyToRunningSandboxes === true
 
     if (makeActive && !model) throw new Error("model is required when making the endpoint active")
+    if (applyToRunningSandboxes && system) throw new Error("default inference endpoint must target the sandbox route")
     if (!/^[A-Z_][A-Z0-9_]*$/.test(credentialKey)) throw new Error("credential key must look like an environment variable name")
     if (baseUrl) new URL(baseUrl)
 
@@ -165,6 +201,36 @@ export async function POST(request: Request) {
       inferenceResult = await runOpenShell(routeArgs)
     }
 
+    const sandboxApplyResults: any[] = []
+    if (applyToRunningSandboxes) {
+      const runningSandboxes = await readRunningSandboxes()
+      for (const sandbox of runningSandboxes) {
+        try {
+          await saveSandboxInferenceConfig(sandbox.id, {
+            provider: name,
+            primaryModel: model,
+            models: [model],
+            routes: [{
+              id: `${name}::${model}`,
+              provider: name,
+              model,
+              enabled: true,
+              label: "Default inference endpoint",
+            }],
+            primaryRouteId: `${name}::${model}`,
+          })
+          const applied = await applySandboxInferenceProfile(sandbox.id, sandbox.name)
+          sandboxApplyResults.push({ ok: true, sandbox, applied })
+        } catch (error) {
+          sandboxApplyResults.push({
+            ok: false,
+            sandbox,
+            error: error instanceof Error ? error.message : "Failed to apply default inference endpoint",
+          })
+        }
+      }
+    }
+
     const refreshed = await runOpenShell(["inference", "get"])
     return NextResponse.json({
       ok: true,
@@ -172,6 +238,7 @@ export async function POST(request: Request) {
       active: makeActive,
       gateway: parseRoute(refreshed.stdout, "Gateway inference"),
       system: parseRoute(refreshed.stdout, "System inference"),
+      sandboxApplyResults,
       stdout: [providerResult.stdout, inferenceResult?.stdout].filter(Boolean).join("\n\n"),
       stderr: [providerResult.stderr, inferenceResult?.stderr].filter(Boolean).join("\n\n"),
     })
