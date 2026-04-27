@@ -50,20 +50,19 @@ async function writeStore(store: StoreShape) {
 
 export function normalizeSandboxInferenceConfig(sandboxId: string, input?: Partial<SandboxInferenceConfig> | null): SandboxInferenceConfig {
   const legacyProvider = typeof input?.provider === "string" ? input.provider.trim() : ""
+  const hasExplicitRoutes = Array.isArray(input?.routes) && input.routes.length > 0
   const legacyModels = Array.from(new Set([
     input?.primaryModel,
     ...(Array.isArray(input?.models) ? input.models : []),
   ].map((item) => typeof item === "string" ? item.trim() : "").filter(Boolean)))
   const rawRoutes: any[] = [
     ...(Array.isArray(input?.routes) ? input.routes : []),
-    ...legacyModels.map((model) => ({ provider: legacyProvider, model, enabled: true, label: "" })),
+    ...(hasExplicitRoutes ? [] : legacyModels.map((model) => ({ provider: legacyProvider, model, enabled: true, label: "" }))),
   ]
   const routeEntries: Array<[string, SandboxInferenceRoute]> = rawRoutes.map((route) => {
     const provider = typeof route?.provider === "string" ? route.provider.trim() : ""
     const model = typeof route?.model === "string" ? route.model.trim() : ""
-    const id = typeof route?.id === "string" && route.id.trim()
-      ? route.id.trim()
-      : `${provider}::${model}`
+    const id = `${provider}::${model}`
     return [id, {
       id,
       provider,

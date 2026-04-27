@@ -59,7 +59,10 @@ function routeKey(route: Pick<SandboxInferenceRoute, "provider" | "model">) {
 function dedupeRoutes(routes: SandboxInferenceRoute[]) {
   return Array.from(new Map(routes
     .filter((route) => route.provider.trim() && route.model.trim())
-    .map((route) => [route.id || routeKey(route), { ...route, id: route.id || routeKey(route) }])).values())
+    .map((route) => {
+      const id = routeKey(route)
+      return [id, { ...route, id }]
+    })).values())
 }
 
 export default function SandboxInferencePanel({
@@ -183,7 +186,17 @@ export default function SandboxInferencePanel({
   }
 
   function updateRoute(id: string, updates: Partial<SandboxInferenceRoute>) {
-    setRoutes((current) => current.map((route) => route.id === id ? { ...route, ...updates } : route))
+    setRoutes((current) => {
+      let replacementId = id
+      const next = current.map((route) => {
+        if (route.id !== id) return route
+        const updated = { ...route, ...updates }
+        replacementId = routeKey(updated)
+        return { ...updated, id: replacementId }
+      })
+      if (primaryRouteId === id) setPrimaryRouteId(replacementId)
+      return dedupeRoutes(next)
+    })
   }
 
   function removeRoute(id: string) {

@@ -25,9 +25,7 @@ function parseRoutes(value: unknown): SandboxInferenceRoute[] {
   return value.map((item) => {
     const provider = typeof item?.provider === "string" ? item.provider.trim() : ""
     const model = typeof item?.model === "string" ? item.model.trim() : ""
-    const id = typeof item?.id === "string" && item.id.trim()
-      ? item.id.trim()
-      : `${provider}::${model}`
+    const id = `${provider}::${model}`
     return {
       id,
       provider,
