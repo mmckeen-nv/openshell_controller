@@ -3,6 +3,7 @@ import { promisify } from "node:util"
 import { NextResponse } from "next/server"
 import { listActivity } from "@/app/lib/activityLog"
 import { listBackupCatalog } from "@/app/lib/backupCatalog"
+import { HOST_PATH, OPENSHELL_BIN } from "@/app/lib/hostCommands"
 
 const execFileAsync = promisify(execFile)
 
@@ -12,7 +13,7 @@ async function run(command: string, args: string[]) {
   try {
     const { stdout, stderr } = await execFileAsync(command, args, {
       timeout: 10000,
-      env: { ...process.env, NO_COLOR: "1", CLICOLOR: "0", CLICOLOR_FORCE: "0" },
+      env: { ...process.env, PATH: HOST_PATH, NO_COLOR: "1", CLICOLOR: "0", CLICOLOR_FORCE: "0" },
     })
     return { ok: true, stdout: stdout.trim(), stderr: stderr.trim() }
   } catch (error) {
@@ -28,7 +29,7 @@ export async function GET() {
   const [gitHead, gitStatus, sandboxList, activity, backups] = await Promise.all([
     run("git", ["rev-parse", "--short", "HEAD"]),
     run("git", ["status", "--short", "--branch"]),
-    run(process.env.OPENSHELL_BIN || `${process.env.HOME || ""}/.local/bin/openshell`, ["sandbox", "list"]),
+    run(OPENSHELL_BIN, ["sandbox", "list"]),
     listActivity(75),
     listBackupCatalog(),
   ])

@@ -1,21 +1,11 @@
 import { execFile, spawn } from "node:child_process"
 import { promisify } from "node:util"
+import { HOST_PATH, OPENSHELL_BIN } from "./hostCommands"
 import { getSandboxInferenceConfig, type SandboxInferenceRoute } from "./sandboxInferenceStore"
 
 const execFileAsync = promisify(execFile)
-const HOME = process.env.HOME || ""
-const OPENSHELL_BIN = process.env.OPENSHELL_BIN || `${HOME}/.local/bin/openshell`
 const DOCKER_BIN = process.env.DOCKER_BIN || "docker"
 const OPENSHELL_CLUSTER_CONTAINER = process.env.OPENSHELL_CLUSTER_CONTAINER || "openshell-cluster-nemoclaw"
-const HOST_PATH = [
-  `${HOME}/.local/bin`,
-  `${HOME}/.nvm/versions/node/v22.22.2/bin`,
-  `${HOME}/.nvm/versions/node/v22.22.1/bin`,
-  "/usr/local/bin",
-  "/usr/bin",
-  "/bin",
-  process.env.PATH || "",
-].filter(Boolean).join(":")
 
 function modelEntry(route: SandboxInferenceRoute, openClawModelRef: string, compat: Record<string, unknown> | null) {
   return {

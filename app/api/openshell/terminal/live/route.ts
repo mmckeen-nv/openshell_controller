@@ -8,6 +8,15 @@ const TERMINAL_WS_PROXY_PORT = process.env.TERMINAL_WS_PROXY_PORT || ''
 const PUBLIC_BROWSER_HOST = process.env.PUBLIC_BROWSER_HOST || process.env.PUBLIC_WS_HOST || null
 const PUBLIC_BASE_URL = process.env.PUBLIC_BASE_URL || null
 
+function describeTerminalServerError(error: unknown, terminalServerUrl: string) {
+  const message = error instanceof Error ? error.message : String(error || 'unknown error')
+  const cause = error instanceof Error && error.cause instanceof Error ? ` (${error.cause.message})` : ''
+  if (/fetch failed|ECONNREFUSED|ENOTFOUND|EHOSTUNREACH|UND_ERR_SOCKET/i.test(`${message} ${cause}`)) {
+    return `Could not reach the operator terminal bridge at ${terminalServerUrl}. Restart the dashboard so it can auto-start the local bridge, or run npm run terminal-server in this repo. Details: ${message}${cause}`
+  }
+  return message
+}
+
 function isNonRoutableHost(candidate: string, protocol = 'http:') {
   const normalized = candidate.trim()
   if (!normalized) return true
@@ -115,18 +124,26 @@ export async function POST(request: Request) {
     const terminalServerUrl = authority.terminalServerUrl || TERMINAL_SERVER_URL
     const resolvedSandboxId = authority.resolvedSandboxId || requestedSandboxId
 
-    const response = await fetch(`${terminalServerUrl}/session`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        sandboxId: resolvedSandboxId,
-        sessionId,
-        dashboardSessionId,
-      }),
-      cache: 'no-store',
-    })
+    let response: Response
+    try {
+      response = await fetch(`${terminalServerUrl}/session`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          sandboxId: resolvedSandboxId,
+          sessionId,
+          dashboardSessionId,
+        }),
+        cache: 'no-store',
+      })
+    } catch (error) {
+      return NextResponse.json({
+        ok: false,
+        error: describeTerminalServerError(error, terminalServerUrl),
+      }, { status: 502 })
+    }
 
     const result = await response.json()
     if (!response.ok) {

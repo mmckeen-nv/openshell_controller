@@ -1,28 +1,9 @@
 import { NextResponse } from "next/server"
 import { execFile } from "node:child_process"
-import { existsSync } from "node:fs"
 import { promisify } from "node:util"
+import { HOST_PATH, OPENSHELL_BIN } from "@/app/lib/hostCommands"
 
 const execFileAsync = promisify(execFile)
-const HOME = process.env.HOME || ""
-const OPENSHELL_BIN_CANDIDATES = [
-  process.env.OPENSHELL_BIN,
-  HOME ? `${HOME}/.local/bin/openshell` : undefined,
-  "/usr/local/bin/openshell",
-  "/opt/homebrew/bin/openshell",
-].filter((value): value is string => Boolean(value))
-const OPENSHELL_BIN =
-  OPENSHELL_BIN_CANDIDATES.find((candidate) => existsSync(candidate)) ?? OPENSHELL_BIN_CANDIDATES[0]
-const HOST_PATH = [
-  `${HOME}/.local/bin`,
-  `${HOME}/.nvm/versions/node/v22.22.2/bin`,
-  `${HOME}/.nvm/versions/node/v22.22.1/bin`,
-  "/usr/local/bin",
-  "/opt/homebrew/bin",
-  "/usr/bin",
-  "/bin",
-  process.env.PATH || "",
-].filter(Boolean).join(":")
 
 const PROVIDER_TYPES = new Set(["openai", "anthropic", "nvidia", "generic", "claude", "opencode", "codex", "copilot", "gitlab", "github", "outlook"])
 

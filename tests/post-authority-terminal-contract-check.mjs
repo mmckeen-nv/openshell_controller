@@ -5,8 +5,10 @@ import path from 'node:path'
 const root = process.cwd()
 const routePath = path.join(root, 'app/api/openshell/terminal/live/route.ts')
 const pagePath = path.join(root, 'app/operator-terminal/page.tsx')
+const serverPath = path.join(root, 'server.mjs')
 
 const routeSource = await readFile(routePath, 'utf8')
+const serverSource = await readFile(serverPath, 'utf8')
 assert.match(
   routeSource,
   /throw new Error\('No routable browser host available for terminal websocket URL\. Set PUBLIC_BROWSER_HOST or PUBLIC_BASE_URL\.'\)/,
@@ -27,6 +29,27 @@ assert.match(
   /return null/,
   'terminal live route must return null when no routable browser host is available'
 )
+assert.match(
+  routeSource,
+  /Could not reach the operator terminal bridge at \$\{terminalServerUrl\}/,
+  'terminal live route must explain terminal bridge connection failures'
+)
+
+assert.match(
+  serverSource,
+  /startLocalTerminalServerIfNeeded/,
+  'custom dashboard server must provision the local terminal bridge'
+)
+assert.match(
+  serverSource,
+  /TERMINAL_SERVER_AUTOSTART/,
+  'terminal bridge autostart must have an environment override'
+)
+assert.match(
+  serverSource,
+  /spawn\(process\.execPath, \['terminal-server\.mjs'\]/,
+  'dashboard dev server should start terminal-server.mjs for local terminal sessions'
+)
 
 const pageSource = await readFile(pagePath, 'utf8')
 assert.match(
@@ -43,6 +66,11 @@ assert.doesNotMatch(
   pageSource,
   /Live operator terminal for the host machine\. The selected sandbox is preserved as context for helper commands and status lookups, but this shell is intentionally machine-scoped\./,
   'operator terminal page must not keep the stale host-machine-only description'
+)
+assert.doesNotMatch(
+  pageSource,
+  /throw new Error\(result\.error \|\| 'Failed to initialize live terminal session\.'\)/,
+  'operator terminal page should render terminal init failures instead of throwing'
 )
 
 console.log('post-authority-terminal-contract-check: PASS websocket host + UI honesty assertions')

@@ -134,6 +134,43 @@ find_openshell() {
   fi
 }
 
+find_nemoclaw_bin() {
+  local candidate
+  for candidate in \
+    "$HOME/.local/bin/nemoclaw" \
+    "$HOME/.nemoclaw/source/bin/nemoclaw.js" \
+    "$HOME/NemoClaw/bin/nemoclaw.js" \
+    "/opt/homebrew/bin/nemoclaw" \
+    "/usr/local/bin/nemoclaw"
+  do
+    [[ -x "$candidate" || -f "$candidate" ]] && printf '%s\n' "$candidate" && return
+  done
+  command -v nemoclaw 2>/dev/null || true
+}
+
+find_nemoclaw_setup() {
+  local candidate
+  for candidate in \
+    "$HOME/.nemoclaw/source/scripts/setup.sh" \
+    "$HOME/NemoClaw/scripts/setup.sh"
+  do
+    [[ -f "$candidate" ]] && printf '%s\n' "$candidate" && return
+  done
+}
+
+nemoclaw_cwd_for() {
+  local path_value="$1"
+  if [[ "$path_value" == "$HOME/.nemoclaw/source/"* ]]; then
+    printf '%s\n' "$HOME/.nemoclaw/source"
+  elif [[ "$path_value" == "$HOME/NemoClaw/"* ]]; then
+    printf '%s\n' "$HOME/NemoClaw"
+  elif [[ -d "$HOME/.nemoclaw/source" ]]; then
+    printf '%s\n' "$HOME/.nemoclaw/source"
+  elif [[ -d "$HOME/NemoClaw" ]]; then
+    printf '%s\n' "$HOME/NemoClaw"
+  fi
+}
+
 node_major() {
   node -p "Number(process.versions.node.split('.')[0])"
 }
@@ -147,6 +184,19 @@ upsert_env() {
   local value="$2"
   touch "$ENV_FILE"
   if grep -qE "^${key}=" "$ENV_FILE"; then
+    return
+  fi
+  printf '%s=%s\n' "$key" "$value" >> "$ENV_FILE"
+}
+
+set_env() {
+  local key="$1"
+  local value="$2"
+  [[ -n "$value" ]] || return
+  touch "$ENV_FILE"
+  if grep -qE "^${key}=" "$ENV_FILE"; then
+    sed -i.bak -E "s|^${key}=.*$|${key}=${value}|" "$ENV_FILE"
+    rm -f "$ENV_FILE.bak"
     return
   fi
   printf '%s=%s\n' "$key" "$value" >> "$ENV_FILE"
@@ -189,6 +239,23 @@ if [[ -n "$OPENSHELL_BIN" ]]; then
 else
   warn "OpenShell CLI was not found on PATH or at ~/.local/bin/openshell."
   warn "Sandbox create/delete, policy grants, terminal, and dashboard proxy features require it."
+fi
+
+NEMOCLAW_BIN="$(find_nemoclaw_bin || true)"
+NEMOCLAW_SETUP="$(find_nemoclaw_setup || true)"
+NEMOCLAW_CWD="$(nemoclaw_cwd_for "${NEMOCLAW_BIN:-${NEMOCLAW_SETUP:-}}" || true)"
+
+if [[ -n "$NEMOCLAW_BIN" ]]; then
+  log "NemoClaw CLI: $NEMOCLAW_BIN"
+else
+  warn "NemoClaw CLI was not found. NemoClaw inventory and cleanup features will be degraded."
+fi
+
+if [[ -n "$NEMOCLAW_SETUP" ]]; then
+  log "NemoClaw setup workflow: $NEMOCLAW_SETUP"
+else
+  warn "NemoClaw setup workflow was not found."
+  warn "The NemoClaw blueprint create button requires NEMOCLAW_SETUP to point at scripts/setup.sh."
 fi
 
 check_port 3000 "dashboard HTTP"
@@ -237,6 +304,11 @@ upsert_env "NEXT_PUBLIC_API_BASE" "/api"
 upsert_env "NEXT_PUBLIC_ENABLE_SANDBOX_OPERATIONS" "true"
 upsert_env "OPEN_SHELL_CONTAINER" "$OPEN_SHELL_CONTAINER_DEFAULT"
 upsert_env "OPENSHELL_GATEWAY" "nemoclaw"
+set_env "OPENSHELL_BIN" "${OPENSHELL_BIN:-}"
+set_env "NEMOCLAW_BIN" "${NEMOCLAW_BIN:-}"
+set_env "NEMOCLAW_SETUP" "${NEMOCLAW_SETUP:-}"
+set_env "NEMOCLAW_CWD" "${NEMOCLAW_CWD:-}"
+upsert_env "TERMINAL_SERVER_AUTOSTART" "true"
 upsert_env "OPENSHELL_CONTROL_PASSWORD" "$(random_token 18)"
 upsert_env "OPENSHELL_CONTROL_AUTH_SECRET" "$(random_token 32)"
 upsert_env "OPENSHELL_CONTROL_RECOVERY_TOKEN" "$(random_token 18)"

@@ -4,7 +4,7 @@
 
 1. **Navigate to project directory:**
 ```bash
-cd /home/nvidia/.openclaw/workspace/nemo-shell-dashboard
+cd /path/to/nemoclaw-dashboard
 ```
 
 2. **Install dependencies:**

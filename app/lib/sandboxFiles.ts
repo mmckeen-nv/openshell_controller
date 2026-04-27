@@ -1,18 +1,7 @@
 import { spawn } from "node:child_process"
 import path from "node:path"
+import { HOST_PATH, OPENSHELL_BIN } from "./hostCommands"
 import { resolveSandboxRef } from "./openshellHost"
-
-const HOME = process.env.HOME || ""
-const OPENSHELL_BIN = process.env.OPENSHELL_BIN || `${HOME}/.local/bin/openshell`
-const HOST_PATH = [
-  `${HOME}/.local/bin`,
-  `${HOME}/.nvm/versions/node/v22.22.2/bin`,
-  `${HOME}/.nvm/versions/node/v22.22.1/bin`,
-  "/usr/local/bin",
-  "/usr/bin",
-  "/bin",
-  process.env.PATH || "",
-].filter(Boolean).join(":")
 
 export const MAX_FILE_BYTES = Number.parseInt(process.env.SANDBOX_FILE_TRANSFER_MAX_BYTES || String(128 * 1024 * 1024), 10)
 export const MAX_MULTIPART_REQUEST_BYTES = MAX_FILE_BYTES + Math.min(10 * 1024 * 1024, Math.max(1024 * 1024, Math.floor(MAX_FILE_BYTES / 10)))

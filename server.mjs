@@ -1,5 +1,6 @@
 import http from 'node:http'
 import crypto from 'node:crypto'
+import { spawn } from 'node:child_process'
 import { existsSync, readFileSync } from 'node:fs'
 import net from 'node:net'
 import tls from 'node:tls'
@@ -303,12 +304,92 @@ function normalizeCloseCode(code) {
     : 1000
 }
 
+function shouldAutoStartTerminalServer() {
+  if (/^(0|false|no|off)$/i.test(process.env.TERMINAL_SERVER_AUTOSTART || '')) return false
+  if (terminalServerUrl.protocol !== 'http:') return false
+  return ['127.0.0.1', 'localhost', '[::1]', '::1'].includes(terminalServerUrl.hostname)
+}
+
+async function isTerminalServerReachable() {
+  try {
+    const response = await fetch(new URL('/healthz', terminalServerUrl), { cache: 'no-store' })
+    return response.ok
+  } catch {
+    return false
+  }
+}
+
+async function waitForTerminalServer(timeoutMs = 3000) {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    if (await isTerminalServerReachable()) return true
+    await new Promise((resolve) => setTimeout(resolve, 150))
+  }
+  return false
+}
+
+async function startLocalTerminalServerIfNeeded() {
+  if (!shouldAutoStartTerminalServer()) {
+    logBridge('terminal-server-autostart-skipped', {
+      terminalServerUrl: terminalServerUrl.toString(),
+      reason: 'disabled-or-nonlocal',
+    })
+    return null
+  }
+
+  if (await isTerminalServerReachable()) {
+    logBridge('terminal-server-existing', { terminalServerUrl: terminalServerUrl.toString() })
+    return null
+  }
+
+  const child = spawn(process.execPath, ['terminal-server.mjs'], {
+    cwd: process.cwd(),
+    env: {
+      ...process.env,
+      TERMINAL_SERVER_HOST: terminalServerUrl.hostname === 'localhost' ? '127.0.0.1' : terminalServerUrl.hostname.replace(/^\[|\]$/g, ''),
+      TERMINAL_SERVER_PORT: terminalServerUrl.port || '3011',
+    },
+    stdio: ['ignore', 'inherit', 'inherit'],
+  })
+
+  logBridge('terminal-server-autostarted', {
+    pid: child.pid,
+    terminalServerUrl: terminalServerUrl.toString(),
+  })
+
+  child.once('exit', (code, signal) => {
+    logBridge('terminal-server-exited', { code, signal })
+  })
+
+  const stopChild = () => {
+    if (!child.killed) child.kill('SIGTERM')
+  }
+  process.once('exit', stopChild)
+  process.once('SIGINT', () => {
+    stopChild()
+    process.exit(130)
+  })
+  process.once('SIGTERM', () => {
+    stopChild()
+    process.exit(143)
+  })
+
+  if (!await waitForTerminalServer()) {
+    logBridge('terminal-server-autostart-not-ready', {
+      terminalServerUrl: terminalServerUrl.toString(),
+    })
+  }
+
+  return child
+}
+
 const app = next({ dev, hostname, port })
 const handle = app.getRequestHandler()
 const handleUpgrade = typeof app.getUpgradeHandler === 'function'
   ? app.getUpgradeHandler()
   : null
 
+await startLocalTerminalServerIfNeeded()
 await app.prepare()
 
 const server = http.createServer((req, res) => handle(req, res))

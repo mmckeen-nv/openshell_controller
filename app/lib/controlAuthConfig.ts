@@ -10,6 +10,10 @@ function quoteEnvValue(value: string) {
   return JSON.stringify(value)
 }
 
+function envKeyMatcher(key: string) {
+  return new RegExp(`^\\s*(?:export\\s+)?${key}\\s*=`)
+}
+
 async function readEnvFile() {
   if (!existsSync(ENV_PATH)) return ""
   return readFile(ENV_PATH, "utf8")
@@ -17,9 +21,22 @@ async function readEnvFile() {
 
 function upsertEnv(content: string, key: string, value: string) {
   const line = `${key}=${quoteEnvValue(value)}`
-  const matcher = new RegExp(`^${key}=.*$`, "m")
-  if (matcher.test(content)) return content.replace(matcher, line)
-  return `${content.trimEnd()}${content.trim() ? "\n" : ""}${line}\n`
+  const matcher = envKeyMatcher(key)
+  const lines = content.split(/\r?\n/)
+  let replaced = false
+  const nextLines = lines.filter((existingLine) => {
+    if (!matcher.test(existingLine)) return true
+    if (replaced) return false
+    replaced = true
+    return true
+  }).map((existingLine) => (matcher.test(existingLine) ? line : existingLine))
+
+  if (!replaced) {
+    const trimmed = content.trimEnd()
+    return `${trimmed}${trimmed ? "\n" : ""}${line}\n`
+  }
+
+  return `${nextLines.join("\n").trimEnd()}\n`
 }
 
 export function generateToken(bytes = 24) {

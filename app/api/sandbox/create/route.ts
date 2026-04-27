@@ -2,23 +2,9 @@ import { NextResponse } from "next/server"
 import { execFile, spawn } from "node:child_process"
 import { promisify } from "node:util"
 import { inspectSandbox } from "@/app/lib/openshellHost"
+import { commandExists, HOST_PATH, NEMOCLAW_SETUP, OPENSHELL_BIN } from "@/app/lib/hostCommands"
 
 const execFileAsync = promisify(execFile)
-const HOME = process.env.HOME || ""
-const NEMOCLAW_SETUP = process.env.NEMOCLAW_SETUP || `${HOME}/NemoClaw/scripts/setup.sh`
-const OPENSHELL_BIN = process.env.OPENSHELL_BIN || `${HOME}/.local/bin/openshell`
-const HOST_PATH = [
-  `${HOME}/.local/bin`,
-  `${HOME}/.nvm/versions/node/v22.22.2/bin`,
-  `${HOME}/.nvm/versions/node/v22.22.1/bin`,
-  "/opt/homebrew/bin",
-  "/usr/local/bin",
-  "/usr/bin",
-  "/bin",
-  "/usr/sbin",
-  "/sbin",
-  process.env.PATH || "",
-].filter(Boolean).join(":")
 
 function validateSandboxName(name: string) {
   if (!name || typeof name !== "string") throw new Error("sandbox name is required")
@@ -53,6 +39,13 @@ function elapsedMs(start: number) {
 
 function appendNote(...parts: Array<string | false | null | undefined>) {
   return parts.filter(Boolean).join(" ")
+}
+
+function requireNemoClawSetup() {
+  if (NEMOCLAW_SETUP && commandExists(NEMOCLAW_SETUP)) return NEMOCLAW_SETUP
+  throw new Error(
+    "NemoClaw blueprint setup script was not found. Install NemoClaw on this host or set NEMOCLAW_SETUP in .env.local to the absolute path of scripts/setup.sh.",
+  )
 }
 
 async function verifySandboxCreation(sandboxName: string): Promise<SandboxVerification> {
@@ -320,6 +313,7 @@ export async function POST(request: Request) {
     }
 
     if (blueprint === "nemoclaw-blueprint") {
+      const setupPath = requireNemoClawSetup()
       const env: NodeJS.ProcessEnv = {
         ...process.env,
         PATH: HOST_PATH,
@@ -330,7 +324,7 @@ export async function POST(request: Request) {
         env.NVIDIA_API_KEY = env.NVIDIA_API_KEY || "optional-local-mode"
       }
 
-      const result = await runCommand("/bin/bash", [NEMOCLAW_SETUP, sandboxName], env)
+      const result = await runCommand("/bin/bash", [setupPath, sandboxName], env)
 
       if (!result.ok) {
         return NextResponse.json({
@@ -365,7 +359,7 @@ export async function POST(request: Request) {
         verification,
         mode: "nemoclaw-blueprint",
         enableTailscale,
-        setupPath: NEMOCLAW_SETUP,
+        setupPath,
         hostPath: HOST_PATH,
         readiness: {
           attempts: readiness.attempts,

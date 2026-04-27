@@ -135,7 +135,9 @@ function OperatorTerminalInner() {
       })
       const result = await response.json()
       if (!response.ok || !result.ok) {
-        throw new Error(result.error || 'Failed to initialize live terminal session.')
+        setTerminalState('error')
+        setTerminalStatus(result.error || 'Failed to initialize live terminal session.')
+        return
       }
       liveSessionIdRef.current = result.sessionId
       setLiveSession({

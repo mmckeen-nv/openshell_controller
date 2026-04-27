@@ -1,54 +1,11 @@
 import { NextResponse } from "next/server"
 import { execFile } from "node:child_process"
-import { existsSync } from "node:fs"
 import { hostname, networkInterfaces } from "node:os"
 import { promisify } from "node:util"
+import { HOST_PATH, NEMOCLAW_BIN, NODE_BIN, OPENSHELL_BIN } from "@/app/lib/hostCommands"
 import { resolveRuntimeAuthority } from "@/app/lib/runtimeAuthority"
 
 const execFileAsync = promisify(execFile)
-
-const HOME = process.env.HOME || ""
-
-const NODE_BIN_CANDIDATES = [
-  process.env.NODE_BIN,
-  HOME ? `${HOME}/.nvm/versions/node/v22.22.2/bin/node` : undefined,
-  HOME ? `${HOME}/.nvm/versions/node/v22.22.1/bin/node` : undefined,
-  "/Users/markmckeen/.nvm/versions/node/v22.22.2/bin/node",
-  "/Users/markmckeen/.nvm/versions/node/v22.22.1/bin/node",
-  "/opt/homebrew/bin/node",
-  "/usr/local/bin/node",
-  "/usr/bin/node",
-].filter((value): value is string => Boolean(value))
-const NODE_BIN = NODE_BIN_CANDIDATES.find((candidate) => existsSync(candidate)) ?? NODE_BIN_CANDIDATES[0]
-const NEMOCLAW_BIN_CANDIDATES = [
-  process.env.NEMOCLAW_BIN,
-  HOME ? `${HOME}/.local/bin/nemoclaw` : undefined,
-  HOME ? `${HOME}/.nemoclaw/source/bin/nemoclaw.js` : undefined,
-  HOME ? `${HOME}/NemoClaw/bin/nemoclaw.js` : undefined,
-  HOME ? `${HOME}/.nvm/versions/node/v22.22.2/bin/nemoclaw` : undefined,
-  "/Users/markmckeen/.local/bin/nemoclaw",
-  "/Users/markmckeen/.nemoclaw/source/bin/nemoclaw.js",
-  "/Users/markmckeen/NemoClaw/bin/nemoclaw.js",
-  "/Users/markmckeen/NemoClaw-mmckeen/bin/nemoclaw.js",
-  "/Users/markmckeen/.nvm/versions/node/v22.22.2/bin/nemoclaw",
-  "/usr/local/bin/nemoclaw",
-  "/opt/homebrew/bin/nemoclaw",
-].filter((value): value is string => Boolean(value))
-const NEMOCLAW_BIN =
-  NEMOCLAW_BIN_CANDIDATES.find((candidate) => existsSync(candidate)) ?? NEMOCLAW_BIN_CANDIDATES[0]
-
-const OPENSHELL_BIN_CANDIDATES = [
-  process.env.OPENSHELL_BIN,
-  HOME ? `${HOME}/.local/bin/openshell` : undefined,
-  "/Users/markmckeen/.local/bin/openshell",
-  "/Users/markmckeen/OpenShell/target/release/openshell",
-  "/Users/markmckeen/openshell/target/release/openshell",
-  "/Users/markmckeen/openshell/scripts/bin/openshell",
-  "/usr/local/bin/openshell",
-  "/opt/homebrew/bin/openshell",
-].filter((value): value is string => Boolean(value))
-const OPENSHELL_BIN =
-  OPENSHELL_BIN_CANDIDATES.find((candidate) => existsSync(candidate)) ?? OPENSHELL_BIN_CANDIDATES[0]
 
 type SandboxSummary = {
   id: string
@@ -191,7 +148,7 @@ function buildNemoClawSummary(output: string | null, defaultSandboxNames: Set<st
 async function execNemoclaw(args: string[]) {
   const env = {
     ...process.env,
-    PATH: `${process.env.PATH ?? ""}:${HOME ? `${HOME}/.local/bin:${HOME}/.nvm/versions/node/v22.22.2/bin:${HOME}/.nvm/versions/node/v22.22.1/bin:` : ""}/opt/homebrew/bin:/usr/local/bin:/usr/bin`,
+    PATH: HOST_PATH,
     NO_COLOR: "1",
     CLICOLOR: "0",
     CLICOLOR_FORCE: "0",
@@ -209,6 +166,7 @@ async function execOpenShell(args: string[]) {
   const { stdout, stderr } = await execFileAsync(OPENSHELL_BIN, args, {
     env: {
       ...process.env,
+      PATH: HOST_PATH,
       NO_COLOR: "1",
       CLICOLOR: "0",
       CLICOLOR_FORCE: "0",

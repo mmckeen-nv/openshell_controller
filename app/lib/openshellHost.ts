@@ -1,33 +1,9 @@
 import { execFile, spawn } from "node:child_process"
-import { existsSync } from "node:fs"
 import { promisify } from "node:util"
+import { HOST_PATH, OPENCLAW_BIN, OPENSHELL_BIN } from "./hostCommands"
 import { getDefaultOpenClawInstance, getOpenClawDashboardPortForSandbox, resolveOpenClawInstance } from "./openclawInstances"
 
 const execFileAsync = promisify(execFile)
-
-const OPENSHELL_BIN_CANDIDATES = [
-  process.env.OPENSHELL_BIN,
-  process.env.HOME ? `${process.env.HOME}/.local/bin/openshell` : undefined,
-  "/Users/markmckeen/.local/bin/openshell",
-  "/Users/markmckeen/OpenShell/target/release/openshell",
-  "/Users/markmckeen/openshell/target/release/openshell",
-  "/Users/markmckeen/openshell/scripts/bin/openshell",
-  "/usr/local/bin/openshell",
-  "/opt/homebrew/bin/openshell",
-].filter((value): value is string => Boolean(value))
-
-const OPENCLAW_BIN_CANDIDATES = [
-  process.env.OPENCLAW_BIN,
-  process.env.HOME ? `${process.env.HOME}/NemoClaw/node_modules/.bin/openclaw` : undefined,
-  process.env.HOME ? `${process.env.HOME}/.local/bin/openclaw` : undefined,
-  "/usr/local/bin/openclaw",
-  "/opt/homebrew/bin/openclaw",
-].filter((value): value is string => Boolean(value))
-
-const OPENSHELL_BIN =
-  OPENSHELL_BIN_CANDIDATES.find((candidate) => existsSync(candidate)) ?? OPENSHELL_BIN_CANDIDATES[0]
-const OPENCLAW_BIN =
-  OPENCLAW_BIN_CANDIDATES.find((candidate) => existsSync(candidate)) ?? OPENCLAW_BIN_CANDIDATES[0] ?? "openclaw"
 const OPENSHELL_GATEWAY = process.env.OPENSHELL_GATEWAY || "openshell"
 const OPENSHELL_NAMESPACE = "agent-sandbox-system"
 const SANDBOX_DASHBOARD_REMOTE_PORT = Number.parseInt(process.env.OPENCLAW_SANDBOX_DASHBOARD_REMOTE_PORT || "18789", 10)
@@ -70,6 +46,7 @@ export async function execOpenShell(args: string[]) {
   const { stdout, stderr } = await execFileAsync(OPENSHELL_BIN, args, {
     env: {
       ...process.env,
+      PATH: HOST_PATH,
       NO_COLOR: "1",
       CLICOLOR: "0",
       CLICOLOR_FORCE: "0",
@@ -80,9 +57,7 @@ export async function execOpenShell(args: string[]) {
 
 function buildOpenClawEnv() {
   const pathEntries = [
-    process.env.HOME ? `${process.env.HOME}/NemoClaw/node_modules/.bin` : null,
-    process.env.HOME ? `${process.env.HOME}/.local/bin` : null,
-    process.env.PATH,
+    HOST_PATH,
   ].filter(Boolean)
 
   return {

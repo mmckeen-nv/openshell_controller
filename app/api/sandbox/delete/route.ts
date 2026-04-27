@@ -2,23 +2,9 @@ import { NextResponse } from "next/server"
 import { execFile } from "node:child_process"
 import { promisify } from "node:util"
 import { resolveSandboxRef } from "@/app/lib/openshellHost"
+import { HOST_PATH, NEMOCLAW_BIN, NEMOCLAW_CWD, OPENSHELL_BIN } from "@/app/lib/hostCommands"
 
 const execFileAsync = promisify(execFile)
-const HOME = process.env.HOME || ""
-const OPENSHELL_BIN = process.env.OPENSHELL_BIN || `${HOME}/.local/bin/openshell`
-const NEMOCLAW_BIN = process.env.NEMOCLAW_BIN || `${HOME}/NemoClaw/bin/nemoclaw.js`
-const HOST_PATH = [
-  `${HOME}/.local/bin`,
-  `${HOME}/.nvm/versions/node/v22.22.2/bin`,
-  `${HOME}/.nvm/versions/node/v22.22.1/bin`,
-  "/opt/homebrew/bin",
-  "/usr/local/bin",
-  "/usr/bin",
-  "/bin",
-  "/usr/sbin",
-  "/sbin",
-  process.env.PATH || "",
-].filter(Boolean).join(":")
 
 function elapsedMs(start: number) {
   return Date.now() - start
@@ -106,7 +92,7 @@ async function cleanupNemoClawSandbox(sandboxName: string) {
   console.log(`[sandbox/delete] nemoclaw-cleanup:start sandbox=${sandboxName}`)
   try {
     const { stdout, stderr } = await execFileAsync(NEMOCLAW_BIN, [sandboxName, "destroy", "--yes"], {
-      cwd: `${HOME}/NemoClaw`,
+      cwd: NEMOCLAW_CWD,
       env: {
         ...process.env,
         PATH: HOST_PATH,
