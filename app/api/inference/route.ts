@@ -180,3 +180,29 @@ export async function POST(request: Request) {
     return NextResponse.json({ ok: false, error: message }, { status: /required|unsupported|must|URL/.test(message) ? 400 : 500 })
   }
 }
+
+export async function DELETE(request: Request) {
+  try {
+    const body = await request.json().catch(() => ({}))
+    const url = new URL(request.url)
+    const name = validateName(body?.name ?? url.searchParams.get("name"))
+    const result = await runOpenShell(["provider", "delete", name])
+    const [inference, providers] = await Promise.all([
+      runOpenShell(["inference", "get"]),
+      readProviders(),
+    ])
+
+    return NextResponse.json({
+      ok: true,
+      provider: name,
+      gateway: parseRoute(inference.stdout, "Gateway inference"),
+      system: parseRoute(inference.stdout, "System inference"),
+      providers,
+      stdout: result.stdout,
+      stderr: result.stderr,
+    })
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Failed to delete inference provider"
+    return NextResponse.json({ ok: false, error: message }, { status: /required|must/.test(message) ? 400 : 500 })
+  }
+}

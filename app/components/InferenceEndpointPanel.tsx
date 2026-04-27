@@ -68,6 +68,7 @@ export default function InferenceEndpointPanel() {
   const [ollamaModels, setOllamaModels] = useState<OllamaModel[]>([])
   const [ollamaLoading, setOllamaLoading] = useState(false)
   const [ollamaMessage, setOllamaMessage] = useState("")
+  const [deletingProvider, setDeletingProvider] = useState<string | null>(null)
 
   const activeProvider = useMemo(
     () => providers.find((provider) => provider.name === gateway.provider) ?? null,
@@ -140,6 +141,17 @@ export default function InferenceEndpointPanel() {
     setMessage(`Loaded ${provider.name}. Enter a model and save to make it active.`)
   }
 
+  function useNvidiaInferencePreset() {
+    setName("nvidia-inference")
+    setType("openai")
+    setModel("us/aws/anthropic/bedrock-claude-opus-4-6")
+    setBaseUrl("https://inference-api.nvidia.com/v1")
+    setCredentialKey("NVIDIA_API_KEY")
+    setRoute("gateway")
+    setNoVerify(true)
+    setMessage("NVIDIA inference preset loaded. Enter an API key, then save the endpoint.")
+  }
+
   async function saveEndpoint() {
     try {
       setSaving(true)
@@ -171,6 +183,31 @@ export default function InferenceEndpointPanel() {
       setMessage(error instanceof Error ? error.message : "Failed to save inference endpoint")
     } finally {
       setSaving(false)
+    }
+  }
+
+  async function deleteProvider(providerName: string | null) {
+    if (!providerName) return
+    if (!window.confirm(`Delete inference provider '${providerName}'?`)) return
+    try {
+      setDeletingProvider(providerName)
+      setMessage("")
+      const response = await fetch("/api/inference", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: providerName }),
+      })
+      const data = await response.json()
+      if (!response.ok) throw new Error(data.error || "Failed to delete inference provider")
+      setGateway(data.gateway ?? gateway)
+      setSystem(data.system ?? system)
+      setProviders(Array.isArray(data.providers) ? data.providers : [])
+      if (name === providerName) setName("")
+      setMessage(`Deleted inference provider '${providerName}'.`)
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Failed to delete inference provider")
+    } finally {
+      setDeletingProvider(null)
     }
   }
 
@@ -296,6 +333,9 @@ export default function InferenceEndpointPanel() {
                 <button onClick={saveEndpoint} disabled={saving} className="px-4 py-2 rounded-sm bg-[var(--nvidia-green)] text-white text-xs font-mono uppercase tracking-wider disabled:opacity-50">
                   {saving ? "Saving..." : "Save Endpoint"}
                 </button>
+                <button type="button" onClick={useNvidiaInferencePreset} disabled={saving} className="px-4 py-2 rounded-sm bg-[var(--background-tertiary)] text-[var(--foreground)] text-xs font-mono uppercase tracking-wider hover:bg-[var(--background-secondary)] disabled:opacity-50">
+                  NVIDIA Preset
+                </button>
                 {message && <p className="text-xs text-[var(--foreground-dim)] whitespace-pre-wrap">{message}</p>}
               </div>
             </section>
@@ -307,13 +347,18 @@ export default function InferenceEndpointPanel() {
               ) : (
                 <div className="space-y-2">
                   {providers.map((provider) => (
-                    <button key={provider.name || provider.id} onClick={() => selectProvider(provider)} className="w-full rounded-sm border border-[var(--border-subtle)] bg-[var(--background-tertiary)] p-3 text-left hover:border-[var(--nvidia-green)]">
-                      <div className="flex items-center justify-between gap-3">
-                        <span className="text-sm font-mono text-[var(--foreground)]">{provider.name}</span>
-                        {provider.name === gateway.provider && <span className="text-[10px] uppercase tracking-wider text-[var(--nvidia-green)]">active</span>}
-                      </div>
-                      <p className="mt-1 text-[11px] text-[var(--foreground-dim)]">{provider.type || "unknown"} · credentials {provider.credentialKeys.length} · config {provider.configKeys.length}</p>
-                    </button>
+                    <div key={provider.name || provider.id} className="rounded-sm border border-[var(--border-subtle)] bg-[var(--background-tertiary)] p-3">
+                      <button type="button" onClick={() => selectProvider(provider)} className="w-full text-left">
+                        <div className="flex items-center justify-between gap-3">
+                          <span className="text-sm font-mono text-[var(--foreground)]">{provider.name}</span>
+                          {provider.name === gateway.provider && <span className="text-[10px] uppercase tracking-wider text-[var(--nvidia-green)]">active</span>}
+                        </div>
+                        <p className="mt-1 text-[11px] text-[var(--foreground-dim)]">{provider.type || "unknown"} · credentials {provider.credentialKeys.length} · config {provider.configKeys.length}</p>
+                      </button>
+                      <button type="button" onClick={() => deleteProvider(provider.name)} disabled={!provider.name || deletingProvider === provider.name} className="mt-3 px-3 py-2 rounded-sm border border-red-500/40 text-red-300 text-[10px] font-mono uppercase tracking-wider hover:bg-red-500/10 disabled:opacity-50">
+                        {deletingProvider === provider.name ? "Deleting..." : "Delete"}
+                      </button>
+                    </div>
                   ))}
                 </div>
               )}
