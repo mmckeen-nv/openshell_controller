@@ -1,10 +1,54 @@
-import { existsSync } from "node:fs"
+import { existsSync, readdirSync, statSync } from "node:fs"
 import path from "node:path"
 
 const HOME = process.env.HOME || ""
 
 function firstExisting(candidates: Array<string | undefined>, fallback: string) {
   return candidates.filter((value): value is string => Boolean(value)).find((candidate) => existsSync(candidate)) || fallback
+}
+
+function unique(values: Array<string | undefined>) {
+  return Array.from(new Set(values.filter((value): value is string => Boolean(value))))
+}
+
+function safeIsDirectory(candidate: string) {
+  try {
+    return statSync(candidate).isDirectory()
+  } catch {
+    return false
+  }
+}
+
+function homeChildDirectories() {
+  if (!HOME || !safeIsDirectory(HOME)) return []
+  try {
+    return readdirSync(HOME, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => path.join(HOME, entry.name))
+      .filter((directory) => !/(^|\/)(node_modules|\.cache|\.npm|\.local\/share\/Trash)$/.test(directory))
+  } catch {
+    return []
+  }
+}
+
+function discoverHomeFiles(relativePath: string) {
+  const found: string[] = []
+  for (const directory of homeChildDirectories()) {
+    const direct = path.join(directory, relativePath)
+    if (existsSync(direct)) found.push(direct)
+
+    try {
+      for (const entry of readdirSync(directory, { withFileTypes: true })) {
+        if (!entry.isDirectory()) continue
+        if (["node_modules", ".git", ".next", "dist", "build"].includes(entry.name)) continue
+        const nested = path.join(directory, entry.name, relativePath)
+        if (existsSync(nested)) found.push(nested)
+      }
+    } catch {
+      // Ignore unreadable home subdirectories.
+    }
+  }
+  return found
 }
 
 function pathEntries() {
@@ -25,7 +69,7 @@ function pathEntries() {
   ].filter((value): value is string => Boolean(value))
 }
 
-export const HOST_PATH = Array.from(new Set(pathEntries())).join(":")
+export const HOST_PATH = unique(pathEntries()).join(":")
 
 export const NODE_BIN = firstExisting([
   process.env.NODE_BIN,
@@ -52,27 +96,38 @@ export const OPENCLAW_BIN = firstExisting([
   "/usr/local/bin/openclaw",
 ], "openclaw")
 
-export const NEMOCLAW_BIN = firstExisting([
+export const NEMOCLAW_BIN_CANDIDATES = unique([
   process.env.NEMOCLAW_BIN,
   HOME ? path.join(HOME, ".local/bin/nemoclaw") : undefined,
   HOME ? path.join(HOME, ".nemoclaw/source/bin/nemoclaw.js") : undefined,
   HOME ? path.join(HOME, "NemoClaw/bin/nemoclaw.js") : undefined,
+  HOME ? path.join(HOME, "nemoclaw/bin/nemoclaw.js") : undefined,
+  HOME ? path.join(HOME, "nemoclaw.js") : undefined,
+  ...discoverHomeFiles("bin/nemoclaw.js"),
   HOME ? path.join(HOME, ".nvm/versions/node/v22.22.2/bin/nemoclaw") : undefined,
   "/opt/homebrew/bin/nemoclaw",
   "/usr/local/bin/nemoclaw",
-], "nemoclaw")
+])
+export const NEMOCLAW_BIN = firstExisting(NEMOCLAW_BIN_CANDIDATES, "nemoclaw")
 
-export const NEMOCLAW_SETUP = firstExisting([
+export const NEMOCLAW_SETUP_CANDIDATES = unique([
   process.env.NEMOCLAW_SETUP,
   HOME ? path.join(HOME, ".nemoclaw/source/scripts/setup.sh") : undefined,
   HOME ? path.join(HOME, "NemoClaw/scripts/setup.sh") : undefined,
-], "")
+  HOME ? path.join(HOME, "nemoclaw/scripts/setup.sh") : undefined,
+  ...discoverHomeFiles("scripts/setup.sh"),
+])
+export const NEMOCLAW_SETUP = firstExisting(NEMOCLAW_SETUP_CANDIDATES, "")
 
-export const NEMOCLAW_CWD = firstExisting([
+export const NEMOCLAW_CWD_CANDIDATES = unique([
   process.env.NEMOCLAW_CWD,
+  NEMOCLAW_SETUP ? path.dirname(path.dirname(NEMOCLAW_SETUP)) : undefined,
+  NEMOCLAW_BIN.includes("/") ? path.dirname(path.dirname(NEMOCLAW_BIN)) : undefined,
   HOME ? path.join(HOME, ".nemoclaw/source") : undefined,
   HOME ? path.join(HOME, "NemoClaw") : undefined,
-], process.cwd())
+  HOME ? path.join(HOME, "nemoclaw") : undefined,
+])
+export const NEMOCLAW_CWD = firstExisting(NEMOCLAW_CWD_CANDIDATES, process.cwd())
 
 export function commandExists(command: string) {
   return command.includes("/") ? existsSync(command) : true

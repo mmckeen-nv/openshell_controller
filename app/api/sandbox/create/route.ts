@@ -2,7 +2,7 @@ import { NextResponse } from "next/server"
 import { execFile, spawn } from "node:child_process"
 import { promisify } from "node:util"
 import { inspectSandbox } from "@/app/lib/openshellHost"
-import { commandExists, HOST_PATH, NEMOCLAW_SETUP, OPENSHELL_BIN } from "@/app/lib/hostCommands"
+import { commandExists, HOST_PATH, NEMOCLAW_SETUP, NEMOCLAW_SETUP_CANDIDATES, OPENSHELL_BIN } from "@/app/lib/hostCommands"
 
 const execFileAsync = promisify(execFile)
 
@@ -44,7 +44,7 @@ function appendNote(...parts: Array<string | false | null | undefined>) {
 function requireNemoClawSetup() {
   if (NEMOCLAW_SETUP && commandExists(NEMOCLAW_SETUP)) return NEMOCLAW_SETUP
   throw new Error(
-    "NemoClaw blueprint setup script was not found. Install NemoClaw on this host or set NEMOCLAW_SETUP in .env.local to the absolute path of scripts/setup.sh.",
+    `NemoClaw blueprint setup script was not found. Install NemoClaw under your Linux home directory, or set NEMOCLAW_SETUP in .env.local to the absolute path of scripts/setup.sh. Searched: ${NEMOCLAW_SETUP_CANDIDATES.join(", ") || "no candidates"}.`,
   )
 }
 

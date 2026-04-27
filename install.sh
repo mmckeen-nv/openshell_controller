@@ -140,10 +140,28 @@ find_nemoclaw_bin() {
     "$HOME/.local/bin/nemoclaw" \
     "$HOME/.nemoclaw/source/bin/nemoclaw.js" \
     "$HOME/NemoClaw/bin/nemoclaw.js" \
+    "$HOME/nemoclaw/bin/nemoclaw.js" \
     "/opt/homebrew/bin/nemoclaw" \
     "/usr/local/bin/nemoclaw"
   do
     [[ -x "$candidate" || -f "$candidate" ]] && printf '%s\n' "$candidate" && return
+  done
+  local root nested
+  for root in "$HOME"/* "$HOME"/.*; do
+    [[ -d "$root" ]] || continue
+    case "$(basename "$root")" in
+      .|..|.cache|.npm|node_modules) continue ;;
+    esac
+    candidate="$root/bin/nemoclaw.js"
+    [[ -x "$candidate" || -f "$candidate" ]] && printf '%s\n' "$candidate" && return
+    for nested in "$root"/*; do
+      [[ -d "$nested" ]] || continue
+      case "$(basename "$nested")" in
+        .git|.next|build|dist|node_modules) continue ;;
+      esac
+      candidate="$nested/bin/nemoclaw.js"
+      [[ -x "$candidate" || -f "$candidate" ]] && printf '%s\n' "$candidate" && return
+    done
   done
   command -v nemoclaw 2>/dev/null || true
 }
@@ -152,9 +170,27 @@ find_nemoclaw_setup() {
   local candidate
   for candidate in \
     "$HOME/.nemoclaw/source/scripts/setup.sh" \
-    "$HOME/NemoClaw/scripts/setup.sh"
+    "$HOME/NemoClaw/scripts/setup.sh" \
+    "$HOME/nemoclaw/scripts/setup.sh"
   do
     [[ -f "$candidate" ]] && printf '%s\n' "$candidate" && return
+  done
+  local root nested
+  for root in "$HOME"/* "$HOME"/.*; do
+    [[ -d "$root" ]] || continue
+    case "$(basename "$root")" in
+      .|..|.cache|.npm|node_modules) continue ;;
+    esac
+    candidate="$root/scripts/setup.sh"
+    [[ -f "$candidate" ]] && printf '%s\n' "$candidate" && return
+    for nested in "$root"/*; do
+      [[ -d "$nested" ]] || continue
+      case "$(basename "$nested")" in
+        .git|.next|build|dist|node_modules) continue ;;
+      esac
+      candidate="$nested/scripts/setup.sh"
+      [[ -f "$candidate" ]] && printf '%s\n' "$candidate" && return
+    done
   done
 }
 
@@ -164,10 +200,16 @@ nemoclaw_cwd_for() {
     printf '%s\n' "$HOME/.nemoclaw/source"
   elif [[ "$path_value" == "$HOME/NemoClaw/"* ]]; then
     printf '%s\n' "$HOME/NemoClaw"
+  elif [[ "$path_value" == "$HOME/nemoclaw/"* ]]; then
+    printf '%s\n' "$HOME/nemoclaw"
   elif [[ -d "$HOME/.nemoclaw/source" ]]; then
     printf '%s\n' "$HOME/.nemoclaw/source"
   elif [[ -d "$HOME/NemoClaw" ]]; then
     printf '%s\n' "$HOME/NemoClaw"
+  elif [[ -d "$HOME/nemoclaw" ]]; then
+    printf '%s\n' "$HOME/nemoclaw"
+  elif [[ -n "$path_value" ]]; then
+    dirname "$(dirname "$path_value")"
   fi
 }
 
