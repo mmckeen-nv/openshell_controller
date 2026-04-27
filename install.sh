@@ -294,10 +294,9 @@ else
 fi
 
 if [[ -n "$NEMOCLAW_SETUP" ]]; then
-  log "NemoClaw setup workflow: $NEMOCLAW_SETUP"
+  log "Legacy NemoClaw setup workflow: $NEMOCLAW_SETUP"
 else
-  warn "NemoClaw setup workflow was not found."
-  warn "The NemoClaw blueprint create button requires NEMOCLAW_SETUP to point at scripts/setup.sh."
+  log "Legacy NemoClaw setup workflow was not found; current installs use 'nemoclaw onboard'."
 fi
 
 check_port 3000 "dashboard HTTP"

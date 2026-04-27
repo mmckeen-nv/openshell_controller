@@ -2,7 +2,17 @@ import { NextResponse } from "next/server"
 import { execFile, spawn } from "node:child_process"
 import { promisify } from "node:util"
 import { inspectSandbox } from "@/app/lib/openshellHost"
-import { commandExists, HOST_PATH, NEMOCLAW_SETUP, NEMOCLAW_SETUP_CANDIDATES, OPENSHELL_BIN } from "@/app/lib/hostCommands"
+import {
+  commandExists,
+  HOST_PATH,
+  NEMOCLAW_BIN,
+  NEMOCLAW_BIN_CANDIDATES,
+  NEMOCLAW_CWD,
+  NEMOCLAW_SETUP,
+  NEMOCLAW_SETUP_CANDIDATES,
+  NODE_BIN,
+  OPENSHELL_BIN,
+} from "@/app/lib/hostCommands"
 
 const execFileAsync = promisify(execFile)
 
@@ -41,10 +51,24 @@ function appendNote(...parts: Array<string | false | null | undefined>) {
   return parts.filter(Boolean).join(" ")
 }
 
-function requireNemoClawSetup() {
-  if (NEMOCLAW_SETUP && commandExists(NEMOCLAW_SETUP)) return NEMOCLAW_SETUP
+type NemoClawCreateCommand = {
+  file: string
+  args: string[]
+  mode: "cli-onboard" | "legacy-setup"
+}
+
+function buildNemoClawCreateCommand(): NemoClawCreateCommand {
+  if (NEMOCLAW_BIN && commandExists(NEMOCLAW_BIN)) {
+    const args = ["onboard", "--non-interactive", "--recreate-sandbox", "--yes-i-accept-third-party-software"]
+    return /\.(?:c?m?js|ts)$/i.test(NEMOCLAW_BIN)
+      ? { file: NODE_BIN, args: [NEMOCLAW_BIN, ...args], mode: "cli-onboard" }
+      : { file: NEMOCLAW_BIN, args, mode: "cli-onboard" }
+  }
+  if (NEMOCLAW_SETUP && commandExists(NEMOCLAW_SETUP)) {
+    return { file: "/bin/bash", args: [NEMOCLAW_SETUP], mode: "legacy-setup" }
+  }
   throw new Error(
-    `NemoClaw blueprint setup script was not found. Install NemoClaw under your Linux home directory, or set NEMOCLAW_SETUP in .env.local to the absolute path of scripts/setup.sh. Searched: ${NEMOCLAW_SETUP_CANDIDATES.join(", ") || "no candidates"}.`,
+    `NemoClaw CLI was not found. Install the current NemoClaw CLI under your Linux home directory, or set NEMOCLAW_BIN in .env.local. Searched CLI: ${NEMOCLAW_BIN_CANDIDATES.join(", ") || "no candidates"}. Legacy setup candidates: ${NEMOCLAW_SETUP_CANDIDATES.join(", ") || "none"}.`,
   )
 }
 
@@ -87,11 +111,12 @@ async function verifySandboxCreation(sandboxName: string): Promise<SandboxVerifi
   }
 }
 
-async function runCommand(file: string, args: string[], env: NodeJS.ProcessEnv) {
+async function runCommand(file: string, args: string[], env: NodeJS.ProcessEnv, cwd?: string) {
   const startedAt = Date.now()
   console.log(`[sandbox/create] command:start file=${file} args=${JSON.stringify(args)}`)
   try {
     const { stdout, stderr } = await execFileAsync(file, args, {
+      cwd,
       env,
       maxBuffer: 20 * 1024 * 1024,
     })
@@ -313,18 +338,27 @@ export async function POST(request: Request) {
     }
 
     if (blueprint === "nemoclaw-blueprint") {
-      const setupPath = requireNemoClawSetup()
+      const createCommand = buildNemoClawCreateCommand()
       const env: NodeJS.ProcessEnv = {
         ...process.env,
         PATH: HOST_PATH,
         NEMOCLAW_SANDBOX_NAME: sandboxName,
+        NEMOCLAW_NON_INTERACTIVE: "1",
+        NEMOCLAW_RECREATE_SANDBOX: "1",
+        NEMOCLAW_ACCEPT_THIRD_PARTY_SOFTWARE: "1",
+        OPENSHELL_GATEWAY: process.env.OPENSHELL_GATEWAY || "nemoclaw",
       }
 
       if (!enableTailscale) {
         env.NVIDIA_API_KEY = env.NVIDIA_API_KEY || "optional-local-mode"
       }
 
-      const result = await runCommand("/bin/bash", [setupPath, sandboxName], env)
+      const result = await runCommand(
+        createCommand.file,
+        createCommand.mode === "legacy-setup" ? [...createCommand.args, sandboxName] : createCommand.args,
+        env,
+        NEMOCLAW_CWD,
+      )
 
       if (!result.ok) {
         return NextResponse.json({
@@ -359,7 +393,7 @@ export async function POST(request: Request) {
         verification,
         mode: "nemoclaw-blueprint",
         enableTailscale,
-        setupPath,
+        createCommand,
         hostPath: HOST_PATH,
         readiness: {
           attempts: readiness.attempts,
