@@ -1,5 +1,5 @@
 "use client"
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import type { ReactNode } from 'react'
 import ConfigurationPanel from './ConfigurationPanel'
 import SandboxArchivePanel from './SandboxArchivePanel'
@@ -150,33 +150,34 @@ export default function SandboxList({
     }
   }, [selectedSandboxId])
 
+  const loadPermissionFeed = useCallback(async (sandbox: SandboxInventoryItem) => {
+    try {
+      const response = await fetch(`/api/sandbox/${encodeURIComponent(sandbox.id)}/permissions`, { cache: 'no-store' })
+      const data = await response.json()
+      const feed = response.ok ? data.feed : { rejectedCount: 1, latest: { status: 'Unavailable', error: data.error } }
+      setPermissionFeeds((current) => ({ ...current, [sandbox.id]: feed }))
+    } catch (error) {
+      setPermissionFeeds((current) => ({
+        ...current,
+        [sandbox.id]: { rejectedCount: 1, latest: { status: 'Unavailable', error: error instanceof Error ? error.message : 'Permission feed unavailable' } },
+      }))
+    }
+  }, [])
+
   useEffect(() => {
     if (sandboxes.length === 0) {
       setPermissionFeeds({})
       return
     }
-
-    let active = true
-    const loadPermissionFeeds = async () => {
-      const entries = await Promise.all(sandboxes.map(async (sandbox) => {
-        try {
-          const response = await fetch(`/api/sandbox/${encodeURIComponent(sandbox.id)}/permissions`, { cache: 'no-store' })
-          const data = await response.json()
-          return [sandbox.id, response.ok ? data.feed : { rejectedCount: 1, latest: { status: 'Unavailable', error: data.error } }] as const
-        } catch (error) {
-          return [sandbox.id, { rejectedCount: 1, latest: { status: 'Unavailable', error: error instanceof Error ? error.message : 'Permission feed unavailable' } }] as const
-        }
-      }))
-      if (active) setPermissionFeeds(Object.fromEntries(entries))
-    }
-
-    loadPermissionFeeds()
-    const interval = window.setInterval(loadPermissionFeeds, 12000)
-    return () => {
-      active = false
-      window.clearInterval(interval)
-    }
+    setPermissionFeeds((current) => Object.fromEntries(
+      Object.entries(current).filter(([sandboxId]) => sandboxes.some((sandbox) => sandbox.id === sandboxId)),
+    ))
   }, [sandboxes])
+
+  useEffect(() => {
+    if (!selectedSandbox || !openDrawers.policy || permissionFeeds[selectedSandbox.id]) return
+    loadPermissionFeed(selectedSandbox)
+  }, [loadPermissionFeed, openDrawers.policy, permissionFeeds, selectedSandbox])
 
   useEffect(() => {
     let active = true
@@ -232,7 +233,11 @@ export default function SandboxList({
   }
 
   const toggleDrawer = (key: DrawerKey) => {
+    const opening = !openDrawers[key]
     setOpenDrawers((current) => ({ ...current, [key]: !current[key] }))
+    if (key === 'policy' && opening && selectedSandbox) {
+      loadPermissionFeed(selectedSandbox)
+    }
   }
 
   const sandboxCanAccessMcpServer = (sandbox: SandboxInventoryItem, server: McpServerAccess) => {
@@ -677,6 +682,20 @@ export default function SandboxList({
                 onToggle={() => toggleDrawer('policy')}
               >
                 <div className="space-y-4">
+                  <div className="flex items-center justify-between gap-4 rounded-sm border border-[var(--border-subtle)] bg-[var(--background-tertiary)] p-4 max-sm:flex-col max-sm:items-start">
+                    <div>
+                      <h4 className="text-xs font-semibold uppercase tracking-wider text-[var(--foreground)]">Network Permission Feed</h4>
+                      <p className="mt-1 text-xs text-[var(--foreground-dim)]">Loaded on demand for the selected sandbox to avoid background permission polling.</p>
+                    </div>
+                    <button
+                      type="button"
+                      disabled={grantingSandboxId === selectedSandbox.id}
+                      onClick={() => loadPermissionFeed(selectedSandbox)}
+                      className="action-button px-3 py-2 max-sm:w-full"
+                    >
+                      Refresh Requests
+                    </button>
+                  </div>
                   {(() => {
                     const feed = permissionFeeds[selectedSandbox.id]
                     const pending = feed?.pending || []

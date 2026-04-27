@@ -9,6 +9,14 @@ type ProviderSummary = {
   type: string | null
 }
 
+type InferenceRouteStatus = {
+  configured: boolean
+  provider: string | null
+  model: string | null
+  version: string | null
+  timeout: string | null
+}
+
 type OllamaModel = {
   name: string
   sizeLabel: string | null
@@ -68,6 +76,7 @@ export default function SandboxInferencePanel({
   const [applying, setApplying] = useState(false)
   const [message, setMessage] = useState("")
   const [providers, setProviders] = useState<ProviderSummary[]>([])
+  const [verifiedRoutes, setVerifiedRoutes] = useState<Array<SandboxInferenceRoute & { scope: "Sandbox" | "System" }>>([])
   const [routes, setRoutes] = useState<SandboxInferenceRoute[]>([])
   const [primaryRouteId, setPrimaryRouteId] = useState("")
   const [draftProvider, setDraftProvider] = useState("")
@@ -111,8 +120,18 @@ export default function SandboxInferencePanel({
 
       const nextProviders = Array.isArray(inferenceData.providers) ? inferenceData.providers : []
       const config = configData.config as SandboxInferenceConfig
-      const fallbackProvider = inferenceData.gateway?.provider || nextProviders[0]?.name || ""
-      const fallbackModel = inferenceData.gateway?.model || ""
+      const gatewayRoute = inferenceData.gateway as InferenceRouteStatus | undefined
+      const systemRoute = inferenceData.system as InferenceRouteStatus | undefined
+      const nextVerifiedRoutes = [
+        gatewayRoute?.configured && gatewayRoute.provider && gatewayRoute.model
+          ? { ...makeRoute(gatewayRoute.provider, gatewayRoute.model, "Active sandbox route"), scope: "Sandbox" as const }
+          : null,
+        systemRoute?.configured && systemRoute.provider && systemRoute.model
+          ? { ...makeRoute(systemRoute.provider, systemRoute.model, "Active system route"), scope: "System" as const }
+          : null,
+      ].filter((route): route is SandboxInferenceRoute & { scope: "Sandbox" | "System" } => Boolean(route))
+      const fallbackProvider = gatewayRoute?.provider || nextProviders[0]?.name || ""
+      const fallbackModel = gatewayRoute?.model || ""
       const nextRoutes = dedupeRoutes(Array.isArray(config?.routes) && config.routes.length > 0
         ? config.routes
         : fallbackProvider && fallbackModel
@@ -120,6 +139,7 @@ export default function SandboxInferencePanel({
           : [])
 
       setProviders(nextProviders)
+      setVerifiedRoutes(nextVerifiedRoutes)
       setRoutes(nextRoutes)
       setPrimaryRouteId(config?.primaryRouteId || nextRoutes[0]?.id || "")
       setDraftProvider(fallbackProvider)
@@ -270,6 +290,32 @@ export default function SandboxInferencePanel({
               <p className="text-[10px] uppercase tracking-wider text-[var(--foreground-dim)]">Primary Route</p>
               <p className="mt-2 text-sm font-mono text-[var(--foreground)]">{primaryRoute.provider}</p>
               <p className="mt-1 text-xs font-mono text-[var(--foreground-dim)]">{primaryRoute.model}</p>
+            </div>
+          )}
+
+          {verifiedRoutes.length > 0 && (
+            <div className="rounded-sm border border-[var(--border-subtle)] bg-[var(--background-tertiary)] p-4">
+              <div className="flex items-center justify-between gap-4">
+                <h5 className="text-xs uppercase tracking-wider text-[var(--foreground)]">Verified Working Routes</h5>
+                <span className="text-[10px] uppercase tracking-wider text-[var(--nvidia-green)]">OpenShell active</span>
+              </div>
+              <div className="mt-3 grid grid-cols-1 gap-2 md:grid-cols-2">
+                {verifiedRoutes.map((route) => (
+                  <button
+                    key={`${route.scope}-${route.id}`}
+                    type="button"
+                    onClick={() => addRoute(route.provider, route.model, route.label)}
+                    className="rounded-sm border border-[var(--border-subtle)] bg-[var(--background)] p-3 text-left hover:border-[var(--nvidia-green)]"
+                  >
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="text-[10px] uppercase tracking-wider text-[var(--foreground-dim)]">{route.scope}</span>
+                      <span className="text-[10px] uppercase tracking-wider text-[var(--nvidia-green)]">Add</span>
+                    </div>
+                    <div className="mt-2 text-xs font-mono text-[var(--foreground)]">{route.provider}</div>
+                    <div className="mt-1 break-all text-[11px] font-mono text-[var(--foreground-dim)]">{route.model}</div>
+                  </button>
+                ))}
+              </div>
             </div>
           )}
 

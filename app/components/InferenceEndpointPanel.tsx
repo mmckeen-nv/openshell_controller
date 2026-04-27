@@ -144,7 +144,7 @@ export default function InferenceEndpointPanel() {
   function useNvidiaInferencePreset() {
     setName("nvidia-inference")
     setType("openai")
-    setModel("us/aws/anthropic/bedrock-claude-opus-4-6")
+    setModel("aws/anthropic/claude-opus-4-5")
     setBaseUrl("https://inference-api.nvidia.com/v1")
     setCredentialKey("NVIDIA_API_KEY")
     setRoute("gateway")
