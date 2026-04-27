@@ -1,3 +1,4 @@
+
 # OpenShell Control
 
 OpenShell Control is a local, development-stage dashboard for operating OpenShell sandboxes and their OpenClaw gateway dashboards.
@@ -24,6 +25,21 @@ It is currently built for active development and lab use. It includes a simple p
 - Upload files into sandboxes and download files back out.
 - Open an operator terminal for the selected sandbox.
 - Simple local login, setup account, forgot password, and recovery token flow.
+
+<img width="1719" height="1185" alt="Screenshot 2026-04-27 at 3 40 27 PM" src="https://github.com/user-attachments/assets/c34c5211-aa26-4aa5-a1f8-3256bb78bdce" />
+
+<img width="1717" height="1197" alt="Screenshot 2026-04-27 at 3 41 01 PM" src="https://github.com/user-attachments/assets/206def4d-edf1-46b3-8e00-ef24dec0d18d" />
+
+<img width="1730" height="1183" alt="Screenshot 2026-04-27 at 3 41 12 PM" src="https://github.com/user-attachments/assets/67a0de93-e68a-48dc-845b-356baaa748db" />
+
+<img width="1720" height="1181" alt="Screenshot 2026-04-27 at 3 41 33 PM" src="https://github.com/user-attachments/assets/23af9aac-6be3-453e-9370-c56377ce5ba2" />
+
+<img width="1712" height="1180" alt="Screenshot 2026-04-27 at 3 41 49 PM" src="https://github.com/user-attachments/assets/2e5ce26b-3a82-43f2-b020-257d0b027a8a" />
+
+<img width="1720" height="1185" alt="Screenshot 2026-04-27 at 3 42 09 PM" src="https://github.com/user-attachments/assets/5a573333-ffc3-49b6-9baa-2829b9949c0b" />
+
+<img width="2117" height="1873" alt="Screenshot 2026-04-27 at 3 42 37 PM" src="https://github.com/user-attachments/assets/405ae79c-59e9-4c71-afb7-779eccb7ece7" />
+
 
 ## Version Requirements
 
