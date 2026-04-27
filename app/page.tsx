@@ -234,7 +234,7 @@ export default function Dashboard() {
         }}
       />
 
-      <main className="ml-64 min-h-screen transition-all duration-300 max-lg:ml-0 max-lg:pb-28">
+      <main className={`${activeView === 'sandboxes' && !isCreateMode ? 'lg:ml-[36rem]' : 'lg:ml-64'} min-h-screen transition-all duration-300 max-lg:ml-0 max-lg:pb-28`}>
         <div>
           <div className="mx-auto max-w-7xl p-8 max-sm:p-4">
             {activeView === 'settings' ? (
@@ -331,7 +331,7 @@ export default function Dashboard() {
               </div>
             ) : (
               <>
-                <div className="panel mb-8 overflow-hidden">
+                <div className="panel mb-6 overflow-hidden">
                   <div className="panel-header flex items-center justify-between gap-4 p-5 max-md:flex-col max-md:items-start">
                     <div className="min-w-0">
                       <p className="font-mono text-[10px] uppercase tracking-wider text-[var(--nvidia-green)]">

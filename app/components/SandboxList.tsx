@@ -355,21 +355,25 @@ export default function SandboxList({
         </div>
       ) : (
         <>
-          <div className="flex items-end justify-between gap-4 max-sm:flex-col max-sm:items-start">
-            <div>
-              <p className="text-[10px] font-mono uppercase tracking-wider text-[var(--nvidia-green)]">
-                Inventory
-              </p>
-              <h3 className="mt-1 text-sm font-semibold text-[var(--foreground)] uppercase tracking-wider">
-                {isDestroyMode ? 'SELECT SANDBOX TO DESTROY' : 'ACTIVE SANDBOXES'}
-              </h3>
+          <aside className="border border-[var(--border-subtle)] bg-[var(--background-secondary)]/95 shadow-[12px_0_40px_rgba(0,0,0,0.2)] backdrop-blur lg:fixed lg:left-64 lg:top-0 lg:z-10 lg:h-screen lg:w-80 lg:border-y-0 lg:border-l-0 max-lg:rounded max-lg:shadow-[var(--shadow-soft)]">
+            <div className="flex items-start justify-between gap-4 border-b border-[var(--border-subtle)] p-4">
+              <div className="min-w-0">
+                <p className="text-[10px] font-mono uppercase tracking-wider text-[var(--nvidia-green)]">
+                  Inventory
+                </p>
+                <h3 className="mt-1 text-sm font-semibold text-[var(--foreground)] uppercase tracking-wider">
+                  {isDestroyMode ? 'Select To Destroy' : 'Sandboxes'}
+                </h3>
+                <p className="mt-1 text-[11px] text-[var(--foreground-dim)]">
+                  {sandboxes.length} total / {sandboxes.filter((sandbox) => sandbox.ready).length} ready
+                </p>
+              </div>
+              <span className="status-chip shrink-0 border border-[var(--border-subtle)] bg-[var(--background-tertiary)] px-2.5 py-1 text-[var(--foreground-dim)]">
+                10s
+              </span>
             </div>
-            <span className="status-chip border border-[var(--border-subtle)] bg-[var(--background-tertiary)] px-2.5 py-1 text-[var(--foreground-dim)]">
-              REFRESH 10s
-            </span>
-          </div>
 
-          <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
+            <div className="max-h-[calc(100vh-5.5rem)] space-y-2 overflow-y-auto p-3 max-lg:max-h-[22rem]">
             {sandboxes.map((sandbox) => (
               <div
                 key={sandbox.id}
@@ -378,16 +382,16 @@ export default function SandboxList({
                     ? 'border-[var(--status-stopped)] bg-[var(--status-stopped-bg)] hover:shadow-[0_18px_60px_rgba(220,38,38,0.16)]'
                     : selectedSandboxId === sandbox.id
                       ? 'border-[var(--nvidia-green)] bg-[var(--surface-hover)] shadow-[var(--shadow-glow)]'
-                      : 'border-[var(--border-subtle)] bg-[var(--surface-raised)] shadow-[var(--shadow-soft)] hover:-translate-y-0.5 hover:border-[var(--nvidia-green)] hover:bg-[var(--surface-hover)]'
+                      : 'border-[var(--border-subtle)] bg-[var(--surface-raised)] shadow-[var(--shadow-soft)] hover:border-[var(--nvidia-green)] hover:bg-[var(--surface-hover)]'
                 }`}
               >
                 <button
                   type="button"
                   onClick={() => onSandboxSelect(sandbox.id)}
-                  className="w-full p-4 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--nvidia-green)]"
+                  className="w-full p-3 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--nvidia-green)]"
                   aria-pressed={selectedSandboxId === sandbox.id}
                 >
-                  <div className="mb-3 flex items-start justify-between gap-3">
+                  <div className="mb-2 flex items-start justify-between gap-3">
                     <div className="flex items-center gap-2 min-w-0">
                       {(() => {
                         const feed = permissionFeeds[sandbox.id]
@@ -444,21 +448,19 @@ export default function SandboxList({
                     </div>
                   </div>
 
-                  <div className="space-y-1.5">
+                  <div className="space-y-1">
                     {([
                       ['Attach Target', sandbox.ip, '180px'],
-                      ['Namespace', sandbox.namespace, '120px'],
-                      ['Host Alias', sandbox.sshHostAlias || 'N/A', '140px'],
                       ['Sandbox ID', sandbox.id, '140px'],
                     ] as Array<[string, string, string]>).map(([label, value, width]) => (
-                      <div key={label} className="grid grid-cols-[6.5rem_minmax(0,1fr)] items-center gap-3">
+                      <div key={label} className="grid grid-cols-[5.75rem_minmax(0,1fr)] items-center gap-2">
                         <span className="text-[10px] uppercase tracking-wider text-[var(--foreground-dim)]">{label}</span>
                         <span className="text-xs font-mono truncate text-[var(--foreground)]" style={{ maxWidth: width }} title={value}>{value}</span>
                       </div>
                     ))}
                   </div>
                 </button>
-                <div className="border-t border-[var(--border-subtle)] p-3">
+                <div className="border-t border-[var(--border-subtle)] p-2">
                   <select
                     value=""
                     disabled={grantingSandboxId === sandbox.id}
@@ -468,7 +470,7 @@ export default function SandboxList({
                       event.currentTarget.value = ''
                       resolvePermissionRequest(sandbox, 'approve', value)
                     }}
-                    className="field-control w-full px-3 py-2 font-mono text-xs uppercase tracking-wider"
+                    className="field-control w-full px-2 py-2 font-mono text-[11px] uppercase tracking-wider"
                   >
                     <option value="">
                       {grantingSandboxId === sandbox.id
@@ -486,7 +488,8 @@ export default function SandboxList({
                 </div>
               </div>
             ))}
-          </div>
+            </div>
+          </aside>
 
           {permissionMessage && (
             <div className="rounded-sm border border-[var(--border-subtle)] bg-[var(--background-tertiary)] p-3 text-xs text-[var(--foreground-dim)]">
