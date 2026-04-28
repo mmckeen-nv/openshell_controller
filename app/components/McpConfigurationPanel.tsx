@@ -134,8 +134,10 @@ export default function McpConfigurationPanel({ sandboxes = [] }: McpConfigurati
       setServers(Array.isArray(data.servers) ? data.servers : [])
       setConfig(data.config || { mcpServers: {} })
       setMessage(success)
+      return true
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Failed to update MCP configuration")
+      return false
     } finally {
       setSaving(false)
     }
@@ -150,12 +152,72 @@ export default function McpConfigurationPanel({ sandboxes = [] }: McpConfigurati
     current.delete(sandbox.id)
     current.delete(sandbox.name)
     if (allowed) current.add(sandbox.id)
+    const hasOtherMcpAccess = servers.some((candidate) => candidate.id !== server.id && sandboxAllowed(candidate, sandbox))
     return postUpdate({
       action: "update-access",
       serverId: server.id,
       accessMode: "allow_only",
       allowedSandboxIds: Array.from(current),
-    }, `${server.name} sandbox access updated.`)
+    }, `${server.name} sandbox access updated.`).then((updated) => {
+      if (!updated) return
+      return syncSandboxBrokerConfig(sandbox, allowed || hasOtherMcpAccess ? "sync" : "revoke")
+    })
+  }
+
+  async function syncSandboxBrokerConfig(sandbox: McpSandbox, action: "sync" | "revoke" = "sync") {
+    try {
+      setSaving(true)
+      const response = await fetch(`/api/sandbox/${encodeURIComponent(sandbox.id)}/mcp`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sandboxName: sandbox.name, action }),
+      })
+      const data = await response.json()
+      if (!response.ok) throw new Error(data.error || "Failed to sync MCP broker config")
+      setMessage(data.note || (action === "revoke" ? `${sandbox.name} MCP broker config revoked.` : `${sandbox.name} MCP broker config synced.`))
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Failed to sync MCP broker config")
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  async function syncAccessModeChange(server: McpServerInstall, accessMode: string) {
+    const updated = await postUpdate({
+      action: "update-access",
+      serverId: server.id,
+      accessMode,
+    }, `${server.name} availability updated.`)
+    if (!updated) return
+
+    if (accessMode === "allow_all") {
+      await Promise.all(sandboxes.map((sandbox) => syncSandboxBrokerConfig(sandbox)))
+      return
+    }
+
+    if (accessMode === "disabled") {
+      await Promise.all(sandboxes
+        .filter((sandbox) => sandboxAllowed(server, sandbox))
+        .map((sandbox) => {
+          const hasOtherMcpAccess = servers.some((candidate) => candidate.id !== server.id && sandboxAllowed(candidate, sandbox))
+          return syncSandboxBrokerConfig(sandbox, hasOtherMcpAccess ? "sync" : "revoke")
+        }))
+    }
+  }
+
+  async function setServerEnabled(server: McpServerInstall, enabled: boolean) {
+    const updated = await postUpdate({
+      action: "update-access",
+      serverId: server.id,
+      enabled,
+    }, `${server.name} ${enabled ? "enabled" : "disabled"}.`)
+    if (!updated) return
+
+    const affectedSandboxes = sandboxes.filter((sandbox) => sandboxAllowed(server, sandbox))
+    await Promise.all(affectedSandboxes.map((sandbox) => {
+      const hasOtherMcpAccess = servers.some((candidate) => candidate.id !== server.id && sandboxAllowed(candidate, sandbox))
+      return syncSandboxBrokerConfig(sandbox, enabled || hasOtherMcpAccess ? "sync" : "revoke")
+    }))
   }
 
   function editableServerJson(server: McpServerInstall) {
@@ -378,14 +440,14 @@ export default function McpConfigurationPanel({ sandboxes = [] }: McpConfigurati
                       </div>
                       <div className="flex shrink-0 gap-2 max-sm:w-full max-sm:[&>button]:flex-1">
                         <button
-                          onClick={() => postUpdate({ action: "update-access", serverId: server.id, enabled: true }, `${server.name} enabled.`)}
+                          onClick={() => setServerEnabled(server, true)}
                           disabled={saving || server.enabled}
                           className="action-button px-3 py-2"
                         >
                           Enable
                         </button>
                         <button
-                          onClick={() => postUpdate({ action: "update-access", serverId: server.id, enabled: false }, `${server.name} disabled.`)}
+                          onClick={() => setServerEnabled(server, false)}
                           disabled={saving || !server.enabled}
                           className="action-button px-3 py-2"
                         >
@@ -399,11 +461,7 @@ export default function McpConfigurationPanel({ sandboxes = [] }: McpConfigurati
                         <FieldLabel>Availability</FieldLabel>
                         <select
                           value={server.accessMode}
-                          onChange={(event) => postUpdate({
-                            action: "update-access",
-                            serverId: server.id,
-                            accessMode: event.target.value,
-                          }, `${server.name} availability updated.`)}
+                          onChange={(event) => syncAccessModeChange(server, event.target.value)}
                           disabled={saving}
                           className="field-control w-full px-3 py-2 text-xs font-mono uppercase tracking-wider"
                         >
@@ -715,7 +773,7 @@ export default function McpConfigurationPanel({ sandboxes = [] }: McpConfigurati
                       <button onClick={() => startEditingServer(server)} disabled={saving} className="action-button flex-1 px-3 py-2">
                         Edit
                       </button>
-                      <button onClick={() => postUpdate({ action: server.enabled ? "disable" : "enable", serverId: server.id }, `${server.name} ${server.enabled ? "disabled" : "enabled"}.`)} disabled={saving} className="action-button flex-1 px-3 py-2">
+                      <button onClick={() => setServerEnabled(server, !server.enabled)} disabled={saving} className="action-button flex-1 px-3 py-2">
                         {server.enabled ? "Disable" : "Enable"}
                       </button>
                       <button onClick={() => postUpdate({ action: "uninstall", serverId: server.id }, `${server.name} removed.`)} disabled={saving} className="action-button flex-1 px-3 py-2">
