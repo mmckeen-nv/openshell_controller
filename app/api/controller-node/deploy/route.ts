@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server"
 import { Client } from "ssh2"
 import { buildControllerNodePlan, type ControllerPlanRequest } from "@/app/lib/controllerNodePlan"
+import { upsertControllerNode } from "@/app/lib/controllerNodeRegistry"
 
 export const runtime = "nodejs"
 
@@ -146,6 +147,13 @@ export async function POST(request: Request) {
       allowSudo,
       acceptUnknownHostKey,
       expectedHostKeySha256,
+    })
+    await upsertControllerNode({
+      id: plan.controller.name,
+      name: plan.controller.name,
+      host: plan.controller.host,
+      url: plan.controller.url,
+      role: "controller-node",
     })
 
     return NextResponse.json({

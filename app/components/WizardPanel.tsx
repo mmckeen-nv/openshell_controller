@@ -95,6 +95,8 @@ export default function WizardPanel({
   const [controllerPlanning, setControllerPlanning] = useState(false)
   const [controllerDeploying, setControllerDeploying] = useState(false)
   const [controllerDeployLog, setControllerDeployLog] = useState("")
+  const [controllerWizardOpen, setControllerWizardOpen] = useState(true)
+  const [cloneWizardOpen, setCloneWizardOpen] = useState(false)
 
   const sourceSandbox = useMemo(
     () => sandboxes.find((sandbox) => sandbox.id === sourceSandboxId) || null,
@@ -239,6 +241,7 @@ export default function WizardPanel({
       const data = await response.json()
       if (!response.ok) throw new Error(data.error || "Failed to generate controller node plan")
       setControllerPlan(data)
+      window.dispatchEvent(new Event("controller-nodes-changed"))
       setControllerMessage(`Launch kit ready for ${data.controller.url}.`)
     } catch (error) {
       setControllerMessage(error instanceof Error ? error.message : "Failed to generate controller node plan")
@@ -282,6 +285,7 @@ export default function WizardPanel({
       setControllerPlan((current) => current ?? data)
       setControllerDeployLog([data.note, data.hostKeySha256 ? `Host key SHA256: ${data.hostKeySha256}` : "", data.stdout, data.stderr].filter(Boolean).join("\n\n"))
       setRemotePassword("")
+      window.dispatchEvent(new Event("controller-nodes-changed"))
       setControllerMessage(`Autodeploy complete for ${data.controller?.url || controllerHost}.`)
     } catch (error) {
       setControllerMessage(error instanceof Error ? error.message : "Autodeploy failed")
@@ -310,19 +314,33 @@ export default function WizardPanel({
       </section>
 
       <section className="panel overflow-hidden">
-        <div className="border-b border-[var(--border-subtle)] p-5">
-          <div className="flex items-center justify-between gap-4 max-md:flex-col max-md:items-start">
+        <button
+          type="button"
+          onClick={() => setControllerWizardOpen((open) => !open)}
+          aria-expanded={controllerWizardOpen}
+          className="flex w-full items-center justify-between gap-4 border-b border-[var(--border-subtle)] p-5 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--nvidia-green)] max-md:items-start"
+        >
+          <div className="flex min-w-0 items-start gap-4">
+            <svg
+              className={`mt-1 h-4 w-4 shrink-0 text-[var(--foreground-dim)] transition-transform ${controllerWizardOpen ? "rotate-90" : ""}`}
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+              aria-hidden="true"
+            >
+              <path strokeLinecap="square" strokeLinejoin="miter" strokeWidth={2} d="M9 5l7 7-7 7" />
+            </svg>
             <div>
               <h2 className="text-sm font-semibold uppercase tracking-wider text-[var(--foreground)]">Spawn a Controller Node</h2>
               <p className="mt-1 text-xs text-[var(--foreground-dim)]">Prepare a remote VPS to run OpenShell Control near another OpenShell gateway or sandbox host.</p>
             </div>
-            <span className="status-chip border border-[var(--border-subtle)] bg-[var(--background-tertiary)] px-2.5 py-1 text-[var(--foreground-dim)]">
-              {controllerDeployMode === "auto" ? "autodeploy" : "manual deploy"}
-            </span>
           </div>
-        </div>
+          <span className="status-chip shrink-0 border border-[var(--border-subtle)] bg-[var(--background-tertiary)] px-2.5 py-1 text-[var(--foreground-dim)]">
+            {controllerDeployMode === "auto" ? "autodeploy" : "manual deploy"}
+          </span>
+        </button>
 
-        <div className="grid grid-cols-1 gap-5 p-5 xl:grid-cols-[minmax(0,1fr)_minmax(360px,0.8fr)]">
+        {controllerWizardOpen && <div className="grid grid-cols-1 gap-5 p-5 xl:grid-cols-[minmax(0,1fr)_minmax(360px,0.8fr)]">
           <div className="space-y-5">
             <div className="grid grid-cols-2 gap-2 rounded-sm border border-[var(--border-subtle)] bg-[var(--background-tertiary)] p-1">
               {(["manual", "auto"] as ControllerDeployMode[]).map((mode) => (
@@ -493,23 +511,37 @@ export default function WizardPanel({
               </div>
             )}
           </div>
-        </div>
+        </div>}
       </section>
 
       <section className="panel overflow-hidden">
-        <div className="border-b border-[var(--border-subtle)] p-5">
-          <div className="flex items-center justify-between gap-4 max-md:flex-col max-md:items-start">
+        <button
+          type="button"
+          onClick={() => setCloneWizardOpen((open) => !open)}
+          aria-expanded={cloneWizardOpen}
+          className="flex w-full items-center justify-between gap-4 border-b border-[var(--border-subtle)] p-5 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--nvidia-green)] max-md:items-start"
+        >
+          <div className="flex min-w-0 items-start gap-4">
+            <svg
+              className={`mt-1 h-4 w-4 shrink-0 text-[var(--foreground-dim)] transition-transform ${cloneWizardOpen ? "rotate-90" : ""}`}
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+              aria-hidden="true"
+            >
+              <path strokeLinecap="square" strokeLinejoin="miter" strokeWidth={2} d="M9 5l7 7-7 7" />
+            </svg>
             <div>
               <h2 className="text-sm font-semibold uppercase tracking-wider text-[var(--foreground)]">Clone Sandbox</h2>
               <p className="mt-1 text-xs text-[var(--foreground-dim)]">Create a fresh sandbox, back up the source, then restore into the target.</p>
             </div>
-            <span className="status-chip border border-[var(--border-subtle)] bg-[var(--background-tertiary)] px-2.5 py-1 text-[var(--foreground-dim)]">
-              backup + restore
-            </span>
           </div>
-        </div>
+          <span className="status-chip shrink-0 border border-[var(--border-subtle)] bg-[var(--background-tertiary)] px-2.5 py-1 text-[var(--foreground-dim)]">
+            backup + restore
+          </span>
+        </button>
 
-        <div className="border-b border-[var(--border-subtle)] p-4">
+        {cloneWizardOpen && <><div className="border-b border-[var(--border-subtle)] p-4">
           <div className="grid grid-cols-5 gap-2 max-md:grid-cols-1">
             {steps.map((step, index) => (
               <button
@@ -691,6 +723,7 @@ export default function WizardPanel({
             </button>
           )}
         </div>
+        </>}
       </section>
     </div>
   )
