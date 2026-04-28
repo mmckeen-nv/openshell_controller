@@ -79,6 +79,10 @@ export default function McpConfigurationPanel({ sandboxes = [] }: McpConfigurati
   const [customCommand, setCustomCommand] = useState("npx")
   const [customArgs, setCustomArgs] = useState("-y\n@modelcontextprotocol/server-memory")
   const [customEnv, setCustomEnv] = useState("")
+  const [uploadFileName, setUploadFileName] = useState("")
+  const [uploadText, setUploadText] = useState("")
+  const [editingServerId, setEditingServerId] = useState<string | null>(null)
+  const [editorText, setEditorText] = useState("")
   const [registrySearch, setRegistrySearch] = useState("github")
   const [registryResults, setRegistryResults] = useState<McpCatalogEntry[]>([])
   const [registryLoading, setRegistryLoading] = useState(false)
@@ -149,6 +153,97 @@ export default function McpConfigurationPanel({ sandboxes = [] }: McpConfigurati
       accessMode: "allow_only",
       allowedSandboxIds: Array.from(current),
     }, `${server.name} sandbox access updated.`)
+  }
+
+  function editableServerJson(server: McpServerInstall) {
+    return JSON.stringify({
+      id: server.id,
+      name: server.name,
+      summary: server.summary,
+      websiteUrl: server.websiteUrl || "",
+      transport: server.transport,
+      command: server.command,
+      args: server.args,
+      env: server.env,
+      tags: server.tags,
+      enabled: server.enabled,
+      accessMode: server.accessMode,
+      allowedSandboxIds: server.allowedSandboxIds,
+      source: server.source,
+    }, null, 2)
+  }
+
+  function serverPayloadFromJson(text: string, fallbackId = "uploaded-server") {
+    const parsed = JSON.parse(text)
+    const firstMcpEntry = parsed?.mcpServers && typeof parsed.mcpServers === "object"
+      ? Object.entries(parsed.mcpServers)[0]
+      : null
+    const id = firstMcpEntry?.[0] || parsed?.id || parsed?.name || fallbackId
+    const body = firstMcpEntry?.[1] && typeof firstMcpEntry[1] === "object" ? firstMcpEntry[1] as Record<string, unknown> : parsed
+    const command = typeof body?.command === "string"
+      ? body.command
+      : typeof body?.url === "string"
+        ? body.url
+        : typeof parsed?.command === "string"
+          ? parsed.command
+          : typeof parsed?.url === "string"
+            ? parsed.url
+            : ""
+    const transport = body?.url || parsed?.transport === "http" ? "http" : "stdio"
+
+    return {
+      action: "install",
+      id,
+      name: parsed?.name || id,
+      summary: parsed?.summary || "Uploaded MCP server",
+      websiteUrl: parsed?.websiteUrl || "",
+      transport,
+      command,
+      args: Array.isArray(body?.args) ? body.args : Array.isArray(parsed?.args) ? parsed.args : [],
+      env: typeof body?.env === "object" && body.env ? body.env : typeof body?.headers === "object" && body.headers ? body.headers : parsed?.env || {},
+      tags: Array.isArray(parsed?.tags) ? parsed.tags : ["uploaded"],
+      source: parsed?.source || "custom",
+      enabled: typeof parsed?.enabled === "boolean" ? parsed.enabled : true,
+      accessMode: parsed?.accessMode,
+      allowedSandboxIds: parsed?.allowedSandboxIds,
+    }
+  }
+
+  async function chooseUploadFile(file: File | null) {
+    if (!file) return
+    setUploadFileName(file.name)
+    setUploadText(await file.text())
+  }
+
+  async function uploadServer() {
+    try {
+      if (!uploadText.trim()) {
+        setMessage("Choose a JSON MCP server file before uploading.")
+        return
+      }
+      const fallbackId = uploadFileName.replace(/\.[^.]+$/, "") || "uploaded-server"
+      await postUpdate(serverPayloadFromJson(uploadText, fallbackId), `${fallbackId} uploaded.`)
+      setUploadText("")
+      setUploadFileName("")
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Failed to upload MCP server JSON")
+    }
+  }
+
+  function startEditingServer(server: McpServerInstall) {
+    setEditingServerId(server.id)
+    setEditorText(editableServerJson(server))
+  }
+
+  async function saveEditedServer() {
+    try {
+      const payload = serverPayloadFromJson(editorText, editingServerId || "edited-server")
+      await postUpdate(payload, `${String(payload.name || payload.id)} updated.`)
+      setEditingServerId(null)
+      setEditorText("")
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Failed to save MCP server JSON")
+    }
   }
 
   async function searchRegistry() {
@@ -492,24 +587,43 @@ export default function McpConfigurationPanel({ sandboxes = [] }: McpConfigurati
                       <textarea value={customEnv} onChange={(event) => setCustomEnv(event.target.value)} rows={6} placeholder={customTransport === "http" ? "Authorization=Bearer token" : "API_KEY=value\nBASE_URL=http://localhost:3000"} className="field-control w-full resize-y px-3 py-2 text-sm font-mono" />
                     </div>
                   </div>
-                  <button
-                    onClick={() => postUpdate({
-                      action: "install",
-                      id: customName,
-                      name: customName,
-                      summary: customSummary,
-                      transport: customTransport,
-                      command: customCommand,
-                      args: parseLines(customArgs),
-                      env: parseEnv(customEnv),
-                      tags: ["custom"],
-                      source: "custom",
-                    }, `${customName} installed.`)}
-                    disabled={saving}
-                    className="mt-5 rounded-sm bg-[var(--nvidia-green)] px-4 py-2 text-xs font-mono uppercase tracking-wider text-black disabled:opacity-50"
-                  >
-                    Install Custom Server
-                  </button>
+                  <div className="mt-5 flex flex-wrap items-center gap-3">
+                    <button
+                      onClick={() => postUpdate({
+                        action: "install",
+                        id: customName,
+                        name: customName,
+                        summary: customSummary,
+                        transport: customTransport,
+                        command: customCommand,
+                        args: parseLines(customArgs),
+                        env: parseEnv(customEnv),
+                        tags: ["custom"],
+                        source: "custom",
+                      }, `${customName} installed.`)}
+                      disabled={saving}
+                      className="rounded-sm bg-[var(--nvidia-green)] px-4 py-2 text-xs font-mono uppercase tracking-wider text-black disabled:opacity-50"
+                    >
+                      Install Custom Server
+                    </button>
+                    <label className="action-button cursor-pointer px-4 py-2">
+                      Choose JSON
+                      <input
+                        type="file"
+                        accept="application/json,.json"
+                        onChange={(event) => chooseUploadFile(event.target.files?.[0] || null)}
+                        className="sr-only"
+                      />
+                    </label>
+                    <button
+                      onClick={uploadServer}
+                      disabled={saving || !uploadText.trim()}
+                      className="action-button px-4 py-2"
+                    >
+                      Upload Server
+                    </button>
+                    {uploadFileName && <span className="text-xs font-mono text-[var(--foreground-dim)]">{uploadFileName}</span>}
+                  </div>
                 </div>
               )}
             </div>
@@ -536,6 +650,9 @@ export default function McpConfigurationPanel({ sandboxes = [] }: McpConfigurati
                     </div>
                     <p className="mt-3 break-all font-mono text-[11px] text-[var(--foreground-dim)]">{server.command} {server.args.join(" ")}</p>
                     <div className="mt-4 flex gap-2">
+                      <button onClick={() => startEditingServer(server)} disabled={saving} className="action-button flex-1 px-3 py-2">
+                        Edit
+                      </button>
                       <button onClick={() => postUpdate({ action: server.enabled ? "disable" : "enable", serverId: server.id }, `${server.name} ${server.enabled ? "disabled" : "enabled"}.`)} disabled={saving} className="action-button flex-1 px-3 py-2">
                         {server.enabled ? "Disable" : "Enable"}
                       </button>
@@ -543,6 +660,28 @@ export default function McpConfigurationPanel({ sandboxes = [] }: McpConfigurati
                         Remove
                       </button>
                     </div>
+                    {editingServerId === server.id && (
+                      <div className="mt-4 border-t border-[var(--border-subtle)] pt-4">
+                        <div className="flex items-center justify-between gap-3">
+                          <FieldLabel>Server JSON</FieldLabel>
+                          <div className="flex gap-2">
+                            <button onClick={() => { setEditingServerId(null); setEditorText("") }} disabled={saving} className="action-button px-3 py-2">
+                              Cancel
+                            </button>
+                            <button onClick={saveEditedServer} disabled={saving || !editorText.trim()} className="rounded-sm bg-[var(--nvidia-green)] px-3 py-2 text-xs font-mono uppercase tracking-wider text-black disabled:opacity-50">
+                              Save
+                            </button>
+                          </div>
+                        </div>
+                        <textarea
+                          value={editorText}
+                          onChange={(event) => setEditorText(event.target.value)}
+                          rows={16}
+                          spellCheck={false}
+                          className="field-control mt-3 min-h-80 w-full resize-y px-3 py-2 text-xs font-mono leading-5"
+                        />
+                      </div>
+                    )}
                   </div>
                 ))}
               </div>
