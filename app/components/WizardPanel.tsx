@@ -11,6 +11,27 @@ type BlueprintOption = {
 }
 
 type WizardStep = "source" | "target" | "options" | "review" | "run"
+type ControllerDeployMode = "manual" | "auto"
+
+type ControllerPlan = {
+  controller: {
+    name: string
+    url: string
+    host: string
+    dashboardPort: number
+    terminalPort: number
+    installDir: string
+    parentControllerUrl: string
+  }
+  env: string
+  commands: {
+    ssh: string
+    localBootstrap: string
+    start: string
+    terminal: string
+  }
+  checks: string[]
+}
 
 const steps: Array<{ key: WizardStep; label: string }> = [
   { key: "source", label: "Source" },
@@ -51,6 +72,31 @@ export default function WizardPanel({
   const [running, setRunning] = useState(false)
   const [message, setMessage] = useState("")
   const [runLog, setRunLog] = useState<string[]>([])
+  const [controllerName, setControllerName] = useState("remote-controller")
+  const [controllerHost, setControllerHost] = useState("")
+  const [sshTarget, setSshTarget] = useState("")
+  const [installDir, setInstallDir] = useState("/opt/openshell-control")
+  const [repoUrl, setRepoUrl] = useState("https://github.com/mmckeen-nv/openshell_controller.git")
+  const [dashboardPort, setDashboardPort] = useState("3000")
+  const [terminalPort, setTerminalPort] = useState("3011")
+  const [openClawDashboardUrl, setOpenClawDashboardUrl] = useState("http://127.0.0.1:18789/")
+  const [openshellGateway, setOpenshellGateway] = useState("nemoclaw")
+  const [exposePublicly, setExposePublicly] = useState(false)
+  const [parentControllerUrl, setParentControllerUrl] = useState("http://localhost:3000")
+  const [controllerDeployMode, setControllerDeployMode] = useState<ControllerDeployMode>("manual")
+  const [remotePort, setRemotePort] = useState("22")
+  const [remoteUser, setRemoteUser] = useState("")
+  const [remotePassword, setRemotePassword] = useState("")
+  const [allowSudo, setAllowSudo] = useState(false)
+  const [acceptUnknownHostKey, setAcceptUnknownHostKey] = useState(false)
+  const [expectedHostKeySha256, setExpectedHostKeySha256] = useState("")
+  const [controllerPlan, setControllerPlan] = useState<ControllerPlan | null>(null)
+  const [controllerMessage, setControllerMessage] = useState("")
+  const [controllerPlanning, setControllerPlanning] = useState(false)
+  const [controllerDeploying, setControllerDeploying] = useState(false)
+  const [controllerDeployLog, setControllerDeployLog] = useState("")
+  const [controllerWizardOpen, setControllerWizardOpen] = useState(true)
+  const [cloneWizardOpen, setCloneWizardOpen] = useState(false)
 
   const sourceSandbox = useMemo(
     () => sandboxes.find((sandbox) => sandbox.id === sourceSandboxId) || null,
@@ -66,6 +112,11 @@ export default function WizardPanel({
         if (Array.isArray(data?.blueprints)) setBlueprints(data.blueprints)
       })
       .catch(() => {})
+  }, [])
+
+  useEffect(() => {
+    if (typeof window === "undefined") return
+    setParentControllerUrl(window.location.origin)
   }, [])
 
   useEffect(() => {
@@ -164,30 +215,333 @@ export default function WizardPanel({
     }
   }
 
+  async function generateControllerPlan() {
+    try {
+      setControllerPlanning(true)
+      setControllerMessage("")
+      setControllerPlan(null)
+
+      const response = await fetch("/api/controller-node/plan", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          controllerName,
+          controllerHost,
+          sshTarget,
+          installDir,
+          repoUrl,
+          dashboardPort,
+          terminalPort,
+          openClawDashboardUrl,
+          openshellGateway,
+          exposePublicly,
+          parentControllerUrl,
+        }),
+      })
+      const data = await response.json()
+      if (!response.ok) throw new Error(data.error || "Failed to generate controller node plan")
+      setControllerPlan(data)
+      window.dispatchEvent(new Event("controller-nodes-changed"))
+      setControllerMessage(`Launch kit ready for ${data.controller.url}.`)
+    } catch (error) {
+      setControllerMessage(error instanceof Error ? error.message : "Failed to generate controller node plan")
+    } finally {
+      setControllerPlanning(false)
+    }
+  }
+
+  async function autodeployControllerNode() {
+    try {
+      setControllerDeploying(true)
+      setControllerMessage("")
+      setControllerDeployLog("")
+
+      const response = await fetch("/api/controller-node/deploy", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          controllerName,
+          controllerHost,
+          sshTarget,
+          installDir,
+          repoUrl,
+          dashboardPort,
+          terminalPort,
+          openClawDashboardUrl,
+          openshellGateway,
+          exposePublicly,
+          parentControllerUrl,
+          remoteHost: controllerHost,
+          remotePort,
+          remoteUser,
+          remotePassword,
+          allowSudo,
+          acceptUnknownHostKey,
+          expectedHostKeySha256,
+        }),
+      })
+      const data = await response.json()
+      if (!response.ok) throw new Error(data.error || "Autodeploy failed")
+      setControllerPlan((current) => current ?? data)
+      setControllerDeployLog([data.note, data.hostKeySha256 ? `Host key SHA256: ${data.hostKeySha256}` : "", data.stdout, data.stderr].filter(Boolean).join("\n\n"))
+      setRemotePassword("")
+      window.dispatchEvent(new Event("controller-nodes-changed"))
+      setControllerMessage(`Autodeploy complete for ${data.controller?.url || controllerHost}.`)
+    } catch (error) {
+      setControllerMessage(error instanceof Error ? error.message : "Autodeploy failed")
+    } finally {
+      setControllerDeploying(false)
+    }
+  }
+
+  async function copyText(value: string, label: string) {
+    try {
+      await navigator.clipboard.writeText(value)
+      setControllerMessage(`${label} copied.`)
+    } catch {
+      setControllerMessage("Clipboard access was blocked. Select the command text manually.")
+    }
+  }
+
   return (
     <div className="space-y-6">
       <section className="panel p-8">
         <p className="text-[10px] font-mono uppercase tracking-wider text-[var(--nvidia-green)]">Guided Tasks</p>
         <h1 className="mt-2 text-xl font-semibold uppercase tracking-wider text-[var(--foreground)]">Wizards</h1>
         <p className="mt-2 max-w-3xl text-sm text-[var(--foreground-dim)]">
-          Step-by-step workflows for common operations. The first wizard clones one sandbox into another using backup and restore.
+          Step-by-step workflows for common operations, including remote controller bootstrap and sandbox cloning.
         </p>
       </section>
 
       <section className="panel overflow-hidden">
-        <div className="border-b border-[var(--border-subtle)] p-5">
-          <div className="flex items-center justify-between gap-4 max-md:flex-col max-md:items-start">
+        <button
+          type="button"
+          onClick={() => setControllerWizardOpen((open) => !open)}
+          aria-expanded={controllerWizardOpen}
+          className="flex w-full items-center justify-between gap-4 border-b border-[var(--border-subtle)] p-5 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--nvidia-green)] max-md:items-start"
+        >
+          <div className="flex min-w-0 items-start gap-4">
+            <svg
+              className={`mt-1 h-4 w-4 shrink-0 text-[var(--foreground-dim)] transition-transform ${controllerWizardOpen ? "rotate-90" : ""}`}
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+              aria-hidden="true"
+            >
+              <path strokeLinecap="square" strokeLinejoin="miter" strokeWidth={2} d="M9 5l7 7-7 7" />
+            </svg>
+            <div>
+              <h2 className="text-sm font-semibold uppercase tracking-wider text-[var(--foreground)]">Spawn a Controller Node</h2>
+              <p className="mt-1 text-xs text-[var(--foreground-dim)]">Prepare a remote VPS to run OpenShell Control near another OpenShell gateway or sandbox host.</p>
+            </div>
+          </div>
+          <span className="status-chip shrink-0 border border-[var(--border-subtle)] bg-[var(--background-tertiary)] px-2.5 py-1 text-[var(--foreground-dim)]">
+            {controllerDeployMode === "auto" ? "autodeploy" : "manual deploy"}
+          </span>
+        </button>
+
+        {controllerWizardOpen && <div className="grid grid-cols-1 gap-5 p-5 xl:grid-cols-[minmax(0,1fr)_minmax(360px,0.8fr)]">
+          <div className="space-y-5">
+            <div className="grid grid-cols-2 gap-2 rounded-sm border border-[var(--border-subtle)] bg-[var(--background-tertiary)] p-1">
+              {(["manual", "auto"] as ControllerDeployMode[]).map((mode) => (
+                <button
+                  key={mode}
+                  type="button"
+                  onClick={() => setControllerDeployMode(mode)}
+                  className={`rounded-sm px-3 py-2 text-xs font-mono uppercase tracking-wider ${
+                    controllerDeployMode === mode
+                      ? "bg-[var(--nvidia-green)] text-black"
+                      : "text-[var(--foreground-dim)] hover:bg-[var(--background)]"
+                  }`}
+                >
+                  {mode === "manual" ? "Manual Deploy" : "Autodeploy"}
+                </button>
+              ))}
+            </div>
+            <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+              <label className="block space-y-2">
+                <span className="text-[10px] uppercase tracking-wider text-[var(--foreground-dim)]">Controller Name</span>
+                <input value={controllerName} onChange={(event) => setControllerName(event.target.value)} className="w-full rounded-sm border border-[var(--border-subtle)] bg-[var(--background-tertiary)] px-3 py-2 text-xs font-mono text-[var(--foreground)]" />
+              </label>
+              <label className="block space-y-2">
+                <span className="text-[10px] uppercase tracking-wider text-[var(--foreground-dim)]">Controller Host</span>
+                <input value={controllerHost} onChange={(event) => setControllerHost(event.target.value)} placeholder="203.0.113.10 or vps.example.com" className="w-full rounded-sm border border-[var(--border-subtle)] bg-[var(--background-tertiary)] px-3 py-2 text-xs font-mono text-[var(--foreground)]" />
+              </label>
+              <label className="block space-y-2">
+                <span className="text-[10px] uppercase tracking-wider text-[var(--foreground-dim)]">SSH Target</span>
+                <input value={sshTarget} onChange={(event) => setSshTarget(event.target.value)} placeholder="ubuntu@vps.example.com" className="w-full rounded-sm border border-[var(--border-subtle)] bg-[var(--background-tertiary)] px-3 py-2 text-xs font-mono text-[var(--foreground)]" />
+              </label>
+              <label className="block space-y-2">
+                <span className="text-[10px] uppercase tracking-wider text-[var(--foreground-dim)]">Install Directory</span>
+                <input value={installDir} onChange={(event) => setInstallDir(event.target.value)} className="w-full rounded-sm border border-[var(--border-subtle)] bg-[var(--background-tertiary)] px-3 py-2 text-xs font-mono text-[var(--foreground)]" />
+              </label>
+              <label className="block space-y-2 md:col-span-2">
+                <span className="text-[10px] uppercase tracking-wider text-[var(--foreground-dim)]">Repository URL</span>
+                <input value={repoUrl} onChange={(event) => setRepoUrl(event.target.value)} className="w-full rounded-sm border border-[var(--border-subtle)] bg-[var(--background-tertiary)] px-3 py-2 text-xs font-mono text-[var(--foreground)]" />
+              </label>
+              <label className="block space-y-2">
+                <span className="text-[10px] uppercase tracking-wider text-[var(--foreground-dim)]">Dashboard Port</span>
+                <input value={dashboardPort} onChange={(event) => setDashboardPort(event.target.value)} className="w-full rounded-sm border border-[var(--border-subtle)] bg-[var(--background-tertiary)] px-3 py-2 text-xs font-mono text-[var(--foreground)]" />
+              </label>
+              <label className="block space-y-2">
+                <span className="text-[10px] uppercase tracking-wider text-[var(--foreground-dim)]">Terminal Port</span>
+                <input value={terminalPort} onChange={(event) => setTerminalPort(event.target.value)} className="w-full rounded-sm border border-[var(--border-subtle)] bg-[var(--background-tertiary)] px-3 py-2 text-xs font-mono text-[var(--foreground)]" />
+              </label>
+              <label className="block space-y-2">
+                <span className="text-[10px] uppercase tracking-wider text-[var(--foreground-dim)]">OpenClaw Dashboard URL</span>
+                <input value={openClawDashboardUrl} onChange={(event) => setOpenClawDashboardUrl(event.target.value)} className="w-full rounded-sm border border-[var(--border-subtle)] bg-[var(--background-tertiary)] px-3 py-2 text-xs font-mono text-[var(--foreground)]" />
+              </label>
+              <label className="block space-y-2">
+                <span className="text-[10px] uppercase tracking-wider text-[var(--foreground-dim)]">OpenShell Gateway</span>
+                <input value={openshellGateway} onChange={(event) => setOpenshellGateway(event.target.value)} className="w-full rounded-sm border border-[var(--border-subtle)] bg-[var(--background-tertiary)] px-3 py-2 text-xs font-mono text-[var(--foreground)]" />
+              </label>
+              <label className="block space-y-2 md:col-span-2">
+                <span className="text-[10px] uppercase tracking-wider text-[var(--foreground-dim)]">Parent Controller URL</span>
+                <input value={parentControllerUrl} onChange={(event) => setParentControllerUrl(event.target.value)} className="w-full rounded-sm border border-[var(--border-subtle)] bg-[var(--background-tertiary)] px-3 py-2 text-xs font-mono text-[var(--foreground)]" />
+              </label>
+            </div>
+            <label className="flex items-start gap-3 rounded-sm border border-[var(--border-subtle)] bg-[var(--background-tertiary)] p-3">
+              <input type="checkbox" checked={exposePublicly} onChange={(event) => setExposePublicly(event.target.checked)} className="mt-0.5 h-4 w-4 accent-[var(--nvidia-green)]" />
+              <span>
+                <span className="block text-xs font-mono uppercase tracking-wider text-[var(--foreground)]">Controller UI is directly reachable</span>
+                <span className="mt-1 block text-[11px] text-[var(--foreground-dim)]">Leave this off when you access the VPS through SSH tunnels, WireGuard, or Tailscale.</span>
+              </span>
+            </label>
+            {controllerDeployMode === "auto" && (
+              <div className="space-y-4 rounded-sm border border-[var(--border-subtle)] bg-[var(--background-tertiary)] p-4">
+                <div>
+                  <h3 className="text-xs font-semibold uppercase tracking-wider text-[var(--foreground)]">Autodeploy SSH</h3>
+                  <p className="mt-1 text-xs text-[var(--foreground-dim)]">Password is used once for this SSH session and is not written into the deploy script or saved config.</p>
+                </div>
+                <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+                  <label className="block space-y-2">
+                    <span className="text-[10px] uppercase tracking-wider text-[var(--foreground-dim)]">SSH Port</span>
+                    <input value={remotePort} onChange={(event) => setRemotePort(event.target.value)} className="w-full rounded-sm border border-[var(--border-subtle)] bg-[var(--background)] px-3 py-2 text-xs font-mono text-[var(--foreground)]" />
+                  </label>
+                  <label className="block space-y-2">
+                    <span className="text-[10px] uppercase tracking-wider text-[var(--foreground-dim)]">SSH User</span>
+                    <input value={remoteUser} onChange={(event) => setRemoteUser(event.target.value)} placeholder="ubuntu" className="w-full rounded-sm border border-[var(--border-subtle)] bg-[var(--background)] px-3 py-2 text-xs font-mono text-[var(--foreground)]" />
+                  </label>
+                  <label className="block space-y-2">
+                    <span className="text-[10px] uppercase tracking-wider text-[var(--foreground-dim)]">SSH Password</span>
+                    <input type="password" value={remotePassword} onChange={(event) => setRemotePassword(event.target.value)} className="w-full rounded-sm border border-[var(--border-subtle)] bg-[var(--background)] px-3 py-2 text-xs font-mono text-[var(--foreground)]" />
+                  </label>
+                </div>
+                <label className="block space-y-2">
+                  <span className="text-[10px] uppercase tracking-wider text-[var(--foreground-dim)]">Expected Host Key SHA256</span>
+                  <input value={expectedHostKeySha256} onChange={(event) => setExpectedHostKeySha256(event.target.value)} placeholder="SHA256:..." className="w-full rounded-sm border border-[var(--border-subtle)] bg-[var(--background)] px-3 py-2 text-xs font-mono text-[var(--foreground)]" />
+                </label>
+                <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                  <label className="flex items-start gap-3 rounded-sm border border-[var(--border-subtle)] bg-[var(--background)] p-3">
+                    <input type="checkbox" checked={acceptUnknownHostKey} onChange={(event) => setAcceptUnknownHostKey(event.target.checked)} className="mt-0.5 h-4 w-4 accent-[var(--nvidia-green)]" />
+                    <span>
+                      <span className="block text-xs font-mono uppercase tracking-wider text-[var(--foreground)]">Trust first host key</span>
+                      <span className="mt-1 block text-[11px] text-[var(--foreground-dim)]">Use only on a trusted network when you do not have the fingerprint yet.</span>
+                    </span>
+                  </label>
+                  <label className="flex items-start gap-3 rounded-sm border border-[var(--border-subtle)] bg-[var(--background)] p-3">
+                    <input type="checkbox" checked={allowSudo} onChange={(event) => setAllowSudo(event.target.checked)} className="mt-0.5 h-4 w-4 accent-[var(--nvidia-green)]" />
+                    <span>
+                      <span className="block text-xs font-mono uppercase tracking-wider text-[var(--foreground)]">Allow sudo</span>
+                      <span className="mt-1 block text-[11px] text-[var(--foreground-dim)]">Installs the systemd service when the remote account can sudo.</span>
+                    </span>
+                  </label>
+                </div>
+              </div>
+            )}
+            <button type="button" onClick={generateControllerPlan} disabled={controllerPlanning || !controllerHost.trim()} className="rounded-sm bg-[var(--nvidia-green)] px-4 py-2 text-xs font-mono uppercase tracking-wider text-black disabled:opacity-50">
+              {controllerPlanning ? "Preparing..." : "Generate Launch Kit"}
+            </button>
+            {controllerDeployMode === "auto" && (
+              <button type="button" onClick={autodeployControllerNode} disabled={controllerDeploying || !controllerHost.trim() || !remoteUser.trim() || !remotePassword} className="ml-3 rounded-sm border border-[var(--nvidia-green)] px-4 py-2 text-xs font-mono uppercase tracking-wider text-[var(--nvidia-green)] disabled:opacity-50">
+                {controllerDeploying ? "Deploying..." : "Autodeploy Controller"}
+              </button>
+            )}
+            {controllerMessage && <div className="rounded-sm border border-[var(--border-subtle)] bg-[var(--background-tertiary)] p-3 text-sm text-[var(--foreground-dim)]">{controllerMessage}</div>}
+            {controllerDeployLog && (
+              <pre className="max-h-72 overflow-auto whitespace-pre-wrap rounded-sm border border-[var(--border-subtle)] bg-[var(--background)] p-3 text-[11px] leading-5 text-[var(--foreground-dim)]">{controllerDeployLog}</pre>
+            )}
+          </div>
+
+          <div className="space-y-4">
+            <div className="rounded-sm border border-[var(--border-subtle)] bg-[var(--background-tertiary)] p-4">
+              <h3 className="text-xs font-semibold uppercase tracking-wider text-[var(--foreground)]">Topology</h3>
+              <div className="mt-3 space-y-2 text-xs text-[var(--foreground-dim)]">
+                <p>Controller VPS: {controllerHost || "not set"}</p>
+                <p>Sandbox host/gateway: {openshellGateway || "nemoclaw"}</p>
+                <p>OpenClaw upstream: {openClawDashboardUrl}</p>
+                <p>Parent controller: {parentControllerUrl}</p>
+              </div>
+            </div>
+            {controllerPlan ? (
+              <div className="space-y-4">
+                <div className="rounded-sm border border-[var(--border-subtle)] bg-[var(--background-tertiary)] p-4">
+                  <div className="flex items-center justify-between gap-3">
+                    <h3 className="text-xs font-semibold uppercase tracking-wider text-[var(--foreground)]">SSH Bootstrap</h3>
+                    <button type="button" onClick={() => copyText(controllerPlan.commands.ssh, "SSH bootstrap")} className="action-button px-3 py-1.5 text-[10px]">Copy</button>
+                  </div>
+                  <pre className="mt-3 max-h-72 overflow-auto whitespace-pre-wrap rounded-sm border border-[var(--border-subtle)] bg-[var(--background)] p-3 text-[11px] leading-5 text-[var(--foreground-dim)]">{controllerPlan.commands.ssh}</pre>
+                </div>
+                <div className="rounded-sm border border-[var(--border-subtle)] bg-[var(--background-tertiary)] p-4">
+                  <div className="flex items-center justify-between gap-3">
+                    <h3 className="text-xs font-semibold uppercase tracking-wider text-[var(--foreground)]">Bootstrap Script</h3>
+                    <button type="button" onClick={() => copyText(controllerPlan.commands.localBootstrap, "Bootstrap script")} className="action-button px-3 py-1.5 text-[10px]">Copy</button>
+                  </div>
+                  <pre className="mt-3 max-h-72 overflow-auto whitespace-pre-wrap rounded-sm border border-[var(--border-subtle)] bg-[var(--background)] p-3 text-[11px] leading-5 text-[var(--foreground-dim)]">{controllerPlan.commands.localBootstrap}</pre>
+                </div>
+                <div className="rounded-sm border border-[var(--border-subtle)] bg-[var(--background-tertiary)] p-4">
+                  <div className="flex items-center justify-between gap-3">
+                    <h3 className="text-xs font-semibold uppercase tracking-wider text-[var(--foreground)]">Controller Env</h3>
+                    <button type="button" onClick={() => copyText(controllerPlan.env, "Controller env")} className="action-button px-3 py-1.5 text-[10px]">Copy</button>
+                  </div>
+                  <pre className="mt-3 max-h-56 overflow-auto whitespace-pre-wrap rounded-sm border border-[var(--border-subtle)] bg-[var(--background)] p-3 text-[11px] leading-5 text-[var(--foreground-dim)]">{controllerPlan.env}</pre>
+                </div>
+                <div className="rounded-sm border border-[var(--border-subtle)] bg-[var(--background-tertiary)] p-4">
+                  <h3 className="text-xs font-semibold uppercase tracking-wider text-[var(--foreground)]">Readiness Checks</h3>
+                  <div className="mt-3 space-y-2">
+                    {controllerPlan.checks.map((check) => (
+                      <p key={check} className="text-xs text-[var(--foreground-dim)]">{check}</p>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <div className="rounded-sm border border-[var(--border-subtle)] bg-[var(--background-tertiary)] p-4 text-sm text-[var(--foreground-dim)]">
+                Enter the remote node details to generate a controller bootstrap command and matching environment block.
+              </div>
+            )}
+          </div>
+        </div>}
+      </section>
+
+      <section className="panel overflow-hidden">
+        <button
+          type="button"
+          onClick={() => setCloneWizardOpen((open) => !open)}
+          aria-expanded={cloneWizardOpen}
+          className="flex w-full items-center justify-between gap-4 border-b border-[var(--border-subtle)] p-5 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--nvidia-green)] max-md:items-start"
+        >
+          <div className="flex min-w-0 items-start gap-4">
+            <svg
+              className={`mt-1 h-4 w-4 shrink-0 text-[var(--foreground-dim)] transition-transform ${cloneWizardOpen ? "rotate-90" : ""}`}
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+              aria-hidden="true"
+            >
+              <path strokeLinecap="square" strokeLinejoin="miter" strokeWidth={2} d="M9 5l7 7-7 7" />
+            </svg>
             <div>
               <h2 className="text-sm font-semibold uppercase tracking-wider text-[var(--foreground)]">Clone Sandbox</h2>
               <p className="mt-1 text-xs text-[var(--foreground-dim)]">Create a fresh sandbox, back up the source, then restore into the target.</p>
             </div>
-            <span className="status-chip border border-[var(--border-subtle)] bg-[var(--background-tertiary)] px-2.5 py-1 text-[var(--foreground-dim)]">
-              backup + restore
-            </span>
           </div>
-        </div>
+          <span className="status-chip shrink-0 border border-[var(--border-subtle)] bg-[var(--background-tertiary)] px-2.5 py-1 text-[var(--foreground-dim)]">
+            backup + restore
+          </span>
+        </button>
 
-        <div className="border-b border-[var(--border-subtle)] p-4">
+        {cloneWizardOpen && <><div className="border-b border-[var(--border-subtle)] p-4">
           <div className="grid grid-cols-5 gap-2 max-md:grid-cols-1">
             {steps.map((step, index) => (
               <button
@@ -369,6 +723,7 @@ export default function WizardPanel({
             </button>
           )}
         </div>
+        </>}
       </section>
     </div>
   )

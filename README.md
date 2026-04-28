@@ -193,6 +193,17 @@ The custom server in `server.mjs` also handles websocket upgrades for:
 
 Those upgrade paths are protected by the same auth cookie as the HTTP routes.
 
+## Remote Controller Nodes
+
+The Wizards page includes **Spawn a Controller Node** for preparing a small OpenShell Control install on another VPS. This is intended for topologies where the browser-facing dashboard and the OpenShell gateway/sandbox hosts are not the same machine.
+
+The wizard supports two deployment paths:
+
+- **Manual Deploy** generates an SSH/bootstrap script, controller `.env` block, parent-controller URL, node shared secret, OpenShell/OpenClaw routing settings, and readiness checks.
+- **Autodeploy** connects to the remote host over SSH using a one-time password supplied in the browser, optionally runs the bootstrap with sudo, installs a systemd service when available, and returns bounded stdout/stderr plus the observed host-key fingerprint.
+
+Autodeploy does not store the SSH password or write it into generated scripts. For host-key safety, provide an expected SHA256 host-key fingerprint or explicitly select trust-on-first-deploy on a trusted management network. After the controller is running, use its local OpenShell CLI context to manage the sandboxes reachable from that VPS.
+
 ## Inference Endpoints
 
 Inference endpoint configuration is development-stage.
