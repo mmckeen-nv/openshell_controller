@@ -8,6 +8,7 @@ const storePath = path.join(root, 'app/lib/mcpServerStore.ts')
 const brokerStorePath = path.join(root, 'app/lib/mcpBrokerStore.ts')
 const brokerClientPath = path.join(root, 'app/lib/mcpBrokerClient.ts')
 const manifestPath = path.join(root, 'app/lib/sandboxMcpManifest.ts')
+const privilegedFilesPath = path.join(root, 'app/lib/sandboxPrivilegedFiles.ts')
 const routePath = path.join(root, 'app/api/mcp/route.ts')
 const uploadRoutePath = path.join(root, 'app/api/mcp/upload/route.ts')
 const registryRoutePath = path.join(root, 'app/api/mcp/registry/route.ts')
@@ -21,11 +22,12 @@ const sidebarPath = path.join(root, 'app/components/Sidebar.tsx')
 const sandboxListPath = path.join(root, 'app/components/SandboxList.tsx')
 const pagePath = path.join(root, 'app/page.tsx')
 
-const [storeSource, brokerStoreSource, brokerClientSource, manifestSource, routeSource, uploadRouteSource, registryRouteSource, brokerCapabilitiesRouteSource, brokerCallRouteSource, sandboxMcpRouteSource, brokerUrlSource, middlewareSource, panelSource, sidebarSource, sandboxListSource, pageSource] = await Promise.all([
+const [storeSource, brokerStoreSource, brokerClientSource, manifestSource, privilegedFilesSource, routeSource, uploadRouteSource, registryRouteSource, brokerCapabilitiesRouteSource, brokerCallRouteSource, sandboxMcpRouteSource, brokerUrlSource, middlewareSource, panelSource, sidebarSource, sandboxListSource, pageSource] = await Promise.all([
   readFile(storePath, 'utf8'),
   readFile(brokerStorePath, 'utf8'),
   readFile(brokerClientPath, 'utf8'),
   readFile(manifestPath, 'utf8'),
+  readFile(privilegedFilesPath, 'utf8'),
   readFile(routePath, 'utf8'),
   readFile(uploadRoutePath, 'utf8'),
   readFile(registryRoutePath, 'utf8'),
@@ -60,6 +62,8 @@ assert.match(brokerClientSource, /StreamableHTTPClientTransport/, 'MCP broker mu
 assert.match(brokerClientSource, /callBrokerServerTool/, 'MCP broker must forward allowed tool calls')
 assert.match(manifestSource, /openshell_control_mcp\.md/, 'MCP sandbox manifest must use the requested filename')
 assert.match(manifestSource, /syncSandboxMcpManifest/, 'MCP sandbox manifest must be syncable into a sandbox')
+assert.match(manifestSource, /writeSandboxFilePrivileged/, 'MCP sandbox manifest must use a privileged write path for root-owned /sandbox mounts')
+assert.match(privilegedFilesSource, /kubectl/, 'privileged sandbox file writes must use the OpenShell cluster control path')
 assert.doesNotMatch(manifestSource, /allowedServers|renderServer|commandLine/, 'MCP sandbox handoff must not disclose server inventory or launch specs')
 assert.match(manifestSource, /control plane enforces/, 'MCP sandbox handoff must explain broker-side enforcement')
 assert.match(brokerCapabilitiesRouteSource, /listAllowedBrokerServers/, 'MCP broker capabilities must only list allowed servers')
