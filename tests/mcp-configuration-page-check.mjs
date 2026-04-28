@@ -11,6 +11,7 @@ const manifestPath = path.join(root, 'app/lib/sandboxMcpManifest.ts')
 const privilegedFilesPath = path.join(root, 'app/lib/sandboxPrivilegedFiles.ts')
 const routePath = path.join(root, 'app/api/mcp/route.ts')
 const uploadRoutePath = path.join(root, 'app/api/mcp/upload/route.ts')
+const healthRoutePath = path.join(root, 'app/api/mcp/health/route.ts')
 const registryRoutePath = path.join(root, 'app/api/mcp/registry/route.ts')
 const brokerCapabilitiesRoutePath = path.join(root, 'app/api/mcp/broker/capabilities/route.ts')
 const brokerCallRoutePath = path.join(root, 'app/api/mcp/broker/call/route.ts')
@@ -18,11 +19,12 @@ const sandboxMcpRoutePath = path.join(root, 'app/api/sandbox/[sandboxId]/mcp/rou
 const brokerUrlPath = path.join(root, 'app/lib/mcpBrokerUrl.ts')
 const middlewarePath = path.join(root, 'middleware.ts')
 const panelPath = path.join(root, 'app/components/McpConfigurationPanel.tsx')
+const helpPath = path.join(root, 'app/components/HelpPanel.tsx')
 const sidebarPath = path.join(root, 'app/components/Sidebar.tsx')
 const sandboxListPath = path.join(root, 'app/components/SandboxList.tsx')
 const pagePath = path.join(root, 'app/page.tsx')
 
-const [storeSource, brokerStoreSource, brokerClientSource, manifestSource, privilegedFilesSource, routeSource, uploadRouteSource, registryRouteSource, brokerCapabilitiesRouteSource, brokerCallRouteSource, sandboxMcpRouteSource, brokerUrlSource, middlewareSource, panelSource, sidebarSource, sandboxListSource, pageSource] = await Promise.all([
+const [storeSource, brokerStoreSource, brokerClientSource, manifestSource, privilegedFilesSource, routeSource, uploadRouteSource, healthRouteSource, registryRouteSource, brokerCapabilitiesRouteSource, brokerCallRouteSource, sandboxMcpRouteSource, brokerUrlSource, middlewareSource, panelSource, helpSource, sidebarSource, sandboxListSource, pageSource] = await Promise.all([
   readFile(storePath, 'utf8'),
   readFile(brokerStorePath, 'utf8'),
   readFile(brokerClientPath, 'utf8'),
@@ -30,6 +32,7 @@ const [storeSource, brokerStoreSource, brokerClientSource, manifestSource, privi
   readFile(privilegedFilesPath, 'utf8'),
   readFile(routePath, 'utf8'),
   readFile(uploadRoutePath, 'utf8'),
+  readFile(healthRoutePath, 'utf8'),
   readFile(registryRoutePath, 'utf8'),
   readFile(brokerCapabilitiesRoutePath, 'utf8'),
   readFile(brokerCallRoutePath, 'utf8'),
@@ -37,6 +40,7 @@ const [storeSource, brokerStoreSource, brokerClientSource, manifestSource, privi
   readFile(brokerUrlPath, 'utf8'),
   readFile(middlewarePath, 'utf8'),
   readFile(panelPath, 'utf8'),
+  readFile(helpPath, 'utf8'),
   readFile(sidebarPath, 'utf8'),
   readFile(sandboxListPath, 'utf8'),
   readFile(pagePath, 'utf8'),
@@ -91,6 +95,8 @@ assert.match(uploadRouteSource, /request\.formData\(\)/, 'MCP upload API must ac
 assert.match(uploadRouteSource, /writeDirectoryUpload/, 'MCP upload API must support directory uploads')
 assert.match(uploadRouteSource, /writeArchiveUpload/, 'MCP upload API must support archive uploads')
 assert.match(uploadRouteSource, /installMcpServer/, 'MCP upload API must install uploaded server bundles')
+assert.match(healthRouteSource, /listBrokerServerTools/, 'MCP health API must inspect server tools through the broker client')
+assert.match(healthRouteSource, /enabledServers/, 'MCP health API must check enabled MCP servers')
 assert.match(registryRouteSource, /registry\.modelcontextprotocol\.io/, 'MCP registry search should default to the official registry')
 assert.match(registryRouteSource, /\/v0\/servers/, 'MCP registry search should call the registry server list endpoint')
 assert.match(registryRouteSource, /normalizeRegistryEntry/, 'MCP registry search should normalize results into installable entries')
@@ -122,6 +128,9 @@ assert.match(panelSource, /allowed \|\| hasOtherMcpAccess \? "sync" : "revoke"/,
 assert.match(panelSource, /syncAccessModeChange/, 'MCP availability changes must synchronize sandbox broker policy')
 assert.match(panelSource, /Setup Guide/, 'MCP catalog cards should link out to app setup guides')
 assert.match(panelSource, /Client JSON/, 'MCP page must surface generated client JSON')
+assert.match(helpSource, /MCP Server Health/, 'Help must expose MCP server health checks')
+assert.match(helpSource, /\/api\/mcp\/health/, 'Help MCP health check must call the health API')
+assert.match(helpSource, /Refresh MCP Health/, 'Help MCP health check must be refreshable')
 assert.match(sandboxListSource, /Allowed MCP Server Access/, 'Sandbox page must expose allowed MCP server access accordion')
 assert.match(sandboxListSource, /Sync Broker Config/, 'Sandbox MCP access controls must sync broker config')
 assert.match(sandboxListSource, /hasOtherMcpAccess/, 'Sandbox MCP access controls must revoke broker config when no MCP servers remain')
