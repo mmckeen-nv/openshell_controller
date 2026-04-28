@@ -134,11 +134,37 @@ export default function HelpPanel({ sandboxes }: { sandboxes: SandboxInventoryIt
       <HealthAccordion sandboxes={sandboxes} />
 
       <section className="panel p-8">
-        <p className="text-[10px] font-mono uppercase tracking-wider text-[var(--nvidia-green)]">Operator Guide</p>
-        <h1 className="mt-2 text-xl font-semibold uppercase tracking-wider text-[var(--foreground)]">Help</h1>
-        <p className="mt-2 max-w-3xl text-sm text-[var(--foreground-dim)]">
-          Quick reference for running sandboxes, moving files, preserving work, and cloning a prepared environment.
-        </p>
+        <div className="flex items-start justify-between gap-4 max-md:flex-col">
+          <div>
+            <p className="text-[10px] font-mono uppercase tracking-wider text-[var(--nvidia-green)]">Operator Guide</p>
+            <h1 className="mt-2 text-xl font-semibold uppercase tracking-wider text-[var(--foreground)]">Help</h1>
+            <p className="mt-2 max-w-3xl text-sm text-[var(--foreground-dim)]">
+              Quick reference for running sandboxes, moving files, preserving work, and cloning a prepared environment.
+            </p>
+          </div>
+          <a href="/swagger" target="_blank" rel="noreferrer" className="rounded-sm bg-[var(--nvidia-green)] px-4 py-2 text-xs font-mono uppercase tracking-wider text-black">
+            Open Swagger
+          </a>
+        </div>
+      </section>
+
+      <section className="panel p-5">
+        <div className="flex items-start justify-between gap-4 max-md:flex-col">
+          <div>
+            <h2 className="text-sm font-semibold uppercase tracking-wider text-[var(--foreground)]">API Reference</h2>
+            <p className="mt-2 max-w-3xl text-sm leading-6 text-[var(--foreground-dim)]">
+              Swagger opens the controller-node API reference in a separate page, including OpenAPI JSON, endpoint details, schemas, and example payloads.
+            </p>
+          </div>
+          <div className="flex shrink-0 gap-2 max-sm:w-full max-sm:flex-col">
+            <a href="/swagger" target="_blank" rel="noreferrer" className="action-button px-3 py-2 text-center">
+              Swagger Page
+            </a>
+            <a href="/api/openapi" target="_blank" rel="noreferrer" className="action-button px-3 py-2 text-center">
+              OpenAPI JSON
+            </a>
+          </div>
+        </div>
       </section>
 
       <section className="grid grid-cols-1 gap-4 lg:grid-cols-2">
