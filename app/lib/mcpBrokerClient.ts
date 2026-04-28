@@ -1,6 +1,7 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js"
+import { HOST_PATH } from "./hostCommands"
 import type { McpServerInstall } from "./mcpServerStore"
 
 const MCP_BROKER_REQUEST_TIMEOUT_MS = Number.parseInt(process.env.MCP_BROKER_REQUEST_TIMEOUT_MS || "45000", 10)
@@ -31,6 +32,7 @@ function transportForServer(server: McpServerInstall) {
     args: server.args,
     env: {
       ...inheritedEnv(),
+      PATH: HOST_PATH,
       ...cleanEnv(server.env),
     },
     stderr: "pipe",

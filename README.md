@@ -256,7 +256,7 @@ OPENSHELL_CONTROL_MCP_BROKER_URL=http://localhost:3000/api/mcp/broker
 
 `OPENSHELL_CONTROL_MCP_BROKER_URL` is optional. Set it only when you need to override discovery. By default the dashboard discovers the active OpenShell Docker gateway and the selected sandbox's proxy environment before writing `/sandbox/openshell_control_mcp.md`.
 
-Stdio MCP servers run on the control host. The installer verifies `npx` and installs `uvx` into `~/.local/bin` when it is missing. Custom MCP server launch commands, such as `node` or `python`, must also be available to the dashboard process.
+Stdio MCP servers run on the control host. The installer verifies `npx`, creates or reuses a Python virtual environment, installs `uvx` there, and persists that venv path in `.env.local` so the MCP broker can launch `uvx` servers later. Custom MCP server launch commands, such as `node` or `python`, must also be available to the dashboard process.
 
 ## File Transfer
 
