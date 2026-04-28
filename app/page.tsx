@@ -26,6 +26,7 @@ export default function Dashboard() {
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
   const [lifecycleMessage, setLifecycleMessage] = useState<string | null>(null)
   const [deleteInProgress, setDeleteInProgress] = useState(false)
+  const [gatewayRepairing, setGatewayRepairing] = useState(false)
   const inventoryEnabled = activeView === 'sandboxes' || activeView === 'wizards' || activeView === 'help' || activeView === 'mcp' || isCreateMode || isDestroyMode
   const { sandboxes, nemoclaw, loading, error, refresh } = useSandboxInventory({
     enabled: inventoryEnabled,
@@ -93,6 +94,31 @@ export default function Dashboard() {
   }
 
   const sleep = (ms: number) => new Promise((resolve) => window.setTimeout(resolve, ms))
+
+  const gatewayTrustError = Boolean(error && /BadSignature|invalid peer certificate|transport error|certificate signature/i.test(error))
+
+  const repairGatewayTrust = async () => {
+    if (gatewayRepairing) return
+    try {
+      setGatewayRepairing(true)
+      setLifecycleMessage(
+        "Repairing OpenShell gateway trust. This backs up local OpenShell config, restarts the selected gateway, reselects it, and verifies sandbox inventory. It does not destroy sandboxes."
+      )
+      const response = await fetch('/api/openshell/gateway/repair', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ reason: 'inventory BadSignature recovery' }),
+      })
+      const data = await response.json()
+      if (!response.ok) throw new Error(data.error || 'Failed to repair OpenShell gateway trust')
+      setLifecycleMessage(`${data.warning || 'OpenShell gateway trust repaired.'}\nGateway: ${data.gateway}\nBackup: ${data.backupPath}`)
+      await refresh({ force: true })
+    } catch (err) {
+      setLifecycleMessage(err instanceof Error ? err.message : 'Failed to repair OpenShell gateway trust')
+    } finally {
+      setGatewayRepairing(false)
+    }
+  }
 
   const refreshUntilSandboxVisible = async (sandboxRef: string) => {
     for (let attempt = 0; attempt < 8; attempt += 1) {
@@ -316,6 +342,22 @@ export default function Dashboard() {
                   <div className="panel p-8 text-center" data-testid="inventory-error-state">
                     <h3 className="text-sm font-semibold text-[var(--status-stopped)] uppercase tracking-wider">Inventory Unavailable</h3>
                     <p className="text-xs text-[var(--foreground-dim)] mt-2 font-mono">{error}</p>
+                    {gatewayTrustError && (
+                      <div className="mx-auto mt-5 max-w-2xl rounded-sm border border-amber-500/40 bg-amber-500/10 p-4 text-left">
+                        <h4 className="text-xs font-semibold uppercase tracking-wider text-amber-300">Gateway Trust Mismatch</h4>
+                        <p className="mt-2 text-xs leading-5 text-amber-100/80">
+                          OpenShell reached the gateway, but certificate verification failed. This usually means the gateway regenerated mTLS material while this controller still has stale trust files.
+                        </p>
+                        <button
+                          type="button"
+                          disabled={gatewayRepairing}
+                          onClick={repairGatewayTrust}
+                          className="mt-4 rounded-sm bg-amber-300 px-4 py-2 text-xs font-mono uppercase tracking-wider text-black disabled:opacity-50"
+                        >
+                          {gatewayRepairing ? 'Repairing Gateway...' : 'Repair Gateway Trust'}
+                        </button>
+                      </div>
+                    )}
                   </div>
                 ) : (
                   <SandboxList
@@ -394,6 +436,22 @@ export default function Dashboard() {
                   <div className="panel p-8 text-center" data-testid="inventory-error-state">
                     <h3 className="text-sm font-semibold text-[var(--status-stopped)] uppercase tracking-wider">Inventory Unavailable</h3>
                     <p className="text-xs text-[var(--foreground-dim)] mt-2 font-mono">{error}</p>
+                    {gatewayTrustError && (
+                      <div className="mx-auto mt-5 max-w-2xl rounded-sm border border-amber-500/40 bg-amber-500/10 p-4 text-left">
+                        <h4 className="text-xs font-semibold uppercase tracking-wider text-amber-300">Gateway Trust Mismatch</h4>
+                        <p className="mt-2 text-xs leading-5 text-amber-100/80">
+                          OpenShell reached the gateway, but certificate verification failed. This usually means the gateway regenerated mTLS material while this controller still has stale trust files.
+                        </p>
+                        <button
+                          type="button"
+                          disabled={gatewayRepairing}
+                          onClick={repairGatewayTrust}
+                          className="mt-4 rounded-sm bg-amber-300 px-4 py-2 text-xs font-mono uppercase tracking-wider text-black disabled:opacity-50"
+                        >
+                          {gatewayRepairing ? 'Repairing Gateway...' : 'Repair Gateway Trust'}
+                        </button>
+                      </div>
+                    )}
                   </div>
                 ) : sandboxes.length === 0 ? (
                   <div className="panel p-8 text-center" data-testid="inventory-empty-state">
