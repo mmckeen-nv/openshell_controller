@@ -54,6 +54,8 @@ function discoverHomeFiles(relativePath: string) {
 function pathEntries() {
   return [
     process.env.TERMINAL_EXTRA_PATH,
+    process.env.OPENSHELL_CONTROL_VENV ? path.join(process.env.OPENSHELL_CONTROL_VENV, "bin") : undefined,
+    path.join(process.cwd(), ".venv/bin"),
     HOME ? path.join(HOME, ".local/bin") : undefined,
     HOME ? path.join(HOME, ".nvm/versions/node/v22.22.2/bin") : undefined,
     HOME ? path.join(HOME, ".nvm/versions/node/v22.22.1/bin") : undefined,

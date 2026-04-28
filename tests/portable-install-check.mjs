@@ -16,6 +16,7 @@ const [
   inferenceSource,
   supportBundleSource,
   mcpBrokerUrlSource,
+  mcpBrokerClientSource,
 ] = await Promise.all([
   readFile(path.join(root, 'install.sh'), 'utf8'),
   readFile(path.join(root, 'app/lib/hostCommands.ts'), 'utf8'),
@@ -28,6 +29,7 @@ const [
   readFile(path.join(root, 'app/api/inference/route.ts'), 'utf8'),
   readFile(path.join(root, 'app/api/support-bundle/route.ts'), 'utf8'),
   readFile(path.join(root, 'app/lib/mcpBrokerUrl.ts'), 'utf8'),
+  readFile(path.join(root, 'app/lib/mcpBrokerClient.ts'), 'utf8'),
 ])
 
 assert.match(installSource, /find_nemoclaw_bin\(\)/, 'installer must discover NemoClaw CLI')
@@ -41,11 +43,15 @@ assert.match(installSource, /set_env "OPENSHELL_BIN"/, 'installer must persist d
 assert.match(installSource, /upsert_env "TERMINAL_SERVER_AUTOSTART" "true"/, 'installer must enable terminal bridge autostart by default')
 assert.match(installSource, /ensure_npx\(\)/, 'installer must install or verify npx for stdio MCP servers')
 assert.match(installSource, /ensure_uvx\(\)/, 'installer must install or verify uvx for stdio MCP servers')
-assert.match(installSource, /python3 -m pip install --user --upgrade uv/, 'installer must support user-scoped uvx installation')
-assert.match(installSource, /standalone uv installer/, 'installer must fall back when Python blocks user-scoped uv installs')
-assert.match(installSource, /prepend_user_bin\(\)/, 'installer must put ~/.local/bin on PATH for user-scoped MCP runners')
+assert.match(installSource, /ensure_project_venv\(\)/, 'installer must create or reuse a Python virtual environment for uvx')
+assert.match(installSource, /prepend_virtualenv_bin\(\)/, 'installer must prefer an active virtual environment for uvx')
+assert.match(installSource, /python3 -m venv "\$PROJECT_VENV"/, 'installer must create a project virtual environment when none is active')
+assert.match(installSource, /\$venv_python" -m pip install --upgrade uv/, 'installer must install uvx into the virtual environment')
+assert.match(installSource, /set_env "OPENSHELL_CONTROL_VENV"/, 'installer must persist the virtual environment path for runtime MCP launches')
 
 assert.match(hostCommandsSource, /export const HOST_PATH/, 'host command resolution must centralize PATH construction')
+assert.match(hostCommandsSource, /OPENSHELL_CONTROL_VENV/, 'host command resolution must include the installer-managed virtual environment')
+assert.match(hostCommandsSource, /\.venv\/bin/, 'host command resolution must include the default project virtual environment')
 assert.match(hostCommandsSource, /\.nemoclaw\/source\/bin\/nemoclaw\.js/, 'host command resolution must support standard ~/.nemoclaw installs')
 assert.match(hostCommandsSource, /\.nemoclaw\/source\/scripts\/setup\.sh/, 'host command resolution must support legacy ~/.nemoclaw setup workflows')
 assert.match(hostCommandsSource, /discoverHomeFiles\("scripts\/setup\.sh"\)/, 'runtime command resolution must scan user home directories for setup.sh')
@@ -57,6 +63,7 @@ assert.match(mcpBrokerUrlSource, /OPEN_SHELL_CONTAINER/, 'MCP broker URL generat
 assert.match(mcpBrokerUrlSource, /host\.docker\.internal/, 'MCP broker URL generation must keep a fallback for hosts without Docker inspect')
 assert.match(mcpBrokerUrlSource, /discoverSandboxProxyOrigin/, 'MCP broker URL generation must discover each sandbox proxy endpoint')
 assert.match(mcpBrokerUrlSource, /HTTP_PROXY/, 'MCP broker URL generation must use the sandbox proxy environment when available')
+assert.match(mcpBrokerClientSource, /PATH: HOST_PATH/, 'MCP stdio broker launches must inherit the shared host PATH')
 
 assert.match(createRouteSource, /buildNemoClawCreateCommand\(\)/, 'NemoClaw blueprint create must resolve a current CLI command')
 assert.match(createRouteSource, /"onboard", "--non-interactive"/, 'NemoClaw blueprint create must use the supported onboard CLI flow')

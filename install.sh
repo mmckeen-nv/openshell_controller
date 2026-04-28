@@ -14,6 +14,7 @@ APP_NAME="OpenShell Control"
 ENV_FILE=".env.local"
 OPEN_SHELL_CONTAINER_DEFAULT="openshell-cluster-nemoclaw"
 MIN_NODE_MAJOR=20
+PROJECT_VENV="${OPENSHELL_CONTROL_VENV:-$PWD/.venv}"
 
 DO_BUILD=1
 DO_START=0
@@ -106,6 +107,31 @@ prepend_user_bin() {
   fi
 }
 
+prepend_virtualenv_bin() {
+  if [[ -n "${VIRTUAL_ENV:-}" && -d "$VIRTUAL_ENV/bin" && ":$PATH:" != *":$VIRTUAL_ENV/bin:"* ]]; then
+    export PATH="$VIRTUAL_ENV/bin:$PATH"
+  fi
+}
+
+ensure_project_venv() {
+  if [[ -n "${VIRTUAL_ENV:-}" ]]; then
+    log "Using active Python virtual environment: $VIRTUAL_ENV"
+    prepend_virtualenv_bin
+    return
+  fi
+
+  require_command python3
+  if [[ ! -x "$PROJECT_VENV/bin/python" ]]; then
+    log "Creating Python virtual environment: $PROJECT_VENV"
+    python3 -m venv "$PROJECT_VENV"
+  else
+    log "Using Python virtual environment: $PROJECT_VENV"
+  fi
+
+  export VIRTUAL_ENV="$PROJECT_VENV"
+  prepend_virtualenv_bin
+}
+
 ensure_npx() {
   if command -v npx >/dev/null 2>&1; then
     log "npx MCP package runner: $(command -v npx)"
@@ -119,34 +145,21 @@ ensure_npx() {
 }
 
 ensure_uvx() {
-  prepend_user_bin
-  if command -v uvx >/dev/null 2>&1; then
-    log "uvx MCP package runner: $(command -v uvx)"
+  ensure_project_venv
+  if [[ -x "$VIRTUAL_ENV/bin/uvx" ]]; then
+    log "uvx MCP package runner: $VIRTUAL_ENV/bin/uvx"
     return
   fi
 
-  log "Installing uvx MCP package runner"
-  local installed=0
-  if command -v python3 >/dev/null 2>&1 && python3 -m pip --version >/dev/null 2>&1; then
-    if python3 -m pip install --user --upgrade uv; then
-      installed=1
-    else
-      warn "Python pip could not install uv for this user; trying the standalone uv installer."
-    fi
-  fi
+  local venv_python="$VIRTUAL_ENV/bin/python"
+  [[ -x "$venv_python" ]] || fail "Python is required in the virtual environment to install uvx."
+  "$venv_python" -m pip --version >/dev/null 2>&1 || fail "pip is required in the virtual environment to install uvx."
 
-  if [[ "$installed" -ne 1 ]] && command -v curl >/dev/null 2>&1; then
-    curl -LsSf https://astral.sh/uv/install.sh | sh
-    installed=1
-  fi
-
-  if [[ "$installed" -ne 1 ]]; then
-    fail "uvx is required for uvx-based MCP servers. Install Python pip or curl, then rerun the installer."
-  fi
-
-  prepend_user_bin
-  command -v uvx >/dev/null 2>&1 || fail "uvx installation completed, but uvx is still not on PATH."
-  log "uvx MCP package runner: $(command -v uvx)"
+  log "Installing uvx MCP package runner into virtual environment: $VIRTUAL_ENV"
+  "$venv_python" -m pip install --upgrade uv
+  prepend_virtualenv_bin
+  [[ -x "$VIRTUAL_ENV/bin/uvx" ]] || fail "uvx installation completed, but uvx was not installed into the virtual environment."
+  log "uvx MCP package runner: $VIRTUAL_ENV/bin/uvx"
 }
 
 port_owner() {
@@ -396,6 +409,7 @@ upsert_env "NEXT_PUBLIC_API_BASE" "/api"
 upsert_env "NEXT_PUBLIC_ENABLE_SANDBOX_OPERATIONS" "true"
 upsert_env "OPEN_SHELL_CONTAINER" "$OPEN_SHELL_CONTAINER_DEFAULT"
 upsert_env "OPENSHELL_GATEWAY" "nemoclaw"
+set_env "OPENSHELL_CONTROL_VENV" "${VIRTUAL_ENV:-$PROJECT_VENV}"
 set_env "OPENSHELL_BIN" "${OPENSHELL_BIN:-}"
 set_env "NEMOCLAW_BIN" "${NEMOCLAW_BIN:-}"
 set_env "NEMOCLAW_SETUP" "${NEMOCLAW_SETUP:-}"
