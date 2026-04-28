@@ -39,6 +39,7 @@ assert.match(installSource, /candidate="\$root\/scripts\/setup\.sh"/, 'installer
 assert.match(installSource, /candidate="\$nested\/scripts\/setup\.sh"/, 'installer must scan one nested user-home level for setup.sh')
 assert.match(installSource, /set_env "NEMOCLAW_SETUP"/, 'installer must persist discovered NemoClaw setup path')
 assert.match(installSource, /set_env "NEMOCLAW_BIN"/, 'installer must persist discovered NemoClaw CLI path')
+assert.match(installSource, /set_env "OPENSHELL_HOME"/, 'installer must persist the OpenShell config home')
 assert.match(installSource, /set_env "OPENSHELL_BIN"/, 'installer must persist discovered OpenShell path')
 assert.match(installSource, /upsert_env "TERMINAL_SERVER_AUTOSTART" "true"/, 'installer must enable terminal bridge autostart by default')
 assert.match(installSource, /ensure_npx\(\)/, 'installer must install or verify npx for stdio MCP servers')

@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process"
 import { promisify } from "node:util"
-import { HOST_PATH, OPENSHELL_BIN } from "./hostCommands"
+import { OPENSHELL_BIN, hostCommandEnv } from "./hostCommands"
 import { resolveSandboxRef } from "./openshellHost"
 
 const execFileAsync = promisify(execFile)
@@ -25,15 +25,10 @@ type BrokerNetworkAction = {
 
 function runOpenShell(args: string[], timeout = 60000) {
   return execFileAsync(OPENSHELL_BIN, args, {
-    env: {
-      ...process.env,
-      PATH: HOST_PATH,
+    env: hostCommandEnv({
       OPENSHELL_GATEWAY: process.env.OPENSHELL_GATEWAY || "nemoclaw",
-      NO_COLOR: "1",
-      CLICOLOR: "0",
-      CLICOLOR_FORCE: "0",
       TERM: "dumb",
-    },
+    }),
     timeout,
     maxBuffer: 10 * 1024 * 1024,
   })

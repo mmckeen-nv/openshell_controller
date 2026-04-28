@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server"
 import { execFile } from "node:child_process"
 import { promisify } from "node:util"
-import { HOST_PATH, OPENSHELL_BIN } from "@/app/lib/hostCommands"
+import { OPENSHELL_BIN, hostCommandEnv } from "@/app/lib/hostCommands"
 
 const execFileAsync = promisify(execFile)
 
@@ -21,15 +21,10 @@ function stripAnsi(value: string) {
 
 async function runOpenShell(args: string[], extraEnv: Record<string, string> = {}) {
   const { stdout, stderr } = await execFileAsync(OPENSHELL_BIN, args, {
-    env: {
-      ...process.env,
+    env: hostCommandEnv({
       ...extraEnv,
-      PATH: HOST_PATH,
       OPENSHELL_GATEWAY: process.env.OPENSHELL_GATEWAY || "nemoclaw",
-      NO_COLOR: "1",
-      CLICOLOR: "0",
-      CLICOLOR_FORCE: "0",
-    },
+    }),
     timeout: 60000,
     maxBuffer: 20 * 1024 * 1024,
   })

@@ -2,7 +2,7 @@ import { NextResponse } from "next/server"
 import { execFile } from "node:child_process"
 import { hostname, networkInterfaces } from "node:os"
 import { promisify } from "node:util"
-import { HOST_PATH, NEMOCLAW_BIN, NODE_BIN, OPENSHELL_BIN } from "@/app/lib/hostCommands"
+import { HOST_PATH, NEMOCLAW_BIN, NODE_BIN, OPENSHELL_BIN, hostCommandEnv } from "@/app/lib/hostCommands"
 import { resolveRuntimeAuthority } from "@/app/lib/runtimeAuthority"
 
 const execFileAsync = promisify(execFile)
@@ -164,13 +164,7 @@ async function execNemoclaw(args: string[]) {
 
 async function execOpenShell(args: string[]) {
   const { stdout, stderr } = await execFileAsync(OPENSHELL_BIN, args, {
-    env: {
-      ...process.env,
-      PATH: HOST_PATH,
-      NO_COLOR: "1",
-      CLICOLOR: "0",
-      CLICOLOR_FORCE: "0",
-    },
+    env: hostCommandEnv(),
   })
 
   return { stdout, stderr }

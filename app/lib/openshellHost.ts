@@ -1,6 +1,6 @@
 import { execFile, spawn } from "node:child_process"
 import { promisify } from "node:util"
-import { HOST_PATH, OPENCLAW_BIN, OPENSHELL_BIN } from "./hostCommands"
+import { HOST_PATH, OPENCLAW_BIN, OPENSHELL_BIN, hostCommandEnv } from "./hostCommands"
 import { getDefaultOpenClawInstance, getOpenClawDashboardPortForSandbox, resolveOpenClawInstance } from "./openclawInstances"
 
 const execFileAsync = promisify(execFile)
@@ -44,13 +44,7 @@ export type DashboardProbe = {
 
 export async function execOpenShell(args: string[]) {
   const { stdout, stderr } = await execFileAsync(OPENSHELL_BIN, args, {
-    env: {
-      ...process.env,
-      PATH: HOST_PATH,
-      NO_COLOR: "1",
-      CLICOLOR: "0",
-      CLICOLOR_FORCE: "0",
-    },
+    env: hostCommandEnv(),
   })
   return { stdout, stderr }
 }

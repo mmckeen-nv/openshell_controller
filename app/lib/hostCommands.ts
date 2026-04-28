@@ -11,6 +11,11 @@ function unique(values: Array<string | undefined>) {
   return Array.from(new Set(values.filter((value): value is string => Boolean(value))))
 }
 
+function inferHomeFromLocalBin(commandPath: string) {
+  const suffix = "/.local/bin/openshell"
+  return commandPath.endsWith(suffix) ? commandPath.slice(0, -suffix.length) : undefined
+}
+
 function safeIsDirectory(candidate: string) {
   try {
     return statSync(candidate).isDirectory()
@@ -51,11 +56,40 @@ function discoverHomeFiles(relativePath: string) {
   return found
 }
 
+const OPENSHELL_BIN_CANDIDATES = unique([
+  process.env.OPENSHELL_BIN,
+  HOME ? path.join(HOME, ".local/bin/openshell") : undefined,
+  "/opt/homebrew/bin/openshell",
+  "/usr/local/bin/openshell",
+])
+
+export const OPENSHELL_BIN = firstExisting(OPENSHELL_BIN_CANDIDATES, "openshell")
+
+function homeWithOpenShellConfig(candidates: Array<string | undefined>) {
+  return candidates
+    .filter((value): value is string => Boolean(value))
+    .find((candidate) => existsSync(path.join(candidate, ".config/openshell")))
+}
+
+const INFERRED_OPENSHELL_HOME = inferHomeFromLocalBin(OPENSHELL_BIN)
+export const OPENSHELL_HOME = homeWithOpenShellConfig([
+  process.env.OPENSHELL_HOME,
+  HOME,
+  INFERRED_OPENSHELL_HOME,
+]) || process.env.OPENSHELL_HOME || INFERRED_OPENSHELL_HOME || HOME
+
+export const OPENSHELL_XDG_CONFIG_HOME = firstExisting([
+  process.env.OPENSHELL_XDG_CONFIG_HOME,
+  process.env.XDG_CONFIG_HOME && existsSync(path.join(process.env.XDG_CONFIG_HOME, "openshell")) ? process.env.XDG_CONFIG_HOME : undefined,
+  OPENSHELL_HOME ? path.join(OPENSHELL_HOME, ".config") : undefined,
+], process.env.XDG_CONFIG_HOME || (OPENSHELL_HOME ? path.join(OPENSHELL_HOME, ".config") : ""))
+
 function pathEntries() {
   return [
     process.env.TERMINAL_EXTRA_PATH,
     process.env.OPENSHELL_CONTROL_VENV ? path.join(process.env.OPENSHELL_CONTROL_VENV, "bin") : undefined,
     path.join(process.cwd(), ".venv/bin"),
+    OPENSHELL_HOME ? path.join(OPENSHELL_HOME, ".local/bin") : undefined,
     HOME ? path.join(HOME, ".local/bin") : undefined,
     HOME ? path.join(HOME, ".nvm/versions/node/v22.22.2/bin") : undefined,
     HOME ? path.join(HOME, ".nvm/versions/node/v22.22.1/bin") : undefined,
@@ -73,6 +107,19 @@ function pathEntries() {
 
 export const HOST_PATH = unique(pathEntries()).join(":")
 
+export function hostCommandEnv(extra: Record<string, string | undefined> = {}) {
+  return {
+    ...process.env,
+    ...(OPENSHELL_HOME ? { HOME: OPENSHELL_HOME } : {}),
+    ...(OPENSHELL_XDG_CONFIG_HOME ? { XDG_CONFIG_HOME: OPENSHELL_XDG_CONFIG_HOME } : {}),
+    PATH: HOST_PATH,
+    NO_COLOR: "1",
+    CLICOLOR: "0",
+    CLICOLOR_FORCE: "0",
+    ...extra,
+  }
+}
+
 export const NODE_BIN = firstExisting([
   process.env.NODE_BIN,
   HOME ? path.join(HOME, ".nvm/versions/node/v22.22.2/bin/node") : undefined,
@@ -81,13 +128,6 @@ export const NODE_BIN = firstExisting([
   "/usr/local/bin/node",
   "/usr/bin/node",
 ], "node")
-
-export const OPENSHELL_BIN = firstExisting([
-  process.env.OPENSHELL_BIN,
-  HOME ? path.join(HOME, ".local/bin/openshell") : undefined,
-  "/opt/homebrew/bin/openshell",
-  "/usr/local/bin/openshell",
-], "openshell")
 
 export const OPENCLAW_BIN = firstExisting([
   process.env.OPENCLAW_BIN,
