@@ -36,7 +36,6 @@ type OllamaModel = {
 
 const providerTypeOptions = [
   { value: "openai", label: "OpenAI compatible" },
-  { value: "nvidia", label: "NVIDIA" },
   { value: "anthropic", label: "Anthropic" },
   { value: "generic", label: "Generic" },
 ]
@@ -56,11 +55,11 @@ export default function InferenceEndpointPanel() {
   const [providers, setProviders] = useState<ProviderSummary[]>([])
   const [gateway, setGateway] = useState<InferenceRoute>(emptyRoute)
   const [system, setSystem] = useState<InferenceRoute>(emptyRoute)
-  const [name, setName] = useState("nvidia-nim")
+  const [name, setName] = useState("vllm-local")
   const [type, setType] = useState("openai")
-  const [model, setModel] = useState("nvidia/nemotron-3-super-120b-a12b")
-  const [baseUrl, setBaseUrl] = useState("https://integrate.api.nvidia.com/v1")
-  const [credentialKey, setCredentialKey] = useState("NVIDIA_API_KEY")
+  const [model, setModel] = useState("nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4")
+  const [baseUrl, setBaseUrl] = useState("http://host.docker.internal:8000/v1")
+  const [credentialKey, setCredentialKey] = useState("OPENAI_API_KEY")
   const [apiKey, setApiKey] = useState("")
   const [route, setRoute] = useState<"gateway" | "system">("gateway")
   const [timeout, setTimeoutValue] = useState("0")
@@ -141,15 +140,16 @@ export default function InferenceEndpointPanel() {
     setMessage(`Loaded ${provider.name}. Enter a model and save to make it active.`)
   }
 
-  function useNvidiaInferencePreset() {
-    setName("nvidia-inference")
+  function useVllmPreset() {
+    setName("vllm-local")
     setType("openai")
-    setModel("aws/anthropic/claude-opus-4-5")
-    setBaseUrl("https://inference-api.nvidia.com/v1")
-    setCredentialKey("NVIDIA_API_KEY")
+    setModel("nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4")
+    setBaseUrl("http://host.docker.internal:8000/v1")
+    setCredentialKey("OPENAI_API_KEY")
+    setApiKey("")
     setRoute("gateway")
     setNoVerify(true)
-    setMessage("NVIDIA inference preset loaded. Enter an API key, then save the endpoint.")
+    setMessage("vLLM preset loaded. Adjust the endpoint URL if your server is bound somewhere else, then save.")
   }
 
   async function saveEndpoint() {
@@ -333,8 +333,8 @@ export default function InferenceEndpointPanel() {
                 <button onClick={saveEndpoint} disabled={saving} className="px-4 py-2 rounded-sm bg-[var(--nvidia-green)] text-white text-xs font-mono uppercase tracking-wider disabled:opacity-50">
                   {saving ? "Saving..." : "Save Endpoint"}
                 </button>
-                <button type="button" onClick={useNvidiaInferencePreset} disabled={saving} className="px-4 py-2 rounded-sm bg-[var(--background-tertiary)] text-[var(--foreground)] text-xs font-mono uppercase tracking-wider hover:bg-[var(--background-secondary)] disabled:opacity-50">
-                  NVIDIA Preset
+                <button type="button" onClick={useVllmPreset} disabled={saving} className="px-4 py-2 rounded-sm bg-[var(--background-tertiary)] text-[var(--foreground)] text-xs font-mono uppercase tracking-wider hover:bg-[var(--background-secondary)] disabled:opacity-50">
+                  vLLM Preset
                 </button>
                 {message && <p className="text-xs text-[var(--foreground-dim)] whitespace-pre-wrap">{message}</p>}
               </div>

@@ -101,6 +101,14 @@ function optionalString(value: unknown) {
   return typeof value === "string" ? value.trim() : ""
 }
 
+function isVllmEndpoint(name: string, baseUrl: string) {
+  return [name, baseUrl].some((value) => /vllm/i.test(value))
+}
+
+function normalizeProviderType(type: string, name: string, baseUrl: string) {
+  return isVllmEndpoint(name, baseUrl) ? "openai" : type
+}
+
 function redactSecretOutput(value: string, secrets: string[] = []) {
   let redacted = value
   for (const secret of secrets) {
@@ -132,14 +140,15 @@ export async function POST(request: Request) {
   try {
     const body = await request.json()
     const name = validateName(body?.name)
-    const type = validateProviderType(body?.type)
+    const requestedType = validateProviderType(body?.type)
     const model = optionalString(body?.model)
     const baseUrl = optionalString(body?.baseUrl)
+    const type = normalizeProviderType(requestedType, name, baseUrl)
     const apiKey = optionalString(body?.apiKey)
     const credentialKey = optionalString(body?.credentialKey) || "OPENAI_API_KEY"
     const makeActive = body?.makeActive !== false
     const system = body?.route === "system" || body?.system === true
-    const noVerify = body?.noVerify !== false
+    const noVerify = body?.noVerify !== false || isVllmEndpoint(name, baseUrl)
     const timeout = Number(body?.timeout ?? 0)
 
     if (makeActive && !model) throw new Error("model is required when making the endpoint active")
