@@ -9,6 +9,7 @@ const brokerStorePath = path.join(root, 'app/lib/mcpBrokerStore.ts')
 const brokerClientPath = path.join(root, 'app/lib/mcpBrokerClient.ts')
 const manifestPath = path.join(root, 'app/lib/sandboxMcpManifest.ts')
 const routePath = path.join(root, 'app/api/mcp/route.ts')
+const uploadRoutePath = path.join(root, 'app/api/mcp/upload/route.ts')
 const registryRoutePath = path.join(root, 'app/api/mcp/registry/route.ts')
 const brokerCapabilitiesRoutePath = path.join(root, 'app/api/mcp/broker/capabilities/route.ts')
 const brokerCallRoutePath = path.join(root, 'app/api/mcp/broker/call/route.ts')
@@ -20,12 +21,13 @@ const sidebarPath = path.join(root, 'app/components/Sidebar.tsx')
 const sandboxListPath = path.join(root, 'app/components/SandboxList.tsx')
 const pagePath = path.join(root, 'app/page.tsx')
 
-const [storeSource, brokerStoreSource, brokerClientSource, manifestSource, routeSource, registryRouteSource, brokerCapabilitiesRouteSource, brokerCallRouteSource, sandboxMcpRouteSource, brokerUrlSource, middlewareSource, panelSource, sidebarSource, sandboxListSource, pageSource] = await Promise.all([
+const [storeSource, brokerStoreSource, brokerClientSource, manifestSource, routeSource, uploadRouteSource, registryRouteSource, brokerCapabilitiesRouteSource, brokerCallRouteSource, sandboxMcpRouteSource, brokerUrlSource, middlewareSource, panelSource, sidebarSource, sandboxListSource, pageSource] = await Promise.all([
   readFile(storePath, 'utf8'),
   readFile(brokerStorePath, 'utf8'),
   readFile(brokerClientPath, 'utf8'),
   readFile(manifestPath, 'utf8'),
   readFile(routePath, 'utf8'),
+  readFile(uploadRoutePath, 'utf8'),
   readFile(registryRoutePath, 'utf8'),
   readFile(brokerCapabilitiesRoutePath, 'utf8'),
   readFile(brokerCallRoutePath, 'utf8'),
@@ -81,15 +83,22 @@ assert.match(routeSource, /export async function POST/, 'MCP API must install an
 assert.match(routeSource, /installMcpServer/, 'MCP API must support installing servers')
 assert.match(routeSource, /uninstallMcpServer/, 'MCP API must support removing servers')
 assert.match(routeSource, /updateMcpServerAccess/, 'MCP API must support access policy updates')
+assert.match(uploadRouteSource, /request\.formData\(\)/, 'MCP upload API must accept multipart server bundles')
+assert.match(uploadRouteSource, /writeDirectoryUpload/, 'MCP upload API must support directory uploads')
+assert.match(uploadRouteSource, /writeArchiveUpload/, 'MCP upload API must support archive uploads')
+assert.match(uploadRouteSource, /installMcpServer/, 'MCP upload API must install uploaded server bundles')
 assert.match(registryRouteSource, /registry\.modelcontextprotocol\.io/, 'MCP registry search should default to the official registry')
 assert.match(registryRouteSource, /\/v0\/servers/, 'MCP registry search should call the registry server list endpoint')
 assert.match(registryRouteSource, /normalizeRegistryEntry/, 'MCP registry search should normalize results into installable entries')
 assert.match(registryRouteSource, /packageInstall/, 'MCP registry search should support package-backed stdio installs')
 assert.match(registryRouteSource, /remoteInstall/, 'MCP registry search should support remote HTTP installs')
 assert.match(panelSource, /Install Custom Server/, 'MCP page must expose a custom server install action')
-assert.match(panelSource, /Upload Server/, 'MCP custom server accordion must support uploaded server JSON')
-assert.match(panelSource, /serverPayloadFromJson/, 'MCP page must parse uploaded and edited server JSON')
-assert.match(panelSource, /mcpServers/, 'MCP page upload must support common MCP client JSON')
+assert.match(panelSource, /Upload Server/, 'MCP custom server accordion must support uploaded server bundles')
+assert.match(panelSource, /Choose Directory/, 'MCP custom server upload must accept directories')
+assert.match(panelSource, /Choose Archive/, 'MCP custom server upload must accept archives')
+assert.match(panelSource, /\/api\/mcp\/upload/, 'MCP custom server upload must call the upload API')
+assert.match(panelSource, /uploadEntrypoint/, 'MCP custom server upload must collect an entrypoint')
+assert.match(panelSource, /serverPayloadFromJson/, 'MCP page must parse edited server JSON')
 assert.match(panelSource, /startEditingServer/, 'MCP installed server list must expose edit state')
 assert.match(panelSource, /Server JSON/, 'MCP installed server editor must render an inline JSON file editor')
 assert.match(panelSource, /Registry Search/, 'MCP page must expose official registry search')

@@ -79,8 +79,11 @@ export default function McpConfigurationPanel({ sandboxes = [] }: McpConfigurati
   const [customCommand, setCustomCommand] = useState("npx")
   const [customArgs, setCustomArgs] = useState("-y\n@modelcontextprotocol/server-memory")
   const [customEnv, setCustomEnv] = useState("")
-  const [uploadFileName, setUploadFileName] = useState("")
-  const [uploadText, setUploadText] = useState("")
+  const [uploadFiles, setUploadFiles] = useState<File[]>([])
+  const [uploadPaths, setUploadPaths] = useState<string[]>([])
+  const [uploadArchive, setUploadArchive] = useState<File | null>(null)
+  const [uploadRuntime, setUploadRuntime] = useState("python3")
+  const [uploadEntrypoint, setUploadEntrypoint] = useState("server.py")
   const [editingServerId, setEditingServerId] = useState<string | null>(null)
   const [editorText, setEditorText] = useState("")
   const [registrySearch, setRegistrySearch] = useState("github")
@@ -209,24 +212,61 @@ export default function McpConfigurationPanel({ sandboxes = [] }: McpConfigurati
     }
   }
 
-  async function chooseUploadFile(file: File | null) {
-    if (!file) return
-    setUploadFileName(file.name)
-    setUploadText(await file.text())
+  function chooseUploadDirectory(fileList: FileList | null) {
+    const files = Array.from(fileList || [])
+    setUploadFiles(files)
+    setUploadPaths(files.map((file) => {
+      const withRelativePath = file as File & { webkitRelativePath?: string }
+      return withRelativePath.webkitRelativePath || file.name
+    }))
+    if (files.length > 0) setUploadArchive(null)
+  }
+
+  function chooseUploadArchive(file: File | null) {
+    setUploadArchive(file)
+    if (file) {
+      setUploadFiles([])
+      setUploadPaths([])
+    }
   }
 
   async function uploadServer() {
     try {
-      if (!uploadText.trim()) {
-        setMessage("Choose a JSON MCP server file before uploading.")
+      if (!uploadArchive && uploadFiles.length === 0) {
+        setMessage("Choose a server directory or archive before uploading.")
         return
       }
-      const fallbackId = uploadFileName.replace(/\.[^.]+$/, "") || "uploaded-server"
-      await postUpdate(serverPayloadFromJson(uploadText, fallbackId), `${fallbackId} uploaded.`)
-      setUploadText("")
-      setUploadFileName("")
+      setSaving(true)
+      const form = new FormData()
+      form.set("id", customName)
+      form.set("name", customName)
+      form.set("summary", customSummary)
+      form.set("runtime", uploadRuntime)
+      form.set("entrypoint", uploadEntrypoint)
+      form.set("args", customArgs)
+      form.set("env", customEnv)
+      if (uploadArchive) {
+        form.set("archive", uploadArchive)
+      } else {
+        uploadFiles.forEach((file, index) => {
+          form.append("files", file)
+          form.append("paths", uploadPaths[index] || file.name)
+        })
+      }
+      const response = await fetch("/api/mcp/upload", { method: "POST", body: form })
+      const data = await response.json() as McpResponse
+      if (!response.ok) throw new Error(data.error || "Failed to upload MCP server")
+      setCatalog(Array.isArray(data.catalog) ? data.catalog : catalog)
+      setServers(Array.isArray(data.servers) ? data.servers : [])
+      setConfig(data.config || { mcpServers: {} })
+      setUploadFiles([])
+      setUploadPaths([])
+      setUploadArchive(null)
+      setMessage(`${customName} uploaded.`)
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : "Failed to upload MCP server JSON")
+      setMessage(error instanceof Error ? error.message : "Failed to upload MCP server")
+    } finally {
+      setSaving(false)
     }
   }
 
@@ -586,6 +626,14 @@ export default function McpConfigurationPanel({ sandboxes = [] }: McpConfigurati
                       <FieldLabel>{customTransport === "http" ? "Headers" : "Env"}</FieldLabel>
                       <textarea value={customEnv} onChange={(event) => setCustomEnv(event.target.value)} rows={6} placeholder={customTransport === "http" ? "Authorization=Bearer token" : "API_KEY=value\nBASE_URL=http://localhost:3000"} className="field-control w-full resize-y px-3 py-2 text-sm font-mono" />
                     </div>
+                    <div className="space-y-2">
+                      <FieldLabel>Upload Runtime</FieldLabel>
+                      <input value={uploadRuntime} onChange={(event) => setUploadRuntime(event.target.value)} placeholder="python3, node, uv, uvx" className="field-control w-full px-3 py-2 text-sm font-mono" />
+                    </div>
+                    <div className="space-y-2">
+                      <FieldLabel>Upload Entrypoint</FieldLabel>
+                      <input value={uploadEntrypoint} onChange={(event) => setUploadEntrypoint(event.target.value)} placeholder="server.py, src/server.py, index.js" className="field-control w-full px-3 py-2 text-sm font-mono" />
+                    </div>
                   </div>
                   <div className="mt-5 flex flex-wrap items-center gap-3">
                     <button
@@ -607,22 +655,36 @@ export default function McpConfigurationPanel({ sandboxes = [] }: McpConfigurati
                       Install Custom Server
                     </button>
                     <label className="action-button cursor-pointer px-4 py-2">
-                      Choose JSON
+                      Choose Directory
                       <input
                         type="file"
-                        accept="application/json,.json"
-                        onChange={(event) => chooseUploadFile(event.target.files?.[0] || null)}
+                        multiple
+                        onChange={(event) => chooseUploadDirectory(event.target.files)}
+                        className="sr-only"
+                        {...({ webkitdirectory: "", directory: "" } as Record<string, string>)}
+                      />
+                    </label>
+                    <label className="action-button cursor-pointer px-4 py-2">
+                      Choose Archive
+                      <input
+                        type="file"
+                        accept=".zip,.tgz,.tar.gz,.tar,application/zip,application/gzip,application/x-tar"
+                        onChange={(event) => chooseUploadArchive(event.target.files?.[0] || null)}
                         className="sr-only"
                       />
                     </label>
                     <button
                       onClick={uploadServer}
-                      disabled={saving || !uploadText.trim()}
+                      disabled={saving || (!uploadArchive && uploadFiles.length === 0)}
                       className="action-button px-4 py-2"
                     >
                       Upload Server
                     </button>
-                    {uploadFileName && <span className="text-xs font-mono text-[var(--foreground-dim)]">{uploadFileName}</span>}
+                    {(uploadArchive || uploadFiles.length > 0) && (
+                      <span className="text-xs font-mono text-[var(--foreground-dim)]">
+                        {uploadArchive ? uploadArchive.name : `${uploadFiles.length} file${uploadFiles.length === 1 ? "" : "s"}`}
+                      </span>
+                    )}
                   </div>
                 </div>
               )}
