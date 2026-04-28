@@ -193,6 +193,18 @@ The custom server in `server.mjs` also handles websocket upgrades for:
 
 Those upgrade paths are protected by the same auth cookie as the HTTP routes.
 
+## Remote Controller Nodes
+
+The Wizards page includes **Spawn a Controller Node** for preparing a small OpenShell Control install on another VPS. This is intended for topologies where the browser-facing dashboard and the OpenShell gateway/sandbox hosts are not the same machine.
+
+The wizard generates:
+
+- an SSH bootstrap command for the remote VPS;
+- a controller `.env` block with `OPENSHELL_GATEWAY`, `OPENCLAW_DASHBOARD_URL`, terminal sidecar settings, and `OPENCLAW_INSTANCE_REGISTRY_JSON`;
+- readiness checks for OpenShell CLI reachability, OpenClaw dashboard access, and port exposure.
+
+This first step does not run arbitrary SSH from the web UI. It gives the operator a repeatable launch kit so the remote controller can be installed over SSH, WireGuard, Tailscale, or a private management network. After the controller is running, use its local OpenShell CLI context to manage the sandboxes reachable from that VPS.
+
 ## Inference Endpoints
 
 Inference endpoint configuration is development-stage.
