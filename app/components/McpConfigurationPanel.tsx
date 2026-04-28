@@ -83,6 +83,7 @@ export default function McpConfigurationPanel({ sandboxes = [] }: McpConfigurati
   const [uploadPaths, setUploadPaths] = useState<string[]>([])
   const [uploadArchive, setUploadArchive] = useState<File | null>(null)
   const [uploadRuntime, setUploadRuntime] = useState("python3")
+  const [uploadEntryMode, setUploadEntryMode] = useState<"file" | "python-module" | "console-script">("file")
   const [uploadEntrypoint, setUploadEntrypoint] = useState("server.py")
   const [editingServerId, setEditingServerId] = useState<string | null>(null)
   const [editorText, setEditorText] = useState("")
@@ -304,6 +305,7 @@ export default function McpConfigurationPanel({ sandboxes = [] }: McpConfigurati
       form.set("name", customName)
       form.set("summary", customSummary)
       form.set("runtime", uploadRuntime)
+      form.set("entryMode", uploadEntryMode)
       form.set("entrypoint", uploadEntrypoint)
       form.set("args", customArgs)
       form.set("env", customEnv)
@@ -691,8 +693,16 @@ export default function McpConfigurationPanel({ sandboxes = [] }: McpConfigurati
                       <input value={uploadRuntime} onChange={(event) => setUploadRuntime(event.target.value)} placeholder="python3, node, uv, uvx" className="field-control w-full px-3 py-2 text-sm font-mono" />
                     </div>
                     <div className="space-y-2">
+                      <FieldLabel>Upload Launch Mode</FieldLabel>
+                      <select value={uploadEntryMode} onChange={(event) => setUploadEntryMode(event.target.value as "file" | "python-module" | "console-script")} className="field-control w-full px-3 py-2 text-sm font-mono">
+                        <option value="file">File</option>
+                        <option value="python-module">Python module</option>
+                        <option value="console-script">Console script</option>
+                      </select>
+                    </div>
+                    <div className="space-y-2">
                       <FieldLabel>Upload Entrypoint</FieldLabel>
-                      <input value={uploadEntrypoint} onChange={(event) => setUploadEntrypoint(event.target.value)} placeholder="server.py, src/server.py, index.js" className="field-control w-full px-3 py-2 text-sm font-mono" />
+                      <input value={uploadEntrypoint} onChange={(event) => setUploadEntrypoint(event.target.value)} placeholder={uploadEntryMode === "python-module" ? "isaac_mcp_poc.server" : uploadEntryMode === "console-script" ? "isaac-mcp-poc" : "server.py, src/server.py, index.js"} className="field-control w-full px-3 py-2 text-sm font-mono" />
                     </div>
                   </div>
                   <div className="mt-5 flex flex-wrap items-center gap-3">

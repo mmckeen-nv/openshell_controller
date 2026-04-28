@@ -12,6 +12,7 @@ const STORE_DIR = process.env.NEMOCLAW_DASHBOARD_STATE_DIR || path.join(HOME, ".
 const UPLOAD_DIR = path.join(STORE_DIR, "mcp-server-uploads")
 const MAX_UPLOAD_BYTES = Number.parseInt(process.env.MCP_SERVER_UPLOAD_MAX_BYTES || String(128 * 1024 * 1024), 10)
 const INSTALL_TIMEOUT_MS = Number.parseInt(process.env.MCP_SERVER_DEPENDENCY_INSTALL_TIMEOUT_MS || String(5 * 60 * 1000), 10)
+const ENTRY_MODES = new Set(["file", "python-module", "console-script"])
 
 function slugify(value: string) {
   return value
@@ -40,12 +41,29 @@ function parseEnv(value: unknown) {
   )
 }
 
+function normalizeEntryMode(value: unknown) {
+  const mode = String(value || "file").trim()
+  return ENTRY_MODES.has(mode) ? mode : "file"
+}
+
 function normalizeRelativePath(value: string) {
   const normalized = path.posix.normalize(value.replace(/\\/g, "/")).replace(/^\/+/, "")
   if (!normalized || normalized === "." || normalized.startsWith("../") || normalized.includes("/../")) {
     throw new Error("uploaded file path must stay inside the server directory")
   }
   return normalized
+}
+
+function validatePythonModule(value: string) {
+  if (!/^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*$/.test(value)) {
+    throw new Error("python module entrypoint must look like package.module")
+  }
+}
+
+function validateConsoleScript(value: string) {
+  if (!/^[A-Za-z0-9_.-]+$/.test(value)) {
+    throw new Error("console script entrypoint must be a script name, not a path")
+  }
 }
 
 function safeEntryPath(root: string, entrypoint: string) {
@@ -85,6 +103,34 @@ async function resolveEntryPath(root: string, entrypoint: string) {
   const discovered = await findFileByName(root, path.basename(entrypoint))
   if (discovered) return discovered
   throw new Error(`entrypoint was not found in uploaded server: ${entrypoint}`)
+}
+
+async function hasProjectManifest(candidate: string) {
+  return await pathExists(path.join(candidate, "pyproject.toml"))
+    || await pathExists(path.join(candidate, "requirements.txt"))
+    || await pathExists(path.join(candidate, "package.json"))
+}
+
+async function findSingleNestedProjectRoot(root: string) {
+  const entries = await readdir(root, { withFileTypes: true }).catch(() => [])
+  const visible = entries.filter((entry) => !entry.name.startsWith("."))
+  if (visible.length !== 1 || !visible[0]?.isDirectory()) return null
+  const nested = path.join(root, visible[0].name)
+  return await hasProjectManifest(nested) ? nested : null
+}
+
+async function resolveProjectRoot(root: string, entrypointPath: string | null) {
+  if (await hasProjectManifest(root)) return root
+  if (entrypointPath) {
+    let candidate = path.dirname(entrypointPath)
+    while (candidate.startsWith(root)) {
+      if (await hasProjectManifest(candidate)) return candidate
+      const parent = path.dirname(candidate)
+      if (parent === candidate) break
+      candidate = parent
+    }
+  }
+  return await findSingleNestedProjectRoot(root) || root
 }
 
 async function runInstallCommand(command: string, args: string[], cwd: string) {
@@ -153,16 +199,42 @@ async function bootstrapNode(root: string, runtime: string) {
   }
 }
 
-async function bootstrapUploadedServer(root: string, runtime: string, entrypointPath: string) {
-  if (await isPythonUpload(runtime, entrypointPath, root)) {
+async function bootstrapUploadedServer(root: string, runtime: string, entrypoint: string) {
+  if (await isPythonUpload(runtime, entrypoint, root)) {
     const result = await bootstrapPython(root, runtime || "python3")
     return { command: result.command, logs: result.logs, kind: "python" }
   }
-  if (await isNodeUpload(runtime, entrypointPath, root)) {
+  if (await isNodeUpload(runtime, entrypoint, root)) {
     const result = await bootstrapNode(root, runtime || "node")
     return { command: result.command, logs: result.logs, kind: "node" }
   }
   return { command: runtime, logs: [] as string[], kind: "generic" }
+}
+
+async function launchCommandForUpload(
+  projectRoot: string,
+  bootstrap: Awaited<ReturnType<typeof bootstrapUploadedServer>>,
+  entryMode: string,
+  entrypoint: string,
+  entrypointPath: string | null,
+  extraArgs: string[],
+) {
+  if (entryMode === "python-module") {
+    validatePythonModule(entrypoint)
+    if (bootstrap.kind !== "python") throw new Error("python module entrypoint requires a Python upload")
+    return { command: bootstrap.command, args: ["-m", entrypoint, ...extraArgs] }
+  }
+  if (entryMode === "console-script") {
+    validateConsoleScript(entrypoint)
+    if (bootstrap.kind === "python") {
+      const scriptPath = path.join(projectRoot, ".venv/bin", entrypoint)
+      if (!await pathExists(scriptPath)) throw new Error(`console script was not installed in the upload virtualenv: ${entrypoint}`)
+      return { command: scriptPath, args: extraArgs }
+    }
+    return { command: entrypoint, args: extraArgs }
+  }
+  if (!entrypointPath) throw new Error("file entrypoint was not resolved")
+  return { command: bootstrap.command, args: [entrypointPath, ...extraArgs] }
 }
 
 async function writeDirectoryUpload(form: FormData, root: string) {
@@ -221,6 +293,7 @@ export async function POST(request: Request) {
     const summary = String(form.get("summary") || "Uploaded MCP server").trim()
     const runtime = String(form.get("runtime") || "python3").trim()
     const entrypoint = String(form.get("entrypoint") || "server.py").trim()
+    const entryMode = normalizeEntryMode(form.get("entryMode"))
     const root = path.join(UPLOAD_DIR, id)
 
     if (!runtime) throw new Error("runtime command is required")
@@ -233,15 +306,17 @@ export async function POST(request: Request) {
     const uploadedArchive = uploadedDirectory ? false : await writeArchiveUpload(form, root)
     if (!uploadedDirectory && !uploadedArchive) throw new Error("choose a directory, .zip, .tgz, .tar.gz, or .tar server upload")
 
-    const entrypointPath = await resolveEntryPath(root, entrypoint)
-    const bootstrap = await bootstrapUploadedServer(root, runtime, entrypointPath)
+    const entrypointPath = entryMode === "file" ? await resolveEntryPath(root, entrypoint) : null
+    const projectRoot = await resolveProjectRoot(root, entrypointPath)
+    const bootstrap = await bootstrapUploadedServer(projectRoot, runtime, entrypoint)
+    const launch = await launchCommandForUpload(projectRoot, bootstrap, entryMode, entrypoint, entrypointPath, parseLines(form.get("args")))
     const server = await installMcpServer({
       id,
       name,
       summary,
       transport: "stdio",
-      command: bootstrap.command,
-      args: [entrypointPath, ...parseLines(form.get("args"))],
+      command: launch.command,
+      args: launch.args,
       env: parseEnv(form.get("env")),
       tags: ["uploaded", "custom"],
       source: "custom",
@@ -252,6 +327,7 @@ export async function POST(request: Request) {
       ok: true,
       server,
       uploadRoot: root,
+      projectRoot,
       dependencyInstall: {
         kind: bootstrap.kind,
         logs: bootstrap.logs,
