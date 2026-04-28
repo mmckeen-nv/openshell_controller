@@ -11,12 +11,14 @@ const manifestPath = path.join(root, 'app/lib/sandboxMcpManifest.ts')
 const privilegedFilesPath = path.join(root, 'app/lib/sandboxPrivilegedFiles.ts')
 const routePath = path.join(root, 'app/api/mcp/route.ts')
 const uploadRoutePath = path.join(root, 'app/api/mcp/upload/route.ts')
+const preflightRoutePath = path.join(root, 'app/api/mcp/preflight/route.ts')
 const healthRoutePath = path.join(root, 'app/api/mcp/health/route.ts')
 const registryRoutePath = path.join(root, 'app/api/mcp/registry/route.ts')
 const brokerCapabilitiesRoutePath = path.join(root, 'app/api/mcp/broker/capabilities/route.ts')
 const brokerCallRoutePath = path.join(root, 'app/api/mcp/broker/call/route.ts')
 const sandboxMcpRoutePath = path.join(root, 'app/api/sandbox/[sandboxId]/mcp/route.ts')
 const brokerUrlPath = path.join(root, 'app/lib/mcpBrokerUrl.ts')
+const preflightLibPath = path.join(root, 'app/lib/mcpPreflight.ts')
 const middlewarePath = path.join(root, 'middleware.ts')
 const panelPath = path.join(root, 'app/components/McpConfigurationPanel.tsx')
 const helpPath = path.join(root, 'app/components/HelpPanel.tsx')
@@ -24,7 +26,7 @@ const sidebarPath = path.join(root, 'app/components/Sidebar.tsx')
 const sandboxListPath = path.join(root, 'app/components/SandboxList.tsx')
 const pagePath = path.join(root, 'app/page.tsx')
 
-const [storeSource, brokerStoreSource, brokerClientSource, manifestSource, privilegedFilesSource, routeSource, uploadRouteSource, healthRouteSource, registryRouteSource, brokerCapabilitiesRouteSource, brokerCallRouteSource, sandboxMcpRouteSource, brokerUrlSource, middlewareSource, panelSource, helpSource, sidebarSource, sandboxListSource, pageSource] = await Promise.all([
+const [storeSource, brokerStoreSource, brokerClientSource, manifestSource, privilegedFilesSource, routeSource, uploadRouteSource, preflightRouteSource, healthRouteSource, registryRouteSource, brokerCapabilitiesRouteSource, brokerCallRouteSource, sandboxMcpRouteSource, brokerUrlSource, preflightLibSource, middlewareSource, panelSource, helpSource, sidebarSource, sandboxListSource, pageSource] = await Promise.all([
   readFile(storePath, 'utf8'),
   readFile(brokerStorePath, 'utf8'),
   readFile(brokerClientPath, 'utf8'),
@@ -32,12 +34,14 @@ const [storeSource, brokerStoreSource, brokerClientSource, manifestSource, privi
   readFile(privilegedFilesPath, 'utf8'),
   readFile(routePath, 'utf8'),
   readFile(uploadRoutePath, 'utf8'),
+  readFile(preflightRoutePath, 'utf8'),
   readFile(healthRoutePath, 'utf8'),
   readFile(registryRoutePath, 'utf8'),
   readFile(brokerCapabilitiesRoutePath, 'utf8'),
   readFile(brokerCallRoutePath, 'utf8'),
   readFile(sandboxMcpRoutePath, 'utf8'),
   readFile(brokerUrlPath, 'utf8'),
+  readFile(preflightLibPath, 'utf8'),
   readFile(middlewarePath, 'utf8'),
   readFile(panelPath, 'utf8'),
   readFile(helpPath, 'utf8'),
@@ -103,7 +107,14 @@ assert.match(uploadRouteSource, /entryMode/, 'MCP upload API must support non-fi
 assert.match(uploadRouteSource, /python-module/, 'MCP upload API must support Python module launch')
 assert.match(uploadRouteSource, /console-script/, 'MCP upload API must support installed console script launch')
 assert.match(uploadRouteSource, /resolveProjectRoot/, 'MCP upload API must find project manifests inside uploaded directories')
+assert.match(uploadRouteSource, /preflightMcpServer/, 'MCP upload API must preflight uploaded server bundles')
+assert.match(uploadRouteSource, /preflight-failed/, 'MCP upload API must mark failed preflight installs')
 assert.match(uploadRouteSource, /installMcpServer/, 'MCP upload API must install uploaded server bundles')
+assert.match(preflightRouteSource, /export async function POST/, 'MCP preflight API must expose a POST check endpoint')
+assert.match(preflightRouteSource, /preflightMcpServer/, 'MCP preflight API must call the shared preflight helper')
+assert.match(preflightLibSource, /listBrokerServerTools/, 'MCP preflight must validate servers through SDK tool discovery')
+assert.match(preflightLibSource, /attempted relative import/, 'MCP preflight assistant must recognize Python package launch failures')
+assert.match(preflightLibSource, /FastMCP/, 'MCP preflight assistant must recognize MCP SDK compatibility failures')
 assert.match(healthRouteSource, /listBrokerServerTools/, 'MCP health API must inspect server tools through the broker client')
 assert.match(healthRouteSource, /enabledServers/, 'MCP health API must check enabled MCP servers')
 assert.match(registryRouteSource, /registry\.modelcontextprotocol\.io/, 'MCP registry search should default to the official registry')
@@ -121,6 +132,8 @@ assert.match(panelSource, /uploadEntrypoint/, 'MCP custom server upload must col
 assert.match(panelSource, /uploadEntryMode/, 'MCP custom server upload must collect a launch mode')
 assert.match(panelSource, /Python module/, 'MCP custom server upload must expose Python module launch mode')
 assert.match(panelSource, /Console script/, 'MCP custom server upload must expose console script launch mode')
+assert.match(panelSource, /preflightServer/, 'MCP page must let operators preflight installed servers')
+assert.match(panelSource, /Preflight/, 'MCP page must show preflight controls and results')
 assert.match(panelSource, /serverPayloadFromJson/, 'MCP page must parse edited server JSON')
 assert.match(panelSource, /startEditingServer/, 'MCP installed server list must expose edit state')
 assert.match(panelSource, /Server JSON/, 'MCP installed server editor must render an inline JSON file editor')

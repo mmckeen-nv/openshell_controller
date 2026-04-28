@@ -32,6 +32,21 @@ type McpResponse = {
   error?: string
 }
 
+type McpPreflightResult = {
+  ok: boolean
+  checkedAt: string
+  toolCount: number
+  tools: string[]
+  durationMs: number
+  error?: string
+  diagnosis: {
+    summary: string
+    likelyCauses: string[]
+    suggestedFixes: string[]
+    confidence: "low" | "medium" | "high"
+  }
+}
+
 type McpSandbox = {
   id: string
   name: string
@@ -92,6 +107,7 @@ export default function McpConfigurationPanel({ sandboxes = [] }: McpConfigurati
   const [registryLoading, setRegistryLoading] = useState(false)
   const [registryPage, setRegistryPage] = useState(1)
   const [lastRegistrySearch, setLastRegistrySearch] = useState("")
+  const [preflightResults, setPreflightResults] = useState<Record<string, McpPreflightResult>>({})
   const [catalogOpen, setCatalogOpen] = useState(false)
   const [customOpen, setCustomOpen] = useState(false)
 
@@ -293,6 +309,38 @@ export default function McpConfigurationPanel({ sandboxes = [] }: McpConfigurati
     }
   }
 
+  function summarizePreflight(preflight: McpPreflightResult) {
+    if (preflight.ok) {
+      return `${preflight.diagnosis.summary}${preflight.tools.length > 0 ? ` Tools: ${preflight.tools.join(", ")}.` : ""}`
+    }
+    const causes = preflight.diagnosis.likelyCauses.length > 0
+      ? `\nLikely: ${preflight.diagnosis.likelyCauses.join(" ")}`
+      : ""
+    const fixes = preflight.diagnosis.suggestedFixes.length > 0
+      ? `\nTry: ${preflight.diagnosis.suggestedFixes.join(" ")}`
+      : ""
+    return `${preflight.diagnosis.summary}\n${preflight.error || "MCP tool discovery failed."}${causes}${fixes}`
+  }
+
+  async function preflightServer(server: McpServerInstall) {
+    try {
+      setSaving(true)
+      const response = await fetch("/api/mcp/preflight", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ serverId: server.id }),
+      })
+      const data = await response.json() as { preflight?: McpPreflightResult; error?: string }
+      if (!response.ok || !data.preflight) throw new Error(data.error || "Failed to preflight MCP server")
+      setPreflightResults((current) => ({ ...current, [server.id]: data.preflight as McpPreflightResult }))
+      setMessage(`${server.name} preflight ${data.preflight.ok ? "passed" : "failed"}.\n${summarizePreflight(data.preflight)}`)
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Failed to preflight MCP server")
+    } finally {
+      setSaving(false)
+    }
+  }
+
   async function uploadServer() {
     try {
       if (!uploadArchive && uploadFiles.length === 0) {
@@ -318,17 +366,23 @@ export default function McpConfigurationPanel({ sandboxes = [] }: McpConfigurati
         })
       }
       const response = await fetch("/api/mcp/upload", { method: "POST", body: form })
-      const data = await response.json() as McpResponse & { dependencyInstall?: { kind?: string; logs?: string[] } }
+      const data = await response.json() as McpResponse & { dependencyInstall?: { kind?: string; logs?: string[] }; preflight?: McpPreflightResult; server?: McpServerInstall }
       if (!response.ok) throw new Error(data.error || "Failed to upload MCP server")
       setCatalog(Array.isArray(data.catalog) ? data.catalog : catalog)
       setServers(Array.isArray(data.servers) ? data.servers : [])
       setConfig(data.config || { mcpServers: {} })
+      if (data.preflight && data.server?.id) {
+        setPreflightResults((current) => ({ ...current, [data.server!.id]: data.preflight as McpPreflightResult }))
+      }
       setUploadFiles([])
       setUploadPaths([])
       setUploadArchive(null)
       const installKind = data.dependencyInstall?.kind || "generic"
       const installLogCount = data.dependencyInstall?.logs?.filter(Boolean).length || 0
-      setMessage(`${customName} uploaded. ${installKind === "generic" ? "No dependency bootstrap was needed." : `${installKind} dependencies bootstrapped${installLogCount > 0 ? ` with ${installLogCount} install step${installLogCount === 1 ? "" : "s"}` : ""}.`}`)
+      const preflightNote = data.preflight
+        ? `\nPreflight ${data.preflight.ok ? "passed" : "failed; server saved disabled"}.\n${summarizePreflight(data.preflight)}`
+        : ""
+      setMessage(`${customName} uploaded. ${installKind === "generic" ? "No dependency bootstrap was needed." : `${installKind} dependencies bootstrapped${installLogCount > 0 ? ` with ${installLogCount} install step${installLogCount === 1 ? "" : "s"}` : ""}.`}${preflightNote}`)
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Failed to upload MCP server")
     } finally {
@@ -785,6 +839,9 @@ export default function McpConfigurationPanel({ sandboxes = [] }: McpConfigurati
                       <button onClick={() => startEditingServer(server)} disabled={saving} className="action-button flex-1 px-3 py-2">
                         Edit
                       </button>
+                      <button onClick={() => preflightServer(server)} disabled={saving} className="action-button flex-1 px-3 py-2">
+                        Preflight
+                      </button>
                       <button onClick={() => setServerEnabled(server, !server.enabled)} disabled={saving} className="action-button flex-1 px-3 py-2">
                         {server.enabled ? "Disable" : "Enable"}
                       </button>
@@ -792,6 +849,14 @@ export default function McpConfigurationPanel({ sandboxes = [] }: McpConfigurati
                         Remove
                       </button>
                     </div>
+                    {preflightResults[server.id] && (
+                      <div className={`mt-4 rounded-sm border p-3 text-xs ${preflightResults[server.id].ok ? "border-[var(--status-running)] bg-[var(--status-running-bg)] text-[var(--status-running)]" : "border-[var(--status-error)] bg-[var(--status-error-bg)] text-[var(--status-error)]"}`}>
+                        <div className="font-mono uppercase tracking-wider">
+                          Preflight {preflightResults[server.id].ok ? "passed" : "failed"} / {preflightResults[server.id].durationMs} ms
+                        </div>
+                        <p className="mt-2 whitespace-pre-wrap text-[11px] leading-5">{summarizePreflight(preflightResults[server.id])}</p>
+                      </div>
+                    )}
                     {editingServerId === server.id && (
                       <div className="mt-4 border-t border-[var(--border-subtle)] pt-4">
                         <div className="flex items-center justify-between gap-3">
