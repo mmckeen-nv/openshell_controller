@@ -128,10 +128,139 @@ function HealthAccordion({ sandboxes }: { sandboxes: SandboxInventoryItem[] }) {
   )
 }
 
+type McpHealthCheck = {
+  id: string
+  name: string
+  transport: string
+  source: string
+  command: string
+  args: string[]
+  ok: boolean
+  toolCount: number
+  tools: string[]
+  durationMs: number
+  error?: string
+}
+
+type McpHealthResponse = {
+  ok: boolean
+  checkedAt: string
+  installedCount: number
+  enabledCount: number
+  checks: McpHealthCheck[]
+  error?: string
+}
+
+function McpHealthAccordion() {
+  const [open, setOpen] = useState(true)
+  const [loading, setLoading] = useState(false)
+  const [health, setHealth] = useState<McpHealthResponse | null>(null)
+  const [message, setMessage] = useState("")
+
+  async function loadHealth() {
+    try {
+      setLoading(true)
+      setMessage("")
+      const response = await fetch("/api/mcp/health", { cache: "no-store" })
+      const data = await response.json() as McpHealthResponse
+      if (!response.ok) throw new Error(data.error || "Failed to check MCP server health")
+      setHealth(data)
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Failed to check MCP server health")
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    if (open && !health && !loading) loadHealth()
+  }, [open, health, loading])
+
+  const checks = health?.checks || []
+
+  return (
+    <section className="panel overflow-hidden">
+      <button
+        type="button"
+        onClick={() => setOpen((current) => !current)}
+        aria-expanded={open}
+        className="flex w-full items-center justify-between gap-4 p-5 text-left"
+      >
+        <div>
+          <p className="text-[10px] font-mono uppercase tracking-wider text-[var(--nvidia-green)]">Operator Checks</p>
+          <h2 className="mt-1 text-sm font-semibold uppercase tracking-wider text-[var(--foreground)]">MCP Server Health</h2>
+          <p className="mt-1 text-xs text-[var(--foreground-dim)]">Starts each enabled MCP server from the control host and lists its tools.</p>
+        </div>
+        <svg
+          className={`h-4 w-4 shrink-0 text-[var(--foreground-dim)] transition-transform ${open ? "rotate-90" : ""}`}
+          fill="none"
+          stroke="currentColor"
+          viewBox="0 0 24 24"
+          aria-hidden="true"
+        >
+          <path strokeLinecap="square" strokeLinejoin="miter" strokeWidth={2} d="M9 5l7 7-7 7" />
+        </svg>
+      </button>
+
+      {open && (
+        <div className="space-y-4 border-t border-[var(--border-subtle)] p-5">
+          <div className="flex items-center justify-between gap-3 max-sm:flex-col max-sm:items-start">
+            <div className="text-xs text-[var(--foreground-dim)]">
+              {health ? `${health.enabledCount} enabled / ${health.installedCount} installed / ${health.ok ? "healthy" : "attention needed"}` : "No health check has run yet."}
+            </div>
+            <button type="button" onClick={loadHealth} disabled={loading} className="action-button px-3 py-2">
+              {loading ? "Checking..." : "Refresh MCP Health"}
+            </button>
+          </div>
+
+          {message && <div className="rounded-sm border border-red-500/40 bg-red-500/10 p-3 text-xs text-red-300">{message}</div>}
+
+          {checks.length === 0 ? (
+            <div className="rounded-sm border border-[var(--border-subtle)] bg-[var(--background)] p-4 text-sm text-[var(--foreground-dim)]">
+              {loading ? "Checking enabled MCP servers..." : "No enabled MCP servers to check."}
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+              {checks.map((check) => (
+                <div key={check.id} className="rounded-sm border border-[var(--border-subtle)] bg-[var(--background)] p-4">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <h3 className="truncate text-sm font-mono font-semibold text-[var(--foreground)]">{check.name}</h3>
+                      <p className="mt-1 break-all text-[11px] font-mono text-[var(--foreground-dim)]">{check.command} {check.args.join(" ")}</p>
+                    </div>
+                    <span className={`status-chip px-2 py-1 ${check.ok ? "bg-[var(--status-running-bg)] text-[var(--status-running)]" : "bg-[var(--status-error-bg)] text-[var(--status-error)]"}`}>
+                      {check.ok ? "healthy" : "failed"}
+                    </span>
+                  </div>
+                  <p className="mt-3 text-xs text-[var(--foreground-dim)]">
+                    {check.ok ? `${check.toolCount} tool${check.toolCount === 1 ? "" : "s"} discovered in ${check.durationMs} ms.` : check.error || "Server did not respond."}
+                  </p>
+                  {check.tools.length > 0 && (
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      {check.tools.map((tool) => (
+                        <span key={tool} className="rounded-sm border border-[var(--border-subtle)] px-2 py-1 text-[10px] font-mono text-[var(--foreground-dim)]">{tool}</span>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+
+          {health && (
+            <p className="text-[11px] text-[var(--foreground-dim)]">Checked {new Date(health.checkedAt).toLocaleString()}</p>
+          )}
+        </div>
+      )}
+    </section>
+  )
+}
+
 export default function HelpPanel({ sandboxes }: { sandboxes: SandboxInventoryItem[] }) {
   return (
     <div className="space-y-6">
       <HealthAccordion sandboxes={sandboxes} />
+      <McpHealthAccordion />
 
       <section className="panel p-8">
         <div className="flex items-start justify-between gap-4 max-md:flex-col">
