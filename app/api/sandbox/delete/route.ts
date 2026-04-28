@@ -2,7 +2,7 @@ import { NextResponse } from "next/server"
 import { execFile } from "node:child_process"
 import { promisify } from "node:util"
 import { resolveSandboxRef } from "@/app/lib/openshellHost"
-import { HOST_PATH, NEMOCLAW_BIN, NEMOCLAW_CWD, OPENSHELL_BIN } from "@/app/lib/hostCommands"
+import { NEMOCLAW_BIN, NEMOCLAW_CWD, OPENSHELL_BIN, hostCommandEnv } from "@/app/lib/hostCommands"
 
 const execFileAsync = promisify(execFile)
 
@@ -54,14 +54,9 @@ async function deleteSandbox(sandboxName: string) {
   console.log(`[sandbox/delete] command:start sandbox=${sandboxName}`)
   try {
     const { stdout, stderr } = await execFileAsync(OPENSHELL_BIN, ["sandbox", "delete", sandboxName], {
-      env: {
-        ...process.env,
-        PATH: HOST_PATH,
+      env: hostCommandEnv({
         OPENSHELL_GATEWAY: process.env.OPENSHELL_GATEWAY || "nemoclaw",
-        NO_COLOR: "1",
-        CLICOLOR: "0",
-        CLICOLOR_FORCE: "0",
-      },
+      }),
       timeout: 60000,
       maxBuffer: 20 * 1024 * 1024,
     })
@@ -93,14 +88,9 @@ async function cleanupNemoClawSandbox(sandboxName: string) {
   try {
     const { stdout, stderr } = await execFileAsync(NEMOCLAW_BIN, [sandboxName, "destroy", "--yes"], {
       cwd: NEMOCLAW_CWD,
-      env: {
-        ...process.env,
-        PATH: HOST_PATH,
+      env: hostCommandEnv({
         OPENSHELL_GATEWAY: process.env.OPENSHELL_GATEWAY || "nemoclaw",
-        NO_COLOR: "1",
-        CLICOLOR: "0",
-        CLICOLOR_FORCE: "0",
-      },
+      }),
       timeout: 90000,
       maxBuffer: 20 * 1024 * 1024,
     })

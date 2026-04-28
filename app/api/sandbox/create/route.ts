@@ -12,6 +12,7 @@ import {
   NEMOCLAW_SETUP_CANDIDATES,
   NODE_BIN,
   OPENSHELL_BIN,
+  hostCommandEnv,
 } from "@/app/lib/hostCommands"
 
 const execFileAsync = promisify(execFile)
@@ -240,14 +241,9 @@ async function approveOpenClawDeviceRequests(sandboxName: string) {
     "sh",
     "-lc",
     "openclaw devices approve --latest --json --timeout 10000",
-  ], {
-    ...process.env,
-    PATH: HOST_PATH,
+  ], hostCommandEnv({
     OPENSHELL_GATEWAY: process.env.OPENSHELL_GATEWAY || "nemoclaw",
-    NO_COLOR: "1",
-    CLICOLOR: "0",
-    CLICOLOR_FORCE: "0",
-  }, 15000)
+  }), 15000)
 
   const combinedOutput = `${result.stdout}\n${result.stderr}`.trim()
   const noPending = NO_PENDING_DEVICE_REQUESTS.test(combinedOutput)
@@ -339,15 +335,13 @@ export async function POST(request: Request) {
 
     if (blueprint === "nemoclaw-blueprint") {
       const createCommand = buildNemoClawCreateCommand()
-      const env: NodeJS.ProcessEnv = {
-        ...process.env,
-        PATH: HOST_PATH,
+      const env: NodeJS.ProcessEnv = hostCommandEnv({
         NEMOCLAW_SANDBOX_NAME: sandboxName,
         NEMOCLAW_NON_INTERACTIVE: "1",
         NEMOCLAW_RECREATE_SANDBOX: "1",
         NEMOCLAW_ACCEPT_THIRD_PARTY_SOFTWARE: "1",
         OPENSHELL_GATEWAY: process.env.OPENSHELL_GATEWAY || "nemoclaw",
-      }
+      })
 
       if (!enableTailscale) {
         env.NVIDIA_API_KEY = env.NVIDIA_API_KEY || "optional-local-mode"
@@ -414,13 +408,7 @@ export async function POST(request: Request) {
     }
 
     if (blueprint === "custom-sandbox") {
-      const env: NodeJS.ProcessEnv = {
-        ...process.env,
-        PATH: HOST_PATH,
-        NO_COLOR: "1",
-        CLICOLOR: "0",
-        CLICOLOR_FORCE: "0",
-      }
+      const env: NodeJS.ProcessEnv = hostCommandEnv()
       const createAttempt = await runCreateCommandBounded(OPENSHELL_BIN, ["sandbox", "create", "--name", sandboxName], env, 15000)
 
       if (createAttempt.completed && createAttempt.exitCode !== 0) {

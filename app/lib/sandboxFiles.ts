@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process"
 import path from "node:path"
-import { HOST_PATH, OPENSHELL_BIN } from "./hostCommands"
+import { OPENSHELL_BIN, hostCommandEnv } from "./hostCommands"
 import { resolveSandboxRef } from "./openshellHost"
 
 export const MAX_FILE_BYTES = Number.parseInt(process.env.SANDBOX_FILE_TRANSFER_MAX_BYTES || String(128 * 1024 * 1024), 10)
@@ -58,14 +58,9 @@ export function assertRequestContentLength(request: Request, maxBytes = MAX_MULT
 function runSandboxExec(sandboxName: string, script: string, input?: Buffer, timeoutMs = 60000) {
   return new Promise<{ stdout: Buffer; stderr: string; code: number | null }>((resolve, reject) => {
     const child = spawn(OPENSHELL_BIN, ["sandbox", "exec", "-n", sandboxName, "--", "sh", "-lc", script], {
-      env: {
-        ...process.env,
-        PATH: HOST_PATH,
+      env: hostCommandEnv({
         OPENSHELL_GATEWAY: process.env.OPENSHELL_GATEWAY || "nemoclaw",
-        NO_COLOR: "1",
-        CLICOLOR: "0",
-        CLICOLOR_FORCE: "0",
-      },
+      }),
       stdio: ["pipe", "pipe", "pipe"],
     })
     const stdout: Buffer[] = []

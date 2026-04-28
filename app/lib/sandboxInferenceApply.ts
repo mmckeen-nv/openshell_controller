@@ -1,6 +1,6 @@
 import { execFile, spawn } from "node:child_process"
 import { promisify } from "node:util"
-import { HOST_PATH, OPENSHELL_BIN } from "./hostCommands"
+import { HOST_PATH, OPENSHELL_BIN, hostCommandEnv } from "./hostCommands"
 import { getSandboxInferenceConfig, type SandboxInferenceRoute } from "./sandboxInferenceStore"
 
 const execFileAsync = promisify(execFile)
@@ -110,14 +110,9 @@ function buildOpenClawConfig(current: any, routes: SandboxInferenceRoute[], prim
 
 async function runOpenShell(args: string[]) {
   const { stdout, stderr } = await execFileAsync(OPENSHELL_BIN, args, {
-    env: {
-      ...process.env,
-      PATH: HOST_PATH,
+    env: hostCommandEnv({
       OPENSHELL_GATEWAY: process.env.OPENSHELL_GATEWAY || "nemoclaw",
-      NO_COLOR: "1",
-      CLICOLOR: "0",
-      CLICOLOR_FORCE: "0",
-    },
+    }),
     timeout: 60000,
     maxBuffer: 20 * 1024 * 1024,
   })
