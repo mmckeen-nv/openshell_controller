@@ -78,11 +78,28 @@ function isSandboxNotFound(output: string) {
   return /sandbox not found|status:\s*NotFound|not present in the live OpenShell gateway/i.test(output)
 }
 
+function isGatewayRecoverable(output: string) {
+  return /Unknown gateway|Deploy it first|transport error|tcp connect error|Connection refused|invalid peer certificate|BadSignature/i.test(output)
+}
+
+function isValidNemoClawSandboxName(value: string) {
+  return /^[a-z][a-z0-9-]*[a-z0-9]$|^[a-z]$/.test(value)
+}
+
 function isNemoClawSandboxNotRegistered(output: string, sandboxName: string) {
   return new RegExp(`Unknown command:\\s*${sandboxName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`, "i").test(output)
 }
 
 async function cleanupNemoClawSandbox(sandboxName: string) {
+  if (!isValidNemoClawSandboxName(sandboxName)) {
+    return {
+      ok: true as const,
+      stdout: "",
+      stderr: "",
+      note: "Skipped NemoClaw registry cleanup because the target is not a valid NemoClaw sandbox name.",
+    }
+  }
+
   const startedAt = Date.now()
   console.log(`[sandbox/delete] nemoclaw-cleanup:start sandbox=${sandboxName}`)
   try {
@@ -169,7 +186,6 @@ export async function POST(request: Request) {
     const result = await deleteSandbox(target.sandboxName)
     const deleteOutput = [result.error, result.stdout, result.stderr].filter(Boolean).join("\n")
     const openShellAlreadyGone = !result.ok && isSandboxNotFound(deleteOutput)
-    const cleanup = await cleanupNemoClawSandbox(target.sandboxName)
 
     if (!result.ok && !openShellAlreadyGone) {
       return NextResponse.json({
@@ -183,9 +199,14 @@ export async function POST(request: Request) {
         error: result.error,
         stdout: result.stdout,
         stderr: result.stderr,
-        nemoclaw: cleanup,
-      }, { status: 500 })
+        recoverableGateway: isGatewayRecoverable(deleteOutput),
+        note: isGatewayRecoverable(deleteOutput)
+          ? "OpenShell gateway is unavailable or its trust state is broken. Repair gateway trust, then retry delete."
+          : "OpenShell delete failed before NemoClaw cleanup ran.",
+      }, { status: isGatewayRecoverable(deleteOutput) ? 503 : 500 })
     }
+
+    const cleanup = await cleanupNemoClawSandbox(target.sandboxName)
 
     if (!cleanup.ok) {
       return NextResponse.json({
