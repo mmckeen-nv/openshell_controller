@@ -213,20 +213,20 @@ export default function SandboxList({
     }
   }
 
-  const restartSandbox = async () => {
+  const restartSandboxRuntime = async () => {
     if (!selectedSandbox || restartInProgress) return
     try {
       setRestartInProgress(true)
-      setDashboardMessage(`Restarting sandbox ${selectedSandbox.name}...`)
+      setDashboardMessage(`Restarting OpenClaw runtime for ${selectedSandbox.name}...`)
       const response = await fetch(`/api/sandbox/${encodeURIComponent(selectedSandbox.id)}/restart`, {
         method: 'POST',
       })
       const data = await response.json()
-      if (!response.ok) throw new Error(data.error || data.note || 'Failed to restart sandbox')
-      setDashboardMessage(data.note || `Sandbox ${selectedSandbox.name} restarted.`)
+      if (!response.ok) throw new Error(data.error || data.note || 'Failed to restart OpenClaw runtime')
+      setDashboardMessage(data.note || `OpenClaw runtime restarted for ${selectedSandbox.name}.`)
       await onInventoryRefresh()
     } catch (error) {
-      setDashboardMessage(error instanceof Error ? error.message : 'Failed to restart sandbox.')
+      setDashboardMessage(error instanceof Error ? error.message : 'Failed to restart OpenClaw runtime.')
     } finally {
       setRestartInProgress(false)
     }
@@ -538,11 +538,11 @@ export default function SandboxList({
                       Start OpenClaw Gateway Dashboard
                     </button>
                     <button
-                      onClick={restartSandbox}
+                      onClick={restartSandboxRuntime}
                       disabled={restartInProgress}
                       className="action-button px-3 py-2"
                     >
-                      {restartInProgress ? 'Restarting Sandbox...' : 'Restart Sandbox'}
+                      {restartInProgress ? 'Restarting Runtime...' : 'Restart OpenClaw Runtime'}
                     </button>
                     <button
                       onClick={async () => {
