@@ -4,6 +4,7 @@ import { access, mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises
 import os from "node:os"
 import path from "node:path"
 import { promisify } from "node:util"
+import { preflightMcpServer } from "@/app/lib/mcpPreflight"
 import { installMcpServer, listMcpServers } from "@/app/lib/mcpServerStore"
 
 const execFileAsync = promisify(execFile)
@@ -310,7 +311,7 @@ export async function POST(request: Request) {
     const projectRoot = await resolveProjectRoot(root, entrypointPath)
     const bootstrap = await bootstrapUploadedServer(projectRoot, runtime, entrypoint)
     const launch = await launchCommandForUpload(projectRoot, bootstrap, entryMode, entrypoint, entrypointPath, parseLines(form.get("args")))
-    const server = await installMcpServer({
+    const candidate = {
       id,
       name,
       summary,
@@ -321,6 +322,29 @@ export async function POST(request: Request) {
       tags: ["uploaded", "custom"],
       source: "custom",
       enabled: true,
+    } as const satisfies {
+      id: string
+      name: string
+      summary: string
+      transport: "stdio"
+      command: string
+      args: string[]
+      env: Record<string, string>
+      tags: string[]
+      source: "custom"
+      enabled: boolean
+    }
+    const preflight = await preflightMcpServer({
+      ...candidate,
+      installedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      accessMode: "disabled",
+      allowedSandboxIds: [],
+    })
+    const server = await installMcpServer({
+      ...candidate,
+      enabled: preflight.ok,
+      tags: preflight.ok ? candidate.tags : [...candidate.tags, "preflight-failed"],
     })
 
     return NextResponse.json({
@@ -332,6 +356,7 @@ export async function POST(request: Request) {
         kind: bootstrap.kind,
         logs: bootstrap.logs,
       },
+      preflight,
       ...(await listMcpServers()),
     })
   } catch (error) {
