@@ -316,7 +316,7 @@ export default function McpConfigurationPanel({ sandboxes = [] }: McpConfigurati
         })
       }
       const response = await fetch("/api/mcp/upload", { method: "POST", body: form })
-      const data = await response.json() as McpResponse
+      const data = await response.json() as McpResponse & { dependencyInstall?: { kind?: string; logs?: string[] } }
       if (!response.ok) throw new Error(data.error || "Failed to upload MCP server")
       setCatalog(Array.isArray(data.catalog) ? data.catalog : catalog)
       setServers(Array.isArray(data.servers) ? data.servers : [])
@@ -324,7 +324,9 @@ export default function McpConfigurationPanel({ sandboxes = [] }: McpConfigurati
       setUploadFiles([])
       setUploadPaths([])
       setUploadArchive(null)
-      setMessage(`${customName} uploaded.`)
+      const installKind = data.dependencyInstall?.kind || "generic"
+      const installLogCount = data.dependencyInstall?.logs?.filter(Boolean).length || 0
+      setMessage(`${customName} uploaded. ${installKind === "generic" ? "No dependency bootstrap was needed." : `${installKind} dependencies bootstrapped${installLogCount > 0 ? ` with ${installLogCount} install step${installLogCount === 1 ? "" : "s"}` : ""}.`}`)
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Failed to upload MCP server")
     } finally {
