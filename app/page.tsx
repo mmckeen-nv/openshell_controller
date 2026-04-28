@@ -95,7 +95,7 @@ export default function Dashboard() {
 
   const sleep = (ms: number) => new Promise((resolve) => window.setTimeout(resolve, ms))
 
-  const gatewayTrustError = Boolean(error && /BadSignature|invalid peer certificate|transport error|certificate signature/i.test(error))
+  const gatewayTrustError = Boolean(error && /BadSignature|invalid peer certificate|transport error|certificate signature|Unknown gateway|Deploy it first|Connection refused|tcp connect error/i.test(error))
 
   const repairGatewayTrust = async () => {
     if (gatewayRepairing) return
@@ -346,7 +346,7 @@ export default function Dashboard() {
                       <div className="mx-auto mt-5 max-w-2xl rounded-sm border border-amber-500/40 bg-amber-500/10 p-4 text-left">
                         <h4 className="text-xs font-semibold uppercase tracking-wider text-amber-300">Gateway Trust Mismatch</h4>
                         <p className="mt-2 text-xs leading-5 text-amber-100/80">
-                          OpenShell reached the gateway, but certificate verification failed. This usually means the gateway regenerated mTLS material while this controller still has stale trust files.
+                          OpenShell could not use the selected gateway. This usually means the gateway stopped, was undeployed, or regenerated mTLS material while this controller still has stale trust files.
                         </p>
                         <button
                           type="button"
@@ -440,7 +440,7 @@ export default function Dashboard() {
                       <div className="mx-auto mt-5 max-w-2xl rounded-sm border border-amber-500/40 bg-amber-500/10 p-4 text-left">
                         <h4 className="text-xs font-semibold uppercase tracking-wider text-amber-300">Gateway Trust Mismatch</h4>
                         <p className="mt-2 text-xs leading-5 text-amber-100/80">
-                          OpenShell reached the gateway, but certificate verification failed. This usually means the gateway regenerated mTLS material while this controller still has stale trust files.
+                          OpenShell could not use the selected gateway. This usually means the gateway stopped, was undeployed, or regenerated mTLS material while this controller still has stale trust files.
                         </p>
                         <button
                           type="button"
