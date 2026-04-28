@@ -1,5 +1,6 @@
 import { revokeSandboxMcpBrokerSession, rotateSandboxMcpBrokerSession } from "./mcpBrokerStore"
-import { uploadSandboxFile } from "./sandboxFiles"
+import { resolveSandboxName } from "./sandboxFiles"
+import { writeSandboxFilePrivileged } from "./sandboxPrivilegedFiles"
 
 export const SANDBOX_MCP_MANIFEST_PATH = "/sandbox/openshell_control_mcp.md"
 
@@ -66,10 +67,10 @@ export async function syncSandboxMcpManifest(
   options: BrokerHandoffOptions,
 ) {
   const handoff = await buildSandboxMcpBrokerHandoff(sandbox, options)
-  const uploaded = await uploadSandboxFile(
-    sandbox.id,
+  const sandboxName = sandbox.name || await resolveSandboxName(sandbox.id)
+  const uploaded = await writeSandboxFilePrivileged(
+    sandboxName,
     SANDBOX_MCP_MANIFEST_PATH,
-    "openshell_control_mcp.md",
     Buffer.from(handoff.markdown, "utf8"),
   )
 
@@ -103,10 +104,10 @@ export async function revokeSandboxMcpManifest(sandbox: SandboxRef) {
     "The previous broker token has been revoked. Ask the operator to enable an MCP server and issue a new broker config if MCP access is needed.",
     "",
   ].join("\n")
-  const uploaded = await uploadSandboxFile(
-    sandbox.id,
+  const sandboxName = sandbox.name || await resolveSandboxName(sandbox.id)
+  const uploaded = await writeSandboxFilePrivileged(
+    sandboxName,
     SANDBOX_MCP_MANIFEST_PATH,
-    "openshell_control_mcp.md",
     Buffer.from(markdown, "utf8"),
   )
 
