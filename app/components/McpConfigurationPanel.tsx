@@ -154,6 +154,13 @@ function envToText(value: Record<string, string>) {
     .join("\n")
 }
 
+const DEFAULT_CUSTOM_NAME = "custom-tools"
+const DEFAULT_CUSTOM_SUMMARY = "Custom MCP server"
+const DEFAULT_CUSTOM_ARGS = "-y\n@modelcontextprotocol/server-memory"
+const DEFAULT_UPLOAD_RUNTIME = ""
+const DEFAULT_UPLOAD_ENTRY_MODE: "file" | "python-module" | "console-script" = "file"
+const DEFAULT_UPLOAD_ENTRYPOINT = ""
+
 export default function McpConfigurationPanel({ sandboxes = [] }: McpConfigurationPanelProps) {
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
@@ -161,18 +168,18 @@ export default function McpConfigurationPanel({ sandboxes = [] }: McpConfigurati
   const [catalog, setCatalog] = useState<McpCatalogEntry[]>([])
   const [servers, setServers] = useState<McpServerInstall[]>([])
   const [config, setConfig] = useState<Record<string, unknown>>({ mcpServers: {} })
-  const [customName, setCustomName] = useState("custom-tools")
-  const [customSummary, setCustomSummary] = useState("Custom MCP server")
+  const [customName, setCustomName] = useState(DEFAULT_CUSTOM_NAME)
+  const [customSummary, setCustomSummary] = useState(DEFAULT_CUSTOM_SUMMARY)
   const [customTransport, setCustomTransport] = useState<McpTransport>("stdio")
   const [customCommand, setCustomCommand] = useState("npx")
-  const [customArgs, setCustomArgs] = useState("-y\n@modelcontextprotocol/server-memory")
+  const [customArgs, setCustomArgs] = useState(DEFAULT_CUSTOM_ARGS)
   const [customEnv, setCustomEnv] = useState("")
   const [uploadFiles, setUploadFiles] = useState<File[]>([])
   const [uploadPaths, setUploadPaths] = useState<string[]>([])
   const [uploadArchive, setUploadArchive] = useState<File | null>(null)
-  const [uploadRuntime, setUploadRuntime] = useState("python3")
-  const [uploadEntryMode, setUploadEntryMode] = useState<"file" | "python-module" | "console-script">("file")
-  const [uploadEntrypoint, setUploadEntrypoint] = useState("server.py")
+  const [uploadRuntime, setUploadRuntime] = useState(DEFAULT_UPLOAD_RUNTIME)
+  const [uploadEntryMode, setUploadEntryMode] = useState<"file" | "python-module" | "console-script">(DEFAULT_UPLOAD_ENTRY_MODE)
+  const [uploadEntrypoint, setUploadEntrypoint] = useState(DEFAULT_UPLOAD_ENTRYPOINT)
   const [uploadRepair, setUploadRepair] = useState(true)
   const [repairSandboxId, setRepairSandboxId] = useState("")
   const [stagedUpload, setStagedUpload] = useState<StagedMcpUpload | null>(null)
@@ -546,6 +553,28 @@ export default function McpConfigurationPanel({ sandboxes = [] }: McpConfigurati
     setWizardInstallResult(null)
   }
 
+  function resetWizardWorkflow() {
+    setCustomName(DEFAULT_CUSTOM_NAME)
+    setCustomSummary(DEFAULT_CUSTOM_SUMMARY)
+    setCustomArgs(DEFAULT_CUSTOM_ARGS)
+    setCustomEnv("")
+    setUploadRuntime(DEFAULT_UPLOAD_RUNTIME)
+    setUploadEntryMode(DEFAULT_UPLOAD_ENTRY_MODE)
+    setUploadEntrypoint(DEFAULT_UPLOAD_ENTRYPOINT)
+    setRepairSandboxId("")
+    setUploadRepair(true)
+    setUploadFiles([])
+    setUploadPaths([])
+    setUploadArchive(null)
+    resetWizardPreflightState()
+    setWizardStep("upload")
+  }
+
+  function cancelWizardWorkflow() {
+    resetWizardWorkflow()
+    setMessage("MCP server install canceled.")
+  }
+
   function summarizePreflight(preflight: McpPreflightResult) {
     if (preflight.ok) {
       return `${preflight.diagnosis.summary}${preflight.tools.length > 0 ? ` Tools: ${preflight.tools.join(", ")}.` : ""}`
@@ -592,9 +621,6 @@ export default function McpConfigurationPanel({ sandboxes = [] }: McpConfigurati
     form.set("id", customName)
     form.set("name", customName)
     form.set("summary", customSummary)
-    form.set("runtime", uploadRuntime)
-    form.set("entryMode", uploadEntryMode)
-    form.set("entrypoint", uploadEntrypoint)
     form.set("args", customArgs)
     form.set("env", customEnv)
     form.set("repair", uploadRepair ? "true" : "false")
@@ -623,6 +649,9 @@ export default function McpConfigurationPanel({ sandboxes = [] }: McpConfigurati
       const data = await response.json() as { stagedUpload?: StagedMcpUpload; error?: string }
       if (!response.ok || !data.stagedUpload) throw new Error(data.error || "Failed to upload MCP server files")
       setStagedUpload(data.stagedUpload)
+      setUploadRuntime(data.stagedUpload.runtime)
+      setUploadEntryMode(data.stagedUpload.entryMode)
+      setUploadEntrypoint(data.stagedUpload.entrypoint)
       setWizardPreflight(null)
       setWizardRepair(null)
       setWizardCandidate(null)
@@ -659,6 +688,11 @@ export default function McpConfigurationPanel({ sandboxes = [] }: McpConfigurati
       }
       if (!response.ok || !data.preflight || !data.candidate) throw new Error(data.error || "Failed to preflight MCP server")
       setStagedUpload(data.stagedUpload || stagedUpload)
+      if (data.stagedUpload) {
+        setUploadRuntime(data.stagedUpload.runtime)
+        setUploadEntryMode(data.stagedUpload.entryMode)
+        setUploadEntrypoint(data.stagedUpload.entrypoint)
+      }
       setWizardCandidate(data.candidate)
       setWizardDependencyInstall(data.dependencyInstall || null)
       setWizardPreflight(data.preflight)
@@ -697,10 +731,8 @@ export default function McpConfigurationPanel({ sandboxes = [] }: McpConfigurati
       if (wizardPreflight) {
         setPreflightResults((current) => ({ ...current, [data.server!.id]: wizardPreflight }))
       }
-      setUploadFiles([])
-      setUploadPaths([])
-      setUploadArchive(null)
       setMessage(`${data.server.name} installed${data.server.enabled ? "." : " disabled because preflight did not pass."}`)
+      resetWizardWorkflow()
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Failed to install staged MCP server")
     } finally {
@@ -1104,22 +1136,6 @@ export default function McpConfigurationPanel({ sandboxes = [] }: McpConfigurati
                         <div className="flex items-center gap-2"><FieldLabel>Summary</FieldLabel><FieldHint>Short note shown in the installed server list.</FieldHint></div>
                         <input value={customSummary} onChange={(event) => { setCustomSummary(event.target.value); resetWizardPreflightState() }} className="field-control w-full px-3 py-2 text-sm" />
                       </div>
-                      <div className="space-y-2">
-                        <div className="flex items-center gap-2"><FieldLabel>Upload Runtime</FieldLabel><FieldHint>Runtime used to bootstrap uploaded bundles before preflight.</FieldHint></div>
-                        <input value={uploadRuntime} onChange={(event) => { setUploadRuntime(event.target.value); resetWizardPreflightState() }} placeholder="python3, node, uv, uvx" className="field-control w-full px-3 py-2 text-sm font-mono" />
-                      </div>
-                      <div className="space-y-2">
-                        <div className="flex items-center gap-2"><FieldLabel>Upload Launch Mode</FieldLabel><FieldHint>How the uploaded server should start after dependencies are installed.</FieldHint></div>
-                        <select value={uploadEntryMode} onChange={(event) => { setUploadEntryMode(event.target.value as "file" | "python-module" | "console-script"); resetWizardPreflightState() }} className="field-control w-full px-3 py-2 text-sm font-mono">
-                          <option value="file">File</option>
-                          <option value="python-module">Python module</option>
-                          <option value="console-script">Console script</option>
-                        </select>
-                      </div>
-                      <div className="space-y-2 md:col-span-2">
-                        <div className="flex items-center gap-2"><FieldLabel>Upload Entrypoint</FieldLabel><FieldHint>File path, Python module name, or installed console script to launch.</FieldHint></div>
-                        <input value={uploadEntrypoint} onChange={(event) => { setUploadEntrypoint(event.target.value); resetWizardPreflightState() }} placeholder={uploadEntryMode === "python-module" ? "isaac_mcp_poc.server" : uploadEntryMode === "console-script" ? "isaac-mcp-poc" : "server.py, src/server.py, index.js"} className="field-control w-full px-3 py-2 text-sm font-mono" />
-                      </div>
                       <div className="flex flex-wrap items-center gap-3 md:col-span-2">
                         <label className="action-button cursor-pointer px-4 py-2">
                           Choose Directory
@@ -1137,7 +1153,10 @@ export default function McpConfigurationPanel({ sandboxes = [] }: McpConfigurati
                       </div>
                       {stagedUpload && (
                         <div className="rounded-sm border border-[var(--status-running)] bg-[var(--status-running-bg)] p-3 text-xs text-[var(--status-running)] md:col-span-2">
-                          Uploaded to staged server workspace: {stagedUpload.name}
+                          <div>Uploaded to staged server workspace: {stagedUpload.name}</div>
+                          <div className="mt-2 font-mono text-[11px]">
+                            Detected {stagedUpload.runtime} / {stagedUpload.entryMode} / {stagedUpload.entrypoint}
+                          </div>
                         </div>
                       )}
                     </div>
@@ -1234,6 +1253,7 @@ export default function McpConfigurationPanel({ sandboxes = [] }: McpConfigurati
                   )}
 
                   <div className="mt-5 flex flex-wrap items-center gap-3">
+                    <button onClick={cancelWizardWorkflow} disabled={saving || (!hasUploadBundle && !stagedUpload && !wizardPreflight && !wizardCandidate)} className="action-button px-4 py-2">Cancel</button>
                     <button onClick={previousWizardStep} disabled={saving || wizardStepIndex === 0} className="action-button px-4 py-2">Back</button>
                     <button onClick={handleWizardNext} disabled={saving || wizardStepIndex === WIZARD_STEPS.length - 1 || (wizardStep === "upload" && !hasUploadBundle && !stagedUpload)} className="action-button px-4 py-2">Next</button>
                   </div>

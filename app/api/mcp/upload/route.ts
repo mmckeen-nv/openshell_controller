@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server"
 import { execFile } from "node:child_process"
-import { access, mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises"
+import { access, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { promisify } from "node:util"
@@ -45,8 +45,8 @@ function parseEnv(value: unknown) {
 }
 
 function normalizeEntryMode(value: unknown) {
-  const mode = String(value || "file").trim()
-  return ENTRY_MODES.has(mode) ? mode : "file"
+  const mode = String(value || "").trim()
+  return ENTRY_MODES.has(mode) ? mode : ""
 }
 
 function normalizeUploadMode(value: unknown) {
@@ -115,6 +115,28 @@ async function findFileByName(root: string, fileName: string): Promise<string | 
   return null
 }
 
+async function findFirstExistingFile(root: string, candidates: string[]) {
+  for (const candidate of candidates) {
+    const fullPath = path.join(root, candidate)
+    if (await pathExists(fullPath)) return fullPath
+  }
+  return null
+}
+
+async function findLikelySourceFile(root: string, extension: RegExp): Promise<string | null> {
+  const entries = await readdir(root, { withFileTypes: true }).catch(() => [])
+  for (const entry of entries) {
+    if (entry.name === "node_modules" || entry.name === ".venv" || entry.name === ".git" || entry.name.startsWith(".")) continue
+    const fullPath = path.join(root, entry.name)
+    if (entry.isFile() && extension.test(entry.name)) return fullPath
+    if (entry.isDirectory()) {
+      const nested = await findLikelySourceFile(fullPath, extension)
+      if (nested) return nested
+    }
+  }
+  return null
+}
+
 async function resolveEntryPath(root: string, entrypoint: string) {
   const direct = safeEntryPath(root, entrypoint)
   if (await pathExists(direct)) return direct
@@ -149,6 +171,119 @@ async function resolveProjectRoot(root: string, entrypointPath: string | null) {
     }
   }
   return await findSingleNestedProjectRoot(root) || root
+}
+
+async function readJsonFile(filePath: string) {
+  const content = await readFile(filePath, "utf8").catch(() => "")
+  if (!content) return null
+  try {
+    return JSON.parse(content) as Record<string, any>
+  } catch {
+    return null
+  }
+}
+
+async function inferPythonConsoleScript(projectRoot: string) {
+  const pyproject = await readFile(path.join(projectRoot, "pyproject.toml"), "utf8").catch(() => "")
+  const projectScripts = pyproject.match(/\[project\.scripts\]([\s\S]*?)(?:\n\[|$)/)
+  const scriptLine = projectScripts?.[1]?.split(/\r?\n/).find((line) => /^[A-Za-z0-9_.-]+\s*=/.test(line.trim()))
+  return scriptLine?.split("=")[0]?.trim() || ""
+}
+
+async function inferUploadLaunch(root: string, runtime: string, entryMode: string, entrypoint: string) {
+  if (runtime && entryMode && entrypoint) {
+    const entrypointPath = entryMode === "file" ? await resolveEntryPath(root, entrypoint) : null
+    const projectRoot = await resolveProjectRoot(root, entrypointPath)
+    return { runtime, entryMode, entrypoint, entrypointPath, projectRoot }
+  }
+
+  const projectRoot = await resolveProjectRoot(root, null)
+  if (entryMode && entrypoint) {
+    const resolvedRuntime = runtime || (entryMode === "python-module" ? "python3" : "node")
+    const entrypointPath = entryMode === "file" ? await resolveEntryPath(root, entrypoint) : null
+    return { runtime: resolvedRuntime, entryMode, entrypoint, entrypointPath, projectRoot: await resolveProjectRoot(root, entrypointPath) }
+  }
+
+  const packageJsonPath = path.join(projectRoot, "package.json")
+  if (await pathExists(packageJsonPath)) {
+    const packageJson = await readJsonFile(packageJsonPath)
+    const bin = typeof packageJson?.bin === "string"
+      ? packageJson.bin
+      : packageJson?.bin && typeof packageJson.bin === "object"
+        ? Object.values(packageJson.bin).find((value) => typeof value === "string") as string | undefined
+        : ""
+    const main = typeof packageJson?.main === "string" ? packageJson.main : ""
+    const nodeEntry = await findFirstExistingFile(projectRoot, [
+      entrypoint,
+      main,
+      bin || "",
+      "server.js",
+      "server.mjs",
+      "index.js",
+      "index.mjs",
+      "src/server.js",
+      "src/server.mjs",
+      "src/index.js",
+      "src/index.mjs",
+      "dist/server.js",
+      "dist/index.js",
+      "build/server.js",
+      "build/index.js",
+    ].filter(Boolean))
+      || await findLikelySourceFile(projectRoot, /\.(mjs|cjs|js)$/i)
+    if (!nodeEntry) throw new Error("could not detect a Node MCP server entrypoint")
+    return {
+      runtime: runtime || "node",
+      entryMode: "file",
+      entrypoint: path.relative(root, nodeEntry).replace(/\\/g, "/"),
+      entrypointPath: nodeEntry,
+      projectRoot,
+    }
+  }
+
+  if (await pathExists(path.join(projectRoot, "pyproject.toml")) || await pathExists(path.join(projectRoot, "requirements.txt"))) {
+    const consoleScript = entryMode === "console-script" ? entrypoint : await inferPythonConsoleScript(projectRoot)
+    if (consoleScript) {
+      return {
+        runtime: runtime || "python3",
+        entryMode: "console-script",
+        entrypoint: consoleScript,
+        entrypointPath: null,
+        projectRoot,
+      }
+    }
+    const pythonEntry = await findFirstExistingFile(projectRoot, [
+      entrypoint,
+      "server.py",
+      "main.py",
+      "mcp_server.py",
+      "src/server.py",
+      "src/main.py",
+    ].filter(Boolean))
+      || await findLikelySourceFile(projectRoot, /\.py$/i)
+    if (!pythonEntry) throw new Error("could not detect a Python MCP server entrypoint")
+    return {
+      runtime: runtime || "python3",
+      entryMode: "file",
+      entrypoint: path.relative(root, pythonEntry).replace(/\\/g, "/"),
+      entrypointPath: pythonEntry,
+      projectRoot: await resolveProjectRoot(root, pythonEntry),
+    }
+  }
+
+  const genericEntry = entrypoint
+    ? await resolveEntryPath(root, entrypoint).catch(() => null)
+    : await findFirstExistingFile(root, ["server.py", "main.py", "server.js", "index.js"])
+      || await findLikelySourceFile(root, /\.(py|mjs|cjs|js)$/i)
+  if (!genericEntry) throw new Error("could not detect an MCP server entrypoint")
+  const inferredRuntime = runtime || (/\.py$/i.test(genericEntry) ? "python3" : "node")
+  return {
+    runtime: inferredRuntime,
+    entryMode: "file",
+    entrypoint: path.relative(root, genericEntry).replace(/\\/g, "/"),
+    entrypointPath: genericEntry,
+    projectRoot: await resolveProjectRoot(root, genericEntry),
+  }
 }
 
 async function runInstallCommand(command: string, args: string[], cwd: string) {
@@ -276,10 +411,9 @@ async function buildUploadCandidate({
   args: string[]
   env: Record<string, string>
 }) {
-  const entrypointPath = entryMode === "file" ? await resolveEntryPath(root, entrypoint) : null
-  const projectRoot = await resolveProjectRoot(root, entrypointPath)
-  const bootstrap = await bootstrapUploadedServer(projectRoot, runtime, entrypoint)
-  const launch = await launchCommandForUpload(projectRoot, bootstrap, entryMode, entrypoint, entrypointPath, args)
+  const inferred = await inferUploadLaunch(root, runtime, entryMode, entrypoint)
+  const bootstrap = await bootstrapUploadedServer(inferred.projectRoot, inferred.runtime, inferred.entrypoint)
+  const launch = await launchCommandForUpload(inferred.projectRoot, bootstrap, inferred.entryMode, inferred.entrypoint, inferred.entrypointPath, args)
   const candidate = {
     id,
     name,
@@ -303,7 +437,7 @@ async function buildUploadCandidate({
     source: "custom"
     enabled: boolean
   }
-  return { candidate, projectRoot, bootstrap }
+  return { candidate, projectRoot: inferred.projectRoot, bootstrap, inferred }
 }
 
 function installCandidateFrom(candidate: Awaited<ReturnType<typeof buildUploadCandidate>>["candidate"]): McpServerInstall {
@@ -371,19 +505,16 @@ export async function POST(request: Request) {
     const name = String(form.get("name") || "uploaded-server").trim()
     const id = slugify(String(form.get("id") || name))
     const summary = String(form.get("summary") || "Uploaded MCP server").trim()
-    const runtime = String(form.get("runtime") || "python3").trim()
-    const entrypoint = String(form.get("entrypoint") || "server.py").trim()
+    const runtime = String(form.get("runtime") || "").trim()
+    const entrypoint = String(form.get("entrypoint") || "").trim()
     const entryMode = normalizeEntryMode(form.get("entryMode"))
     const sandboxId = String(form.get("sandboxId") || "").trim()
     const repairEnabled = String(form.get("repair") || "true") !== "false"
     const root = path.join(UPLOAD_DIR, id)
 
-    if (!runtime) throw new Error("runtime command is required")
-    if (!entrypoint) throw new Error("entrypoint is required")
-
     if (mode === "preflight" || mode === "install-staged") {
       const root = await ensureUploadRoot(id)
-      const { candidate: initialCandidate, projectRoot, bootstrap } = await buildUploadCandidate({
+      const built = await buildUploadCandidate({
         root,
         id,
         name,
@@ -394,6 +525,10 @@ export async function POST(request: Request) {
         args: parseLines(form.get("args")),
         env: parseEnv(form.get("env")),
       })
+      const projectRoot = built.projectRoot
+      const bootstrap = built.bootstrap
+      const inferred = built.inferred
+      const initialCandidate = built.candidate
       let candidate = initialCandidate
 
       if (mode === "preflight") {
@@ -441,9 +576,9 @@ export async function POST(request: Request) {
             id,
             name,
             summary,
-            runtime,
-            entryMode,
-            entrypoint,
+            runtime: inferred.runtime,
+            entryMode: inferred.entryMode,
+            entrypoint: inferred.entrypoint,
             uploadRoot: root,
             projectRoot,
           },
@@ -493,19 +628,18 @@ export async function POST(request: Request) {
     if (!uploadedDirectory && !uploadedArchive) throw new Error("choose a directory, .zip, .tgz, .tar.gz, or .tar server upload")
 
     if (mode === "stage") {
-      const entrypointPath = entryMode === "file" ? await resolveEntryPath(root, entrypoint).catch(() => null) : null
-      const projectRoot = entrypointPath ? await resolveProjectRoot(root, entrypointPath) : await resolveProjectRoot(root, null)
+      const inferred = await inferUploadLaunch(root, runtime, entryMode, entrypoint)
       return NextResponse.json({
         ok: true,
         stagedUpload: {
           id,
           name,
           summary,
-          runtime,
-          entryMode,
-          entrypoint,
+          runtime: inferred.runtime,
+          entryMode: inferred.entryMode,
+          entrypoint: inferred.entrypoint,
           uploadRoot: root,
-          projectRoot,
+          projectRoot: inferred.projectRoot,
           selectedBundle: uploadedArchive ? "archive" : "directory",
         },
       })
