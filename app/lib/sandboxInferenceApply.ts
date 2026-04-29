@@ -7,11 +7,11 @@ const execFileAsync = promisify(execFile)
 const DOCKER_BIN = process.env.DOCKER_BIN || "docker"
 const OPENSHELL_CLUSTER_CONTAINER = process.env.OPENSHELL_CLUSTER_CONTAINER || "openshell-cluster-nemoclaw"
 
-function modelEntry(route: SandboxInferenceRoute, openClawModelRef: string, compat: Record<string, unknown> | null) {
+function modelEntry(route: SandboxInferenceRoute, compat: Record<string, unknown> | null) {
   return {
     ...(compat ? { compat } : {}),
     id: route.model,
-    name: openClawModelRef,
+    name: route.model,
     reasoning: false,
     input: ["text"],
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
@@ -78,7 +78,7 @@ function buildOpenClawConfig(current: any, routes: SandboxInferenceRoute[], prim
       api: resolved.api,
       models: [],
     }
-    providers[resolved.providerKey].models.push(modelEntry(route, resolved.modelRef, resolved.compat))
+    providers[resolved.providerKey].models.push(modelEntry(route, resolved.compat))
     if (route.id === primary.id) primaryModelRef = resolved.modelRef
   }
 

@@ -4,6 +4,7 @@ import { existsSync } from "node:fs"
 import { readFile, writeFile } from "node:fs/promises"
 import path from "node:path"
 import { promisify } from "node:util"
+import { normalizeInferenceBaseUrlForGateway } from "@/app/lib/inferenceEndpointUrl"
 import { inspectSandbox } from "@/app/lib/openshellHost"
 import {
   commandExists,
@@ -127,7 +128,8 @@ function applyConfiguredInferenceToOnboardEnv(env: NodeJS.ProcessEnv, route: Con
   }
   if (provider === "custom") {
     const endpointUrl = process.env.NEMOCLAW_ENDPOINT_URL || process.env.OPENAI_BASE_URL || process.env.VLLM_BASE_URL || ""
-    if (endpointUrl) env.NEMOCLAW_ENDPOINT_URL = endpointUrl
+    const normalizedEndpointUrl = normalizeInferenceBaseUrlForGateway(endpointUrl, "openai")
+    if (normalizedEndpointUrl) env.NEMOCLAW_ENDPOINT_URL = normalizedEndpointUrl
     const providerKey = process.env.NEMOCLAW_PROVIDER_KEY || process.env.OPENAI_API_KEY || process.env.VLLM_API_KEY || ""
     if (providerKey) env.NEMOCLAW_PROVIDER_KEY = providerKey
   }

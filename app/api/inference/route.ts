@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server"
 import { execFile } from "node:child_process"
 import { promisify } from "node:util"
+import { normalizeInferenceBaseUrlForGateway } from "@/app/lib/inferenceEndpointUrl"
 import { OPENSHELL_BIN, hostCommandEnv } from "@/app/lib/hostCommands"
 
 const execFileAsync = promisify(execFile)
@@ -144,6 +145,10 @@ export async function POST(request: Request) {
     const model = optionalString(body?.model)
     const baseUrl = optionalString(body?.baseUrl)
     const type = normalizeProviderType(requestedType, name, baseUrl)
+    const normalizedBaseUrl = normalizeInferenceBaseUrlForGateway(
+      baseUrl,
+      type === "anthropic" ? "anthropic" : "openai",
+    )
     const apiKey = optionalString(body?.apiKey)
     const credentialKey = optionalString(body?.credentialKey) || "OPENAI_API_KEY"
     const makeActive = body?.makeActive !== false
@@ -153,7 +158,7 @@ export async function POST(request: Request) {
 
     if (makeActive && !model) throw new Error("model is required when making the endpoint active")
     if (!/^[A-Z_][A-Z0-9_]*$/.test(credentialKey)) throw new Error("credential key must look like an environment variable name")
-    if (baseUrl) new URL(baseUrl)
+    if (normalizedBaseUrl) new URL(normalizedBaseUrl)
 
     const existingNames = (await readProviders()).map((provider) => provider.name).filter(Boolean)
     const providerArgs = existingNames.includes(name)
@@ -163,7 +168,7 @@ export async function POST(request: Request) {
     const providerEnv = apiKey ? { [credentialKey]: apiKey } : {}
     if (!existingNames.includes(name) && !apiKey) providerArgs.push("--from-existing")
     if (apiKey) providerArgs.push("--credential", credentialKey)
-    if (baseUrl) providerArgs.push("--config", `OPENAI_BASE_URL=${baseUrl}`)
+    if (normalizedBaseUrl) providerArgs.push("--config", `OPENAI_BASE_URL=${normalizedBaseUrl}`)
 
     const providerResult = await runOpenShell(providerArgs, providerEnv)
     let inferenceResult = null
