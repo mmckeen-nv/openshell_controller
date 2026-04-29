@@ -70,6 +70,19 @@ type McpPreflightRepairResult = {
   error?: string
 }
 
+type McpInstallSuggestion = {
+  name?: string
+  summary?: string
+  transport?: McpTransport
+  command?: string
+  args?: string[]
+  env?: Record<string, string>
+  uploadRuntime?: string
+  uploadEntryMode?: "file" | "python-module" | "console-script" | ""
+  uploadEntrypoint?: string
+  notes?: string
+}
+
 type McpSandbox = {
   id: string
   name: string
@@ -81,6 +94,8 @@ type McpConfigurationPanelProps = {
 }
 
 const REGISTRY_PAGE_SIZE = 4
+const WIZARD_STEPS = ["basics", "launch", "upload", "review"] as const
+type WizardStep = typeof WIZARD_STEPS[number]
 
 function FieldLabel({ children }: { children: React.ReactNode }) {
   return <label className="text-[10px] uppercase tracking-wider text-[var(--foreground-dim)]">{children}</label>
@@ -115,6 +130,12 @@ function parseEnv(value: string) {
   )
 }
 
+function envToText(value: Record<string, string>) {
+  return Object.entries(value)
+    .map(([key, item]) => `${key}=${item}`)
+    .join("\n")
+}
+
 export default function McpConfigurationPanel({ sandboxes = [] }: McpConfigurationPanelProps) {
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
@@ -136,6 +157,8 @@ export default function McpConfigurationPanel({ sandboxes = [] }: McpConfigurati
   const [uploadEntrypoint, setUploadEntrypoint] = useState("server.py")
   const [uploadRepair, setUploadRepair] = useState(true)
   const [repairSandboxId, setRepairSandboxId] = useState("")
+  const [installPrompt, setInstallPrompt] = useState("")
+  const [installAssistNotes, setInstallAssistNotes] = useState("")
   const [editingServerId, setEditingServerId] = useState<string | null>(null)
   const [editorText, setEditorText] = useState("")
   const [registrySearch, setRegistrySearch] = useState("github")
@@ -155,7 +178,7 @@ export default function McpConfigurationPanel({ sandboxes = [] }: McpConfigurati
   const [repoOpen, setRepoOpen] = useState(true)
   const [catalogOpen, setCatalogOpen] = useState(false)
   const [customOpen, setCustomOpen] = useState(false)
-  const [wizardStep, setWizardStep] = useState<"basics" | "launch" | "upload" | "review">("basics")
+  const [wizardStep, setWizardStep] = useState<WizardStep>("basics")
 
   const installedIds = useMemo(() => new Set(servers.map((server) => server.id)), [servers])
   const enabledCount = servers.filter((server) => server.enabled).length
@@ -166,6 +189,8 @@ export default function McpConfigurationPanel({ sandboxes = [] }: McpConfigurati
     (registryPage - 1) * REGISTRY_PAGE_SIZE,
     registryPage * REGISTRY_PAGE_SIZE,
   )
+  const wizardStepIndex = WIZARD_STEPS.indexOf(wizardStep)
+  const hasUploadBundle = Boolean(uploadArchive || uploadFiles.length > 0)
 
   async function load() {
     try {
@@ -258,6 +283,60 @@ export default function McpConfigurationPanel({ sandboxes = [] }: McpConfigurati
     } finally {
       setSaving(false)
     }
+  }
+
+  function applyInstallSuggestion(suggestion: McpInstallSuggestion) {
+    if (suggestion.name) setCustomName(suggestion.name)
+    if (suggestion.summary) setCustomSummary(suggestion.summary)
+    if (suggestion.transport) setCustomTransport(suggestion.transport)
+    if (suggestion.command) setCustomCommand(suggestion.command)
+    if (Array.isArray(suggestion.args)) setCustomArgs(suggestion.args.join("\n"))
+    if (suggestion.env) setCustomEnv(envToText(suggestion.env))
+    if (suggestion.uploadRuntime) setUploadRuntime(suggestion.uploadRuntime)
+    if (suggestion.uploadEntryMode) setUploadEntryMode(suggestion.uploadEntryMode)
+    if (suggestion.uploadEntrypoint) setUploadEntrypoint(suggestion.uploadEntrypoint)
+    if (suggestion.notes) setInstallAssistNotes(suggestion.notes)
+  }
+
+  async function assistInstall() {
+    try {
+      setSaving(true)
+      const response = await fetch("/api/mcp/install-assist", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          prompt: installPrompt,
+          current: {
+            name: customName,
+            summary: customSummary,
+            transport: customTransport,
+            command: customCommand,
+            args: parseLines(customArgs),
+            env: parseEnv(customEnv),
+            uploadRuntime,
+            uploadEntryMode,
+            uploadEntrypoint,
+          },
+        }),
+      })
+      const data = await response.json() as { suggestion?: McpInstallSuggestion; error?: string }
+      if (!response.ok || !data.suggestion) throw new Error(data.error || "Failed to draft MCP install")
+      applyInstallSuggestion(data.suggestion)
+      setWizardStep("launch")
+      setMessage("Install wizard fields drafted from the running LLM endpoint.")
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Failed to draft MCP install")
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  function nextWizardStep() {
+    setWizardStep(WIZARD_STEPS[Math.min(WIZARD_STEPS.length - 1, wizardStepIndex + 1)])
+  }
+
+  function previousWizardStep() {
+    setWizardStep(WIZARD_STEPS[Math.max(0, wizardStepIndex - 1)])
   }
 
   async function postUpdate(body: Record<string, unknown>, success: string) {
@@ -892,78 +971,136 @@ export default function McpConfigurationPanel({ sandboxes = [] }: McpConfigurati
                       </button>
                     ))}
                   </div>
-                  <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-                    <div className="space-y-2">
-                      <div className="flex items-center gap-2"><FieldLabel>Name</FieldLabel><FieldHint>Stable display name and default id for this MCP server.</FieldHint></div>
-                      <input value={customName} onChange={(event) => setCustomName(event.target.value)} className="field-control w-full px-3 py-2 text-sm font-mono" />
+                  {wizardStep === "basics" && (
+                    <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                      <div className="space-y-2 md:col-span-2">
+                        <div className="flex items-center gap-2"><FieldLabel>Assist Install</FieldLabel><FieldHint>Describe the MCP server and the running LLM endpoint will draft the install fields.</FieldHint></div>
+                        <textarea value={installPrompt} onChange={(event) => setInstallPrompt(event.target.value)} rows={4} placeholder="Install the GitHub MCP server with npx, or prepare this uploaded Python MCP bundle." className="field-control w-full resize-y px-3 py-2 text-sm" />
+                      </div>
+                      <div className="space-y-2">
+                        <div className="flex items-center gap-2"><FieldLabel>Name</FieldLabel><FieldHint>Stable display name and default id for this MCP server.</FieldHint></div>
+                        <input value={customName} onChange={(event) => setCustomName(event.target.value)} className="field-control w-full px-3 py-2 text-sm font-mono" />
+                      </div>
+                      <div className="space-y-2">
+                        <div className="flex items-center gap-2"><FieldLabel>Transport</FieldLabel><FieldHint>Use stdio for local commands, HTTP for remote streamable MCP endpoints.</FieldHint></div>
+                        <select value={customTransport} onChange={(event) => setCustomTransport(event.target.value as McpTransport)} className="field-control w-full px-3 py-2 text-sm font-mono">
+                          <option value="stdio">stdio</option>
+                          <option value="http">http</option>
+                        </select>
+                      </div>
+                      <div className="space-y-2 md:col-span-2">
+                        <div className="flex items-center gap-2"><FieldLabel>Summary</FieldLabel><FieldHint>Short note shown in the installed server list.</FieldHint></div>
+                        <input value={customSummary} onChange={(event) => setCustomSummary(event.target.value)} className="field-control w-full px-3 py-2 text-sm" />
+                      </div>
+                      {installAssistNotes && (
+                        <div className="rounded-sm border border-[var(--border-subtle)] bg-[var(--background)] p-3 text-xs text-[var(--foreground-dim)] md:col-span-2">
+                          {installAssistNotes}
+                        </div>
+                      )}
                     </div>
-                    <div className="space-y-2">
-                      <div className="flex items-center gap-2"><FieldLabel>Transport</FieldLabel><FieldHint>Use stdio for local commands, HTTP for remote streamable MCP endpoints.</FieldHint></div>
-                      <select value={customTransport} onChange={(event) => setCustomTransport(event.target.value as McpTransport)} className="field-control w-full px-3 py-2 text-sm font-mono">
-                        <option value="stdio">stdio</option>
-                        <option value="http">http</option>
-                      </select>
+                  )}
+
+                  {wizardStep === "launch" && (
+                    <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                      <div className="space-y-2 md:col-span-2">
+                        <div className="flex items-center gap-2"><FieldLabel>{customTransport === "http" ? "URL" : "Command"}</FieldLabel><FieldHint>{customTransport === "http" ? "Full remote MCP endpoint URL." : "Executable available to the controller, such as npx, uvx, node, or python."}</FieldHint></div>
+                        <input value={customCommand} onChange={(event) => setCustomCommand(event.target.value)} placeholder={customTransport === "http" ? "https://mcp.example.com/mcp" : "npx, uvx, node, python"} className="field-control w-full px-3 py-2 text-sm font-mono" />
+                      </div>
+                      <div className="space-y-2">
+                        <div className="flex items-center gap-2"><FieldLabel>Args</FieldLabel><FieldHint>One argument per line, passed to the command in order.</FieldHint></div>
+                        <textarea value={customArgs} onChange={(event) => setCustomArgs(event.target.value)} rows={8} className="field-control w-full resize-y px-3 py-2 text-sm font-mono" />
+                      </div>
+                      <div className="space-y-2">
+                        <div className="flex items-center gap-2"><FieldLabel>{customTransport === "http" ? "Headers" : "Env"}</FieldLabel><FieldHint>KEY=value lines. HTTP entries become headers; stdio entries become environment variables.</FieldHint></div>
+                        <textarea value={customEnv} onChange={(event) => setCustomEnv(event.target.value)} rows={8} placeholder={customTransport === "http" ? "Authorization=Bearer token" : "API_KEY=value\nBASE_URL=http://localhost:3000"} className="field-control w-full resize-y px-3 py-2 text-sm font-mono" />
+                      </div>
                     </div>
-                    <div className="space-y-2 md:col-span-2">
-                      <div className="flex items-center gap-2"><FieldLabel>Summary</FieldLabel><FieldHint>Short note shown in the installed server list.</FieldHint></div>
-                      <input value={customSummary} onChange={(event) => setCustomSummary(event.target.value)} className="field-control w-full px-3 py-2 text-sm" />
+                  )}
+
+                  {wizardStep === "upload" && (
+                    <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                      <div className="space-y-2">
+                        <div className="flex items-center gap-2"><FieldLabel>Upload Runtime</FieldLabel><FieldHint>Runtime used to bootstrap uploaded bundles before preflight.</FieldHint></div>
+                        <input value={uploadRuntime} onChange={(event) => setUploadRuntime(event.target.value)} placeholder="python3, node, uv, uvx" className="field-control w-full px-3 py-2 text-sm font-mono" />
+                      </div>
+                      <div className="space-y-2">
+                        <div className="flex items-center gap-2"><FieldLabel>Upload Launch Mode</FieldLabel><FieldHint>How the uploaded server should start after dependencies are installed.</FieldHint></div>
+                        <select value={uploadEntryMode} onChange={(event) => setUploadEntryMode(event.target.value as "file" | "python-module" | "console-script")} className="field-control w-full px-3 py-2 text-sm font-mono">
+                          <option value="file">File</option>
+                          <option value="python-module">Python module</option>
+                          <option value="console-script">Console script</option>
+                        </select>
+                      </div>
+                      <div className="space-y-2 md:col-span-2">
+                        <div className="flex items-center gap-2"><FieldLabel>Upload Entrypoint</FieldLabel><FieldHint>File path, Python module name, or installed console script to launch.</FieldHint></div>
+                        <input value={uploadEntrypoint} onChange={(event) => setUploadEntrypoint(event.target.value)} placeholder={uploadEntryMode === "python-module" ? "isaac_mcp_poc.server" : uploadEntryMode === "console-script" ? "isaac-mcp-poc" : "server.py, src/server.py, index.js"} className="field-control w-full px-3 py-2 text-sm font-mono" />
+                      </div>
+                      <div className="space-y-2">
+                        <div className="flex items-center gap-2"><FieldLabel>Preflight Repair</FieldLabel><FieldHint>When preflight fails, ask the running LLM endpoint for a bounded repair and run preflight again.</FieldHint></div>
+                        <label className="flex min-h-10 items-center justify-between gap-3 rounded-sm border border-[var(--border-subtle)] bg-[var(--background)] px-3 py-2 text-xs text-[var(--foreground)]">
+                          <span>Use sandbox LLM on failed uploads</span>
+                          <input type="checkbox" checked={uploadRepair} onChange={(event) => setUploadRepair(event.target.checked)} className="h-4 w-4 accent-[var(--nvidia-green)]" />
+                        </label>
+                      </div>
+                      <div className="space-y-2">
+                        <div className="flex items-center gap-2"><FieldLabel>Repair Route</FieldLabel><FieldHint>Optional sandbox whose configured model should be used for repair assistance.</FieldHint></div>
+                        <select value={repairSandboxId} onChange={(event) => setRepairSandboxId(event.target.value)} disabled={!uploadRepair} className="field-control w-full px-3 py-2 text-sm font-mono">
+                          <option value="">Default controller model</option>
+                          {sandboxes.map((sandbox) => (
+                            <option key={sandbox.id} value={sandbox.id}>{sandbox.name}</option>
+                          ))}
+                        </select>
+                      </div>
+                      <div className="flex flex-wrap items-center gap-3 md:col-span-2">
+                        <label className="action-button cursor-pointer px-4 py-2">
+                          Choose Directory
+                          <input type="file" multiple onChange={(event) => chooseUploadDirectory(event.target.files)} className="sr-only" {...({ webkitdirectory: "", directory: "" } as Record<string, string>)} />
+                        </label>
+                        <label className="action-button cursor-pointer px-4 py-2">
+                          Choose Archive
+                          <input type="file" accept=".zip,.tgz,.tar.gz,.tar,application/zip,application/gzip,application/x-tar" onChange={(event) => chooseUploadArchive(event.target.files?.[0] || null)} className="sr-only" />
+                        </label>
+                        {(uploadArchive || uploadFiles.length > 0) && (
+                          <span className="text-xs font-mono text-[var(--foreground-dim)]">
+                            {uploadArchive ? uploadArchive.name : `${uploadFiles.length} file${uploadFiles.length === 1 ? "" : "s"}`}
+                          </span>
+                        )}
+                      </div>
                     </div>
-                    <div className="space-y-2 md:col-span-2">
-                      <div className="flex items-center gap-2"><FieldLabel>{customTransport === "http" ? "URL" : "Command"}</FieldLabel><FieldHint>{customTransport === "http" ? "Full remote MCP endpoint URL." : "Executable available to the controller, such as npx, uvx, node, or python."}</FieldHint></div>
-                      <input value={customCommand} onChange={(event) => setCustomCommand(event.target.value)} placeholder={customTransport === "http" ? "https://mcp.example.com/mcp" : "npx, uvx, node, python"} className="field-control w-full px-3 py-2 text-sm font-mono" />
+                  )}
+
+                  {wizardStep === "review" && (
+                    <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+                      <div className="rounded-sm border border-[var(--border-subtle)] bg-[var(--background)] p-4">
+                        <h3 className="text-xs font-semibold uppercase tracking-wider text-[var(--foreground)]">Command Install</h3>
+                        <pre className="mt-3 overflow-auto text-[11px] leading-5 text-[var(--foreground-dim)]">{JSON.stringify({
+                          id: customName,
+                          name: customName,
+                          summary: customSummary,
+                          transport: customTransport,
+                          command: customCommand,
+                          args: parseLines(customArgs),
+                          env: parseEnv(customEnv),
+                        }, null, 2)}</pre>
+                      </div>
+                      <div className="rounded-sm border border-[var(--border-subtle)] bg-[var(--background)] p-4">
+                        <h3 className="text-xs font-semibold uppercase tracking-wider text-[var(--foreground)]">Upload Install</h3>
+                        <pre className="mt-3 overflow-auto text-[11px] leading-5 text-[var(--foreground-dim)]">{JSON.stringify({
+                          selectedBundle: uploadArchive?.name || (uploadFiles.length > 0 ? `${uploadFiles.length} files` : "none"),
+                          runtime: uploadRuntime,
+                          entryMode: uploadEntryMode,
+                          entrypoint: uploadEntrypoint,
+                          repair: uploadRepair,
+                          repairSandboxId: repairSandboxId || null,
+                        }, null, 2)}</pre>
+                      </div>
                     </div>
-                    <div className="space-y-2">
-                      <div className="flex items-center gap-2"><FieldLabel>Args</FieldLabel><FieldHint>One argument per line, passed to the command in order.</FieldHint></div>
-                      <textarea value={customArgs} onChange={(event) => setCustomArgs(event.target.value)} rows={6} className="field-control w-full resize-y px-3 py-2 text-sm font-mono" />
-                    </div>
-                    <div className="space-y-2">
-                      <div className="flex items-center gap-2"><FieldLabel>{customTransport === "http" ? "Headers" : "Env"}</FieldLabel><FieldHint>KEY=value lines. HTTP entries become headers; stdio entries become environment variables.</FieldHint></div>
-                      <textarea value={customEnv} onChange={(event) => setCustomEnv(event.target.value)} rows={6} placeholder={customTransport === "http" ? "Authorization=Bearer token" : "API_KEY=value\nBASE_URL=http://localhost:3000"} className="field-control w-full resize-y px-3 py-2 text-sm font-mono" />
-                    </div>
-                    <div className="space-y-2">
-                      <div className="flex items-center gap-2"><FieldLabel>Upload Runtime</FieldLabel><FieldHint>Runtime used to bootstrap uploaded bundles before preflight.</FieldHint></div>
-                      <input value={uploadRuntime} onChange={(event) => setUploadRuntime(event.target.value)} placeholder="python3, node, uv, uvx" className="field-control w-full px-3 py-2 text-sm font-mono" />
-                    </div>
-                    <div className="space-y-2">
-                      <div className="flex items-center gap-2"><FieldLabel>Upload Launch Mode</FieldLabel><FieldHint>How the uploaded server should start after dependencies are installed.</FieldHint></div>
-                      <select value={uploadEntryMode} onChange={(event) => setUploadEntryMode(event.target.value as "file" | "python-module" | "console-script")} className="field-control w-full px-3 py-2 text-sm font-mono">
-                        <option value="file">File</option>
-                        <option value="python-module">Python module</option>
-                        <option value="console-script">Console script</option>
-                      </select>
-                    </div>
-                    <div className="space-y-2">
-                      <div className="flex items-center gap-2"><FieldLabel>Upload Entrypoint</FieldLabel><FieldHint>File path, Python module name, or installed console script to launch.</FieldHint></div>
-                      <input value={uploadEntrypoint} onChange={(event) => setUploadEntrypoint(event.target.value)} placeholder={uploadEntryMode === "python-module" ? "isaac_mcp_poc.server" : uploadEntryMode === "console-script" ? "isaac-mcp-poc" : "server.py, src/server.py, index.js"} className="field-control w-full px-3 py-2 text-sm font-mono" />
-                    </div>
-                    <div className="space-y-2">
-                      <div className="flex items-center gap-2"><FieldLabel>Preflight Repair</FieldLabel><FieldHint>When preflight fails, ask the running LLM endpoint for a bounded repair and run preflight again.</FieldHint></div>
-                      <label className="flex min-h-10 items-center justify-between gap-3 rounded-sm border border-[var(--border-subtle)] bg-[var(--background)] px-3 py-2 text-xs text-[var(--foreground)]">
-                        <span>Use sandbox LLM on failed uploads</span>
-                        <input
-                          type="checkbox"
-                          checked={uploadRepair}
-                          onChange={(event) => setUploadRepair(event.target.checked)}
-                          className="h-4 w-4 accent-[var(--nvidia-green)]"
-                        />
-                      </label>
-                    </div>
-                    <div className="space-y-2">
-                      <div className="flex items-center gap-2"><FieldLabel>Repair Route</FieldLabel><FieldHint>Optional sandbox whose configured model should be used for repair assistance.</FieldHint></div>
-                      <select
-                        value={repairSandboxId}
-                        onChange={(event) => setRepairSandboxId(event.target.value)}
-                        disabled={!uploadRepair}
-                        className="field-control w-full px-3 py-2 text-sm font-mono"
-                      >
-                        <option value="">Default controller model</option>
-                        {sandboxes.map((sandbox) => (
-                          <option key={sandbox.id} value={sandbox.id}>{sandbox.name}</option>
-                        ))}
-                      </select>
-                    </div>
-                  </div>
+                  )}
+
                   <div className="mt-5 flex flex-wrap items-center gap-3">
+                    <button onClick={previousWizardStep} disabled={saving || wizardStepIndex === 0} className="action-button px-4 py-2">Back</button>
+                    <button onClick={nextWizardStep} disabled={saving || wizardStepIndex === WIZARD_STEPS.length - 1} className="action-button px-4 py-2">Next</button>
+                    <button onClick={assistInstall} disabled={saving || !installPrompt.trim()} className="action-button px-4 py-2">Assist Install</button>
                     <button
                       onClick={() => postUpdate({
                         action: "install",
@@ -982,37 +1119,13 @@ export default function McpConfigurationPanel({ sandboxes = [] }: McpConfigurati
                     >
                       Install Server Command
                     </button>
-                    <label className="action-button cursor-pointer px-4 py-2">
-                      Choose Directory
-                      <input
-                        type="file"
-                        multiple
-                        onChange={(event) => chooseUploadDirectory(event.target.files)}
-                        className="sr-only"
-                        {...({ webkitdirectory: "", directory: "" } as Record<string, string>)}
-                      />
-                    </label>
-                    <label className="action-button cursor-pointer px-4 py-2">
-                      Choose Archive
-                      <input
-                        type="file"
-                        accept=".zip,.tgz,.tar.gz,.tar,application/zip,application/gzip,application/x-tar"
-                        onChange={(event) => chooseUploadArchive(event.target.files?.[0] || null)}
-                        className="sr-only"
-                      />
-                    </label>
                     <button
                       onClick={uploadServer}
-                      disabled={saving || (!uploadArchive && uploadFiles.length === 0)}
+                      disabled={saving || !hasUploadBundle}
                       className="action-button px-4 py-2"
                     >
-                      Upload Server
+                      Upload and Preflight
                     </button>
-                    {(uploadArchive || uploadFiles.length > 0) && (
-                      <span className="text-xs font-mono text-[var(--foreground-dim)]">
-                        {uploadArchive ? uploadArchive.name : `${uploadFiles.length} file${uploadFiles.length === 1 ? "" : "s"}`}
-                      </span>
-                    )}
                   </div>
                 </div>
               )}
