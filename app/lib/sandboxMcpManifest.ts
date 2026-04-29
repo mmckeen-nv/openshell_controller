@@ -1,5 +1,10 @@
 import { revokeSandboxMcpBrokerSession, rotateSandboxMcpBrokerSession } from "./mcpBrokerStore"
 import { resolveSandboxName } from "./sandboxFiles"
+import {
+  OPENSHELL_CONTROL_MCP_SERVER_NAME,
+  syncSandboxOpenClawMcpConfig,
+  revokeSandboxOpenClawMcpConfig,
+} from "./sandboxOpenClawMcpConfig"
 import { writeSandboxFilePrivileged } from "./sandboxPrivilegedFiles"
 
 export const SANDBOX_MCP_MANIFEST_PATH = "/sandbox/openshell_control_mcp.md"
@@ -40,8 +45,13 @@ export async function buildSandboxMcpBrokerHandoff(
       "",
       "## Broker Endpoints",
       "",
+      `- MCP: \`${brokerBaseUrl}/mcp\``,
       `- Capabilities: \`${brokerBaseUrl}/capabilities\``,
       `- Call: \`${brokerBaseUrl}/call\``,
+      "",
+      "## OpenClaw",
+      "",
+      `OpenShell Control also configures OpenClaw MCP server \`${OPENSHELL_CONTROL_MCP_SERVER_NAME}\` to use the MCP endpoint above.`,
       "",
       "## Authentication",
       "",
@@ -73,6 +83,11 @@ export async function syncSandboxMcpManifest(
     SANDBOX_MCP_MANIFEST_PATH,
     Buffer.from(handoff.markdown, "utf8"),
   )
+  const openClaw = await syncSandboxOpenClawMcpConfig(
+    sandboxName,
+    options.brokerBaseUrl,
+    handoff.token,
+  )
 
   return {
     path: uploaded.path,
@@ -85,6 +100,7 @@ export async function syncSandboxMcpManifest(
       rotatedAt: handoff.session.rotatedAt,
       expiresAt: handoff.session.expiresAt,
     },
+    openClaw,
     markdown: handoff.markdown,
   }
 }
@@ -110,6 +126,7 @@ export async function revokeSandboxMcpManifest(sandbox: SandboxRef) {
     SANDBOX_MCP_MANIFEST_PATH,
     Buffer.from(markdown, "utf8"),
   )
+  const openClaw = await revokeSandboxOpenClawMcpConfig(sandboxName)
 
   return {
     path: uploaded.path,
@@ -122,6 +139,7 @@ export async function revokeSandboxMcpManifest(sandbox: SandboxRef) {
       rotatedAt: session.rotatedAt,
       expiresAt: session.expiresAt,
     } : null,
+    openClaw,
     markdown,
   }
 }

@@ -28,8 +28,11 @@ export async function GET(
         "",
         "This preview omits the broker token. Use POST to issue and write a live broker config.",
         "",
+        `- MCP: \`${brokerUrl}/mcp\``,
         `- Capabilities: \`${brokerUrl}/capabilities\``,
         `- Call: \`${brokerUrl}/call\``,
+        "",
+        "OpenClaw will receive an `openshell-control` MCP server entry that uses the MCP endpoint.",
         "",
       ].join("\n"),
     })
@@ -74,7 +77,7 @@ export async function POST(
       sandboxId,
       synced,
       network,
-      note: `Issued MCP broker config at ${synced.path}.`,
+      note: `Issued MCP broker config at ${synced.path} and ${synced.openClaw.path}.`,
     })
   } catch (error) {
     const message = error instanceof Error ? error.message : "Failed to issue MCP broker config"

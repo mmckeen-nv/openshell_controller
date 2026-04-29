@@ -5,16 +5,38 @@ import {
   verifySandboxMcpBrokerToken,
 } from "@/app/lib/mcpBrokerStore"
 import { callBrokerServerTool } from "@/app/lib/mcpBrokerClient"
+import {
+  brokerMcpUnauthorizedError,
+  handleBrokerMcpJsonRpcBody,
+  isBrokerMcpJsonRpcBody,
+} from "@/app/lib/mcpBrokerProtocol"
+
+function jsonRpcResponse(payload: unknown, status = 200) {
+  return NextResponse.json(payload, {
+    status,
+    headers: { "Cache-Control": "no-store" },
+  })
+}
 
 export async function POST(request: Request) {
   try {
+    const body = await request.json().catch(() => ({}))
     const token = readBrokerToken(request)
     const session = token ? await verifySandboxMcpBrokerToken(token) : null
+    const isMcpJsonRpc = isBrokerMcpJsonRpcBody(body)
     if (!session) {
+      if (isMcpJsonRpc) return jsonRpcResponse(brokerMcpUnauthorizedError(), 401)
       return NextResponse.json({ ok: false, error: "MCP broker is unavailable for this sandbox." }, { status: 401 })
     }
 
-    const body = await request.json().catch(() => ({}))
+    if (isMcpJsonRpc) {
+      const response = await handleBrokerMcpJsonRpcBody(session, body)
+      if (response.body === null) {
+        return new Response(null, { status: response.status, headers: { "Cache-Control": "no-store" } })
+      }
+      return jsonRpcResponse(response.body, response.status)
+    }
+
     const requestedServerId = typeof body?.serverId === "string" ? body.serverId : ""
     const toolName = typeof body?.toolName === "string" ? body.toolName : ""
     const toolArguments = body?.arguments && typeof body.arguments === "object" && !Array.isArray(body.arguments)

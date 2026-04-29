@@ -305,11 +305,10 @@ export default function SandboxList({
       enabled: true,
       accessMode: server.accessMode === 'allow_all' ? 'allow_all' : 'allow_only',
       allowedSandboxIds: Array.from(current),
-    }, `${server.name} enabled for ${sandbox.name}.`).then(() => syncMcpManifest(sandbox))
+    }, `${server.name} enabled for ${sandbox.name}.`)
   }
 
   const revokeMcpForSandbox = (sandbox: SandboxInventoryItem, server: McpServerAccess) => {
-    const hasOtherMcpAccess = mcpServers.some((candidate) => candidate.id !== server.id && sandboxCanAccessMcpServer(sandbox, candidate))
     const current = new Set(server.allowedSandboxIds)
     current.delete(sandbox.id)
     current.delete(sandbox.name)
@@ -321,7 +320,7 @@ export default function SandboxList({
     return updateMcpServerAccess(server, {
       accessMode: 'allow_only',
       allowedSandboxIds: Array.from(current),
-    }, `${server.name} revoked from ${sandbox.name}.`).then(() => syncMcpManifest(sandbox, hasOtherMcpAccess ? 'sync' : 'revoke'))
+    }, `${server.name} revoked from ${sandbox.name}.`)
   }
 
   const resolvePermissionRequest = async (sandbox: SandboxInventoryItem, action: 'approve' | 'reject', chunkId: string) => {
@@ -613,7 +612,7 @@ export default function SandboxList({
                     <div>
                       <h4 className="text-xs font-semibold uppercase tracking-wider text-[var(--foreground)]">Sandbox Manifest</h4>
                       <p className="mt-1 text-xs text-[var(--foreground-dim)]">
-                        Writes <span className="font-mono text-[var(--foreground)]">/sandbox/openshell_control_mcp.md</span> with broker URL and sandbox token only.
+                        Writes <span className="font-mono text-[var(--foreground)]">/sandbox/openshell_control_mcp.md</span> and configures OpenClaw to use the broker MCP endpoint.
                       </p>
                     </div>
                     <button

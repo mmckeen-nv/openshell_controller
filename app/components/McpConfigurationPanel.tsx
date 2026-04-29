@@ -402,34 +402,12 @@ export default function McpConfigurationPanel({ sandboxes = [] }: McpConfigurati
     current.delete(sandbox.id)
     current.delete(sandbox.name)
     if (allowed) current.add(sandbox.id)
-    const hasOtherMcpAccess = servers.some((candidate) => candidate.id !== server.id && sandboxAllowed(candidate, sandbox))
     return postUpdate({
       action: "update-access",
       serverId: server.id,
       accessMode: "allow_only",
       allowedSandboxIds: Array.from(current),
-    }, `${server.name} sandbox access updated.`).then((updated) => {
-      if (!updated) return
-      return syncSandboxBrokerConfig(sandbox, allowed || hasOtherMcpAccess ? "sync" : "revoke")
-    })
-  }
-
-  async function syncSandboxBrokerConfig(sandbox: McpSandbox, action: "sync" | "revoke" = "sync") {
-    try {
-      setSaving(true)
-      const response = await fetch(`/api/sandbox/${encodeURIComponent(sandbox.id)}/mcp`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sandboxName: sandbox.name, action }),
-      })
-      const data = await response.json()
-      if (!response.ok) throw new Error(data.error || "Failed to sync MCP broker config")
-      setMessage(data.note || (action === "revoke" ? `${sandbox.name} MCP broker config revoked.` : `${sandbox.name} MCP broker config synced.`))
-    } catch (error) {
-      setMessage(error instanceof Error ? error.message : "Failed to sync MCP broker config")
-    } finally {
-      setSaving(false)
-    }
+    }, `${server.name} sandbox access updated.`)
   }
 
   async function syncAccessModeChange(server: McpServerInstall, accessMode: string) {
@@ -439,20 +417,6 @@ export default function McpConfigurationPanel({ sandboxes = [] }: McpConfigurati
       accessMode,
     }, `${server.name} availability updated.`)
     if (!updated) return
-
-    if (accessMode === "allow_all") {
-      await Promise.all(sandboxes.map((sandbox) => syncSandboxBrokerConfig(sandbox)))
-      return
-    }
-
-    if (accessMode === "disabled") {
-      await Promise.all(sandboxes
-        .filter((sandbox) => sandboxAllowed(server, sandbox))
-        .map((sandbox) => {
-          const hasOtherMcpAccess = servers.some((candidate) => candidate.id !== server.id && sandboxAllowed(candidate, sandbox))
-          return syncSandboxBrokerConfig(sandbox, hasOtherMcpAccess ? "sync" : "revoke")
-        }))
-    }
   }
 
   async function setServerEnabled(server: McpServerInstall, enabled: boolean) {
@@ -462,12 +426,6 @@ export default function McpConfigurationPanel({ sandboxes = [] }: McpConfigurati
       enabled,
     }, `${server.name} ${enabled ? "enabled" : "disabled"}.`)
     if (!updated) return
-
-    const affectedSandboxes = sandboxes.filter((sandbox) => sandboxAllowed(server, sandbox))
-    await Promise.all(affectedSandboxes.map((sandbox) => {
-      const hasOtherMcpAccess = servers.some((candidate) => candidate.id !== server.id && sandboxAllowed(candidate, sandbox))
-      return syncSandboxBrokerConfig(sandbox, enabled || hasOtherMcpAccess ? "sync" : "revoke")
-    }))
   }
 
   function editableServerJson(server: McpServerInstall) {

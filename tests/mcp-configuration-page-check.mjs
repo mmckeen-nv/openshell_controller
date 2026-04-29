@@ -7,6 +7,8 @@ const root = process.cwd()
 const storePath = path.join(root, 'app/lib/mcpServerStore.ts')
 const brokerStorePath = path.join(root, 'app/lib/mcpBrokerStore.ts')
 const brokerClientPath = path.join(root, 'app/lib/mcpBrokerClient.ts')
+const brokerProtocolPath = path.join(root, 'app/lib/mcpBrokerProtocol.ts')
+const sandboxAutoSyncPath = path.join(root, 'app/lib/mcpSandboxAutoSync.ts')
 const manifestPath = path.join(root, 'app/lib/sandboxMcpManifest.ts')
 const privilegedFilesPath = path.join(root, 'app/lib/sandboxPrivilegedFiles.ts')
 const routePath = path.join(root, 'app/api/mcp/route.ts')
@@ -21,8 +23,10 @@ const registryStorePath = path.join(root, 'app/lib/mcpRegistryStore.ts')
 const inferenceModelPath = path.join(root, 'app/lib/inferenceModel.ts')
 const brokerCapabilitiesRoutePath = path.join(root, 'app/api/mcp/broker/capabilities/route.ts')
 const brokerCallRoutePath = path.join(root, 'app/api/mcp/broker/call/route.ts')
+const brokerMcpRoutePath = path.join(root, 'app/api/mcp/broker/mcp/route.ts')
 const sandboxMcpRoutePath = path.join(root, 'app/api/sandbox/[sandboxId]/mcp/route.ts')
 const brokerUrlPath = path.join(root, 'app/lib/mcpBrokerUrl.ts')
+const sandboxOpenClawMcpConfigPath = path.join(root, 'app/lib/sandboxOpenClawMcpConfig.ts')
 const preflightLibPath = path.join(root, 'app/lib/mcpPreflight.ts')
 const preflightRepairLibPath = path.join(root, 'app/lib/mcpPreflightRepair.ts')
 const mcpServerSpecsPath = path.join(root, 'mcp_server_specs.md')
@@ -33,10 +37,12 @@ const sidebarPath = path.join(root, 'app/components/Sidebar.tsx')
 const sandboxListPath = path.join(root, 'app/components/SandboxList.tsx')
 const pagePath = path.join(root, 'app/page.tsx')
 
-const [storeSource, brokerStoreSource, brokerClientSource, manifestSource, privilegedFilesSource, routeSource, uploadRouteSource, preflightRouteSource, healthRouteSource, registryRouteSource, registriesRouteSource, registriesAssistRouteSource, installAssistRouteSource, registryStoreSource, inferenceModelSource, brokerCapabilitiesRouteSource, brokerCallRouteSource, sandboxMcpRouteSource, brokerUrlSource, preflightLibSource, preflightRepairLibSource, mcpServerSpecsSource, middlewareSource, panelSource, helpSource, sidebarSource, sandboxListSource, pageSource] = await Promise.all([
+const [storeSource, brokerStoreSource, brokerClientSource, brokerProtocolSource, sandboxAutoSyncSource, manifestSource, privilegedFilesSource, routeSource, uploadRouteSource, preflightRouteSource, healthRouteSource, registryRouteSource, registriesRouteSource, registriesAssistRouteSource, installAssistRouteSource, registryStoreSource, inferenceModelSource, brokerCapabilitiesRouteSource, brokerCallRouteSource, brokerMcpRouteSource, sandboxMcpRouteSource, brokerUrlSource, sandboxOpenClawMcpConfigSource, preflightLibSource, preflightRepairLibSource, mcpServerSpecsSource, middlewareSource, panelSource, helpSource, sidebarSource, sandboxListSource, pageSource] = await Promise.all([
   readFile(storePath, 'utf8'),
   readFile(brokerStorePath, 'utf8'),
   readFile(brokerClientPath, 'utf8'),
+  readFile(brokerProtocolPath, 'utf8'),
+  readFile(sandboxAutoSyncPath, 'utf8'),
   readFile(manifestPath, 'utf8'),
   readFile(privilegedFilesPath, 'utf8'),
   readFile(routePath, 'utf8'),
@@ -51,8 +57,10 @@ const [storeSource, brokerStoreSource, brokerClientSource, manifestSource, privi
   readFile(inferenceModelPath, 'utf8'),
   readFile(brokerCapabilitiesRoutePath, 'utf8'),
   readFile(brokerCallRoutePath, 'utf8'),
+  readFile(brokerMcpRoutePath, 'utf8'),
   readFile(sandboxMcpRoutePath, 'utf8'),
   readFile(brokerUrlPath, 'utf8'),
+  readFile(sandboxOpenClawMcpConfigPath, 'utf8'),
   readFile(preflightLibPath, 'utf8'),
   readFile(preflightRepairLibPath, 'utf8'),
   readFile(mcpServerSpecsPath, 'utf8'),
@@ -82,9 +90,19 @@ assert.match(brokerClientSource, /@modelcontextprotocol\/sdk\/client\/index\.js/
 assert.match(brokerClientSource, /StdioClientTransport/, 'MCP broker must support stdio servers')
 assert.match(brokerClientSource, /StreamableHTTPClientTransport/, 'MCP broker must support streamable HTTP servers')
 assert.match(brokerClientSource, /callBrokerServerTool/, 'MCP broker must forward allowed tool calls')
+assert.match(brokerProtocolSource, /tools\/list/, 'MCP broker protocol adapter must expose an MCP tools/list JSON-RPC method')
+assert.match(brokerProtocolSource, /tools\/call/, 'MCP broker protocol adapter must expose an MCP tools/call JSON-RPC method')
+assert.match(brokerProtocolSource, /listAllowedBrokerServers/, 'MCP broker protocol adapter must reuse broker access policy')
+assert.match(brokerProtocolSource, /reserveToolName/, 'MCP broker protocol adapter must namespace tools by broker server')
+assert.match(sandboxAutoSyncSource, /autoSyncSandboxMcpAccess/, 'MCP access updates must have a server-side sandbox sync helper')
+assert.match(sandboxAutoSyncSource, /syncSandboxMcpManifest/, 'MCP access grants must issue sandbox OpenClaw MCP config')
+assert.match(sandboxAutoSyncSource, /revokeSandboxMcpManifest/, 'MCP access revokes must remove sandbox OpenClaw MCP config when no access remains')
+assert.match(sandboxAutoSyncSource, /changedServerAccessChanged/, 'MCP sandbox auto-sync must target sandboxes touched by the changed server')
 assert.match(manifestSource, /openshell_control_mcp\.md/, 'MCP sandbox manifest must use the requested filename')
 assert.match(manifestSource, /syncSandboxMcpManifest/, 'MCP sandbox manifest must be syncable into a sandbox')
 assert.match(manifestSource, /writeSandboxFilePrivileged/, 'MCP sandbox manifest must use a privileged write path for root-owned /sandbox mounts')
+assert.match(manifestSource, /syncSandboxOpenClawMcpConfig/, 'MCP sandbox manifest sync must also configure OpenClaw MCP')
+assert.match(manifestSource, /\/mcp/, 'MCP sandbox handoff must include the protocol-compatible MCP endpoint')
 assert.match(privilegedFilesSource, /kubectl/, 'privileged sandbox file writes must use the OpenShell cluster control path')
 assert.doesNotMatch(manifestSource, /allowedServers|renderServer|commandLine/, 'MCP sandbox handoff must not disclose server inventory or launch specs')
 assert.match(manifestSource, /control plane enforces/, 'MCP sandbox handoff must explain broker-side enforcement')
@@ -92,23 +110,34 @@ assert.match(brokerCapabilitiesRouteSource, /listAllowedBrokerServers/, 'MCP bro
 assert.match(brokerCapabilitiesRouteSource, /listBrokerServerTools/, 'MCP broker capabilities must inspect allowed server tools')
 assert.match(brokerCallRouteSource, /Requested MCP capability is unavailable/, 'MCP broker denied calls must not disclose blocked server names')
 assert.match(brokerCallRouteSource, /callBrokerServerTool/, 'MCP broker call route must forward allowed calls')
+assert.match(brokerCallRouteSource, /isBrokerMcpJsonRpcBody/, 'Existing broker call route must also accept MCP JSON-RPC payloads')
+assert.match(brokerCallRouteSource, /handleBrokerMcpJsonRpcBody/, 'Existing broker call route must bridge MCP JSON-RPC through broker policy')
+assert.match(brokerMcpRouteSource, /handleBrokerMcpJsonRpcBody/, 'MCP protocol endpoint must use the shared broker protocol adapter')
+assert.match(brokerMcpRouteSource, /readBrokerToken/, 'MCP protocol endpoint must use broker token authentication')
 assert.match(sandboxMcpRouteSource, /export async function POST/, 'Sandbox MCP route must write the broker handoff')
 assert.match(sandboxMcpRouteSource, /action === "revoke"/, 'Sandbox MCP route must revoke broker handoff when MCP access is removed')
 assert.match(sandboxMcpRouteSource, /syncBrokerNetworkAccess/, 'Sandbox MCP route must synchronize broker network access when MCP is enabled')
 assert.match(sandboxMcpRouteSource, /revokeBrokerNetworkAccess/, 'Sandbox MCP route must remove broker network access when MCP is revoked')
 assert.match(sandboxMcpRouteSource, /export async function GET/, 'Sandbox MCP route must preview the broker handoff')
 assert.match(sandboxMcpRouteSource, /brokerBaseUrlForSandbox/, 'Sandbox MCP broker handoff must build a sandbox-routable broker URL')
+assert.match(sandboxMcpRouteSource, /synced\.openClaw\.path/, 'Sandbox MCP sync response must report the OpenClaw config write')
 assert.match(brokerUrlSource, /discoverOpenShellDockerGateway/, 'Sandbox MCP broker handoff must discover the active OpenShell network gateway')
 assert.match(brokerUrlSource, /LOCAL_HOSTNAMES/, 'Sandbox MCP broker handoff must rewrite local-only browser origins')
 assert.match(brokerUrlSource, /discoverSandboxProxyOrigin/, 'Sandbox MCP broker handoff must discover each sandbox proxy endpoint')
 assert.match(brokerUrlSource, /HTTP_PROXY/, 'Sandbox MCP broker handoff must derive the proxy endpoint from sandbox environment')
 assert.match(brokerUrlSource, /FALLBACK_SANDBOX_PROXY_ORIGIN/, 'Sandbox MCP broker handoff may keep a fallback for older OpenShell layouts')
+assert.match(sandboxOpenClawMcpConfigSource, /mcp\.servers = servers/, 'Sandbox MCP sync must write mcp.servers into OpenClaw config')
+assert.match(sandboxOpenClawMcpConfigSource, /streamable-http/, 'OpenClaw MCP broker config must use streamable HTTP transport')
+assert.match(sandboxOpenClawMcpConfigSource, /Authorization: `Bearer \$\{token\}`/, 'OpenClaw MCP broker config must pass the sandbox broker token as bearer auth')
+assert.match(sandboxOpenClawMcpConfigSource, /restartOpenClawGatewayIfRunning/, 'OpenClaw gateway must restart after MCP config changes')
 assert.match(middlewareSource, /\/api\/mcp\/broker/, 'MCP broker endpoints must bypass dashboard cookie auth and rely on broker token auth')
 assert.match(routeSource, /export async function GET/, 'MCP API must list server configuration')
 assert.match(routeSource, /export async function POST/, 'MCP API must install and update server configuration')
 assert.match(routeSource, /installMcpServer/, 'MCP API must support installing servers')
 assert.match(routeSource, /uninstallMcpServer/, 'MCP API must support removing servers')
 assert.match(routeSource, /updateMcpServerAccess/, 'MCP API must support access policy updates')
+assert.match(routeSource, /autoSyncSandboxMcpAccess/, 'MCP API access changes must automatically sync affected sandbox OpenClaw MCP config')
+assert.match(routeSource, /sandboxSync/, 'MCP API responses must report automatic sandbox sync results')
 assert.match(uploadRouteSource, /request\.formData\(\)/, 'MCP upload API must accept multipart server bundles')
 assert.match(uploadRouteSource, /writeDirectoryUpload/, 'MCP upload API must support directory uploads')
 assert.match(uploadRouteSource, /writeArchiveUpload/, 'MCP upload API must support archive uploads')
@@ -222,18 +251,16 @@ assert.match(panelSource, /openSecurityServers/, 'MCP security must render insta
 assert.match(panelSource, /aria-expanded=\{securityOpen\}/, 'MCP security must render as an accordion')
 assert.match(panelSource, /Allow All/, 'MCP security must support allow-all access')
 assert.match(panelSource, /Allow Only/, 'MCP security must support allow-list access')
-assert.match(panelSource, /syncSandboxBrokerConfig/, 'MCP configuration grants must sync the sandbox broker config automatically')
-assert.match(panelSource, /\/api\/sandbox\/\$\{encodeURIComponent\(sandbox\.id\)\}\/mcp/, 'MCP configuration grants must call the sandbox MCP sync endpoint')
-assert.match(panelSource, /allowed \|\| hasOtherMcpAccess \? "sync" : "revoke"/, 'MCP configuration revokes must preserve broker config when other MCP access remains')
-assert.match(panelSource, /syncAccessModeChange/, 'MCP availability changes must synchronize sandbox broker policy')
+assert.doesNotMatch(panelSource, /syncSandboxBrokerConfig/, 'MCP configuration grants should rely on server-side sandbox sync instead of duplicate client sync')
+assert.match(panelSource, /syncAccessModeChange/, 'MCP availability changes must update broker policy through the MCP API')
 assert.match(panelSource, /Setup Guide/, 'MCP catalog cards should link out to app setup guides')
 assert.match(panelSource, /Client JSON/, 'MCP page must surface generated client JSON')
 assert.match(helpSource, /MCP Server Health/, 'Help must expose MCP server health checks')
 assert.match(helpSource, /\/api\/mcp\/health/, 'Help MCP health check must call the health API')
 assert.match(helpSource, /Refresh MCP Health/, 'Help MCP health check must be refreshable')
 assert.match(sandboxListSource, /Allowed MCP Server Access/, 'Sandbox page must expose allowed MCP server access accordion')
-assert.match(sandboxListSource, /Sync Broker Config/, 'Sandbox MCP access controls must sync broker config')
-assert.match(sandboxListSource, /hasOtherMcpAccess/, 'Sandbox MCP access controls must revoke broker config when no MCP servers remain')
+assert.match(sandboxListSource, /Sync Broker Config/, 'Sandbox MCP access controls must keep a manual broker config repair action')
+assert.match(sandboxListSource, /syncMcpManifest/, 'Sandbox MCP access controls must expose manual broker config sync')
 assert.match(sandboxListSource, /\/sandbox\/openshell_control_mcp\.md/, 'Sandbox MCP access controls must name the manifest path')
 assert.match(sandboxListSource, /sandboxCanAccessMcpServer/, 'Sandbox page must derive MCP access per sandbox')
 assert.match(sandboxListSource, /MCP access allowed/, 'Sandbox cards must show a lit MCP access indicator')
