@@ -72,7 +72,7 @@ assert.match(mcpBrokerUrlSource, /HTTP_PROXY/, 'MCP broker URL generation must u
 assert.match(mcpBrokerClientSource, /PATH: HOST_PATH/, 'MCP stdio broker launches must inherit the shared host PATH')
 
 assert.match(createRouteSource, /buildNemoClawCreateCommand\(\)/, 'NemoClaw blueprint create must resolve a current CLI command')
-assert.match(createRouteSource, /"onboard", "--non-interactive"/, 'NemoClaw blueprint create must use the supported onboard CLI flow')
+assert.match(createRouteSource, /"onboard",[\s\S]*"--non-interactive"/, 'NemoClaw blueprint create must use the supported onboard CLI flow')
 assert.match(createRouteSource, /NEMOCLAW_SANDBOX_NAME: sandboxName/, 'NemoClaw blueprint create must pass the requested sandbox name to onboard')
 assert.match(createRouteSource, /NEMOCLAW_ACCEPT_THIRD_PARTY_SOFTWARE: "1"/, 'NemoClaw blueprint create must be able to run onboard non-interactively')
 assert.match(createRouteSource, /mode: "legacy-setup"/, 'NemoClaw blueprint create may fall back to legacy setup.sh for old clones')

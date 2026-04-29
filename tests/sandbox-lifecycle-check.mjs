@@ -58,6 +58,10 @@ assert.match(createRouteSource, /applyConfiguredInferenceToOnboardEnv/, 'bluepri
 assert.match(createRouteSource, /NEMOCLAW_PROVIDER/, 'blueprint create must set NemoClaw provider from inference configuration')
 assert.match(createRouteSource, /NEMOCLAW_MODEL/, 'blueprint create must set NemoClaw model from inference configuration')
 assert.match(createRouteSource, /!enableTailscale && !onboardInference/, 'blueprint create must not inject the optional NVIDIA placeholder when a primary inference route is configured')
+assert.match(createRouteSource, /resolvePreferredNemoClawDockerfile/, 'blueprint create must pass an explicit NemoClaw Dockerfile to onboard')
+assert.match(createRouteSource, /"--from", dockerfilePath/, 'blueprint create must make onboard use the selected Dockerfile instead of implicit refresh paths')
+assert.match(createRouteSource, /relaxKnownNemoClawDockerfileOpenClawPatch/, 'blueprint create must self-heal the known brittle OpenClaw Dockerfile patch')
+assert.match(createRouteSource, /writeConfigFile\(params\.nextConfig\) pattern not found/, 'Dockerfile compatibility guard must target the observed OpenClaw patch assertion')
 
 assert.match(hookSource, /type RefreshOptions = \{\s*force\?: boolean\s*\}/, 'inventory refresh must accept a force option')
 assert.match(hookSource, /!refreshOptions\?\.force && inFlightRef\.current/, 'forced inventory refresh must bypass existing in-flight reads')

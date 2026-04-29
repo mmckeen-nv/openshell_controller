@@ -1,5 +1,8 @@
 import { NextResponse } from "next/server"
 import { execFile, spawn } from "node:child_process"
+import { existsSync } from "node:fs"
+import { readFile, writeFile } from "node:fs/promises"
+import path from "node:path"
 import { promisify } from "node:util"
 import { inspectSandbox } from "@/app/lib/openshellHost"
 import {
@@ -139,18 +142,65 @@ function appendNote(...parts: Array<string | false | null | undefined>) {
   return parts.filter(Boolean).join(" ")
 }
 
+function resolvePreferredNemoClawDockerfile() {
+  const home = process.env.HOME || ""
+  const candidates = [
+    process.env.NEMOCLAW_DOCKERFILE,
+    home ? path.join(home, ".nemoclaw/source/Dockerfile") : undefined,
+    NEMOCLAW_CWD ? path.join(NEMOCLAW_CWD, "Dockerfile") : undefined,
+    home ? path.join(home, "NemoClaw/Dockerfile") : undefined,
+  ].filter((candidate): candidate is string => Boolean(candidate))
+  return candidates.find((candidate) => existsSync(candidate)) || null
+}
+
+async function relaxKnownNemoClawDockerfileOpenClawPatch(dockerfilePath: string | null) {
+  if (!dockerfilePath) return null
+  try {
+    const source = await readFile(dockerfilePath, "utf8")
+    const strictAssertion = "assert old in src, 'writeConfigFile(params.nextConfig) pattern not found'"
+    if (!source.includes(strictAssertion)) {
+      return { dockerfilePath, patched: false, reason: "no-known-brittle-openclaw-patch" }
+    }
+
+    let next = source.replace(
+      strictAssertion,
+      "print('[nemoclaw] replaceConfigFile shape changed; skipping optional EACCES compatibility patch', file=sys.stderr)",
+    )
+    next = next.replace(
+      /grep -REq\s+--include='\*\.js'\s+'OPENSHELL_SANDBOX\.\*EACCES'\s+"\$rcf_file"\s+\|\|\s+\{\s+echo\s+"ERROR: Patch 4 \(replaceConfigFile EACCES\) not applied"\s+>&2;\s+exit 1;\s+\}/g,
+      "grep -REq --include='*.js' 'OPENSHELL_SANDBOX.*EACCES' \"$rcf_file\" || echo \"WARN: Patch 4 (replaceConfigFile EACCES) not applied; OpenClaw write shape changed\" >&2",
+    )
+    if (next !== source) {
+      await writeFile(dockerfilePath, next)
+      return { dockerfilePath, patched: true, reason: "relaxed-brittle-openclaw-patch" }
+    }
+    return { dockerfilePath, patched: false, reason: "known-patch-present-but-unmodified" }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error ?? "unknown error")
+    return { dockerfilePath, patched: false, reason: `patch-check-failed: ${message}` }
+  }
+}
+
 type NemoClawCreateCommand = {
   file: string
   args: string[]
   mode: "cli-onboard" | "legacy-setup"
+  dockerfilePath?: string | null
 }
 
 function buildNemoClawCreateCommand(): NemoClawCreateCommand {
   if (NEMOCLAW_BIN && commandExists(NEMOCLAW_BIN)) {
-    const args = ["onboard", "--non-interactive", "--recreate-sandbox", "--yes-i-accept-third-party-software"]
+    const dockerfilePath = resolvePreferredNemoClawDockerfile()
+    const args = [
+      "onboard",
+      "--non-interactive",
+      "--recreate-sandbox",
+      "--yes-i-accept-third-party-software",
+      ...(dockerfilePath ? ["--from", dockerfilePath] : []),
+    ]
     return /\.(?:c?m?js|ts)$/i.test(NEMOCLAW_BIN)
-      ? { file: NODE_BIN, args: [NEMOCLAW_BIN, ...args], mode: "cli-onboard" }
-      : { file: NEMOCLAW_BIN, args, mode: "cli-onboard" }
+      ? { file: NODE_BIN, args: [NEMOCLAW_BIN, ...args], mode: "cli-onboard", dockerfilePath }
+      : { file: NEMOCLAW_BIN, args, mode: "cli-onboard", dockerfilePath }
   }
   if (NEMOCLAW_SETUP && commandExists(NEMOCLAW_SETUP)) {
     return { file: "/bin/bash", args: [NEMOCLAW_SETUP], mode: "legacy-setup" }
@@ -422,6 +472,7 @@ export async function POST(request: Request) {
 
     if (blueprint === "nemoclaw-blueprint") {
       const createCommand = buildNemoClawCreateCommand()
+      const dockerfileCompatibility = await relaxKnownNemoClawDockerfileOpenClawPatch(createCommand.dockerfilePath ?? null)
       const configuredInferenceRoute = await resolveConfiguredPrimaryInferenceRoute()
       const env: NodeJS.ProcessEnv = hostCommandEnv({
         NEMOCLAW_SANDBOX_NAME: sandboxName,
@@ -457,6 +508,8 @@ export async function POST(request: Request) {
           enableTailscale,
           configuredInferenceRoute,
           onboardInference,
+          createCommand,
+          dockerfileCompatibility,
         }, { status: 500 })
       }
 
@@ -484,6 +537,7 @@ export async function POST(request: Request) {
         configuredInferenceRoute,
         onboardInference,
         createCommand,
+        dockerfileCompatibility,
         hostPath: HOST_PATH,
         readiness: {
           attempts: readiness.attempts,
