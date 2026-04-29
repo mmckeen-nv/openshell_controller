@@ -14,11 +14,16 @@ const uploadRoutePath = path.join(root, 'app/api/mcp/upload/route.ts')
 const preflightRoutePath = path.join(root, 'app/api/mcp/preflight/route.ts')
 const healthRoutePath = path.join(root, 'app/api/mcp/health/route.ts')
 const registryRoutePath = path.join(root, 'app/api/mcp/registry/route.ts')
+const registriesRoutePath = path.join(root, 'app/api/mcp/registries/route.ts')
+const registriesAssistRoutePath = path.join(root, 'app/api/mcp/registries/assist/route.ts')
+const installAssistRoutePath = path.join(root, 'app/api/mcp/install-assist/route.ts')
+const registryStorePath = path.join(root, 'app/lib/mcpRegistryStore.ts')
 const brokerCapabilitiesRoutePath = path.join(root, 'app/api/mcp/broker/capabilities/route.ts')
 const brokerCallRoutePath = path.join(root, 'app/api/mcp/broker/call/route.ts')
 const sandboxMcpRoutePath = path.join(root, 'app/api/sandbox/[sandboxId]/mcp/route.ts')
 const brokerUrlPath = path.join(root, 'app/lib/mcpBrokerUrl.ts')
 const preflightLibPath = path.join(root, 'app/lib/mcpPreflight.ts')
+const preflightRepairLibPath = path.join(root, 'app/lib/mcpPreflightRepair.ts')
 const middlewarePath = path.join(root, 'middleware.ts')
 const panelPath = path.join(root, 'app/components/McpConfigurationPanel.tsx')
 const helpPath = path.join(root, 'app/components/HelpPanel.tsx')
@@ -26,7 +31,7 @@ const sidebarPath = path.join(root, 'app/components/Sidebar.tsx')
 const sandboxListPath = path.join(root, 'app/components/SandboxList.tsx')
 const pagePath = path.join(root, 'app/page.tsx')
 
-const [storeSource, brokerStoreSource, brokerClientSource, manifestSource, privilegedFilesSource, routeSource, uploadRouteSource, preflightRouteSource, healthRouteSource, registryRouteSource, brokerCapabilitiesRouteSource, brokerCallRouteSource, sandboxMcpRouteSource, brokerUrlSource, preflightLibSource, middlewareSource, panelSource, helpSource, sidebarSource, sandboxListSource, pageSource] = await Promise.all([
+const [storeSource, brokerStoreSource, brokerClientSource, manifestSource, privilegedFilesSource, routeSource, uploadRouteSource, preflightRouteSource, healthRouteSource, registryRouteSource, registriesRouteSource, registriesAssistRouteSource, installAssistRouteSource, registryStoreSource, brokerCapabilitiesRouteSource, brokerCallRouteSource, sandboxMcpRouteSource, brokerUrlSource, preflightLibSource, preflightRepairLibSource, middlewareSource, panelSource, helpSource, sidebarSource, sandboxListSource, pageSource] = await Promise.all([
   readFile(storePath, 'utf8'),
   readFile(brokerStorePath, 'utf8'),
   readFile(brokerClientPath, 'utf8'),
@@ -37,11 +42,16 @@ const [storeSource, brokerStoreSource, brokerClientSource, manifestSource, privi
   readFile(preflightRoutePath, 'utf8'),
   readFile(healthRoutePath, 'utf8'),
   readFile(registryRoutePath, 'utf8'),
+  readFile(registriesRoutePath, 'utf8'),
+  readFile(registriesAssistRoutePath, 'utf8'),
+  readFile(installAssistRoutePath, 'utf8'),
+  readFile(registryStorePath, 'utf8'),
   readFile(brokerCapabilitiesRoutePath, 'utf8'),
   readFile(brokerCallRoutePath, 'utf8'),
   readFile(sandboxMcpRoutePath, 'utf8'),
   readFile(brokerUrlPath, 'utf8'),
   readFile(preflightLibPath, 'utf8'),
+  readFile(preflightRepairLibPath, 'utf8'),
   readFile(middlewarePath, 'utf8'),
   readFile(panelPath, 'utf8'),
   readFile(helpPath, 'utf8'),
@@ -108,6 +118,8 @@ assert.match(uploadRouteSource, /python-module/, 'MCP upload API must support Py
 assert.match(uploadRouteSource, /console-script/, 'MCP upload API must support installed console script launch')
 assert.match(uploadRouteSource, /resolveProjectRoot/, 'MCP upload API must find project manifests inside uploaded directories')
 assert.match(uploadRouteSource, /preflightMcpServer/, 'MCP upload API must preflight uploaded server bundles')
+assert.match(uploadRouteSource, /repairUploadedMcpServerWithLlm/, 'MCP upload API must attempt bounded LLM repair when uploaded server preflight fails')
+assert.match(uploadRouteSource, /form\.get\("sandboxId"\)/, 'MCP upload API must accept a sandbox id so repair can mirror that sandbox LLM route')
 assert.match(uploadRouteSource, /preflight-failed/, 'MCP upload API must mark failed preflight installs')
 assert.match(uploadRouteSource, /installMcpServer/, 'MCP upload API must install uploaded server bundles')
 assert.match(preflightRouteSource, /export async function POST/, 'MCP preflight API must expose a POST check endpoint')
@@ -115,6 +127,11 @@ assert.match(preflightRouteSource, /preflightMcpServer/, 'MCP preflight API must
 assert.match(preflightLibSource, /listBrokerServerTools/, 'MCP preflight must validate servers through SDK tool discovery')
 assert.match(preflightLibSource, /attempted relative import/, 'MCP preflight assistant must recognize Python package launch failures')
 assert.match(preflightLibSource, /FastMCP/, 'MCP preflight assistant must recognize MCP SDK compatibility failures')
+assert.match(preflightRepairLibSource, /getSandboxInferenceConfig/, 'MCP preflight repair must reuse the selected sandbox inference profile when available')
+assert.match(preflightRepairLibSource, /chat\/completions/, 'MCP preflight repair must call an OpenAI-compatible chat endpoint')
+assert.match(preflightRepairLibSource, /response_format: \{ type: "json_object" \}/, 'MCP preflight repair must ask the model for structured JSON')
+assert.match(preflightRepairLibSource, /repair path must stay inside the uploaded server/, 'MCP preflight repair must confine edits to the uploaded server')
+assert.match(preflightRepairLibSource, /provided context/, 'MCP preflight repair must only edit files shown to the model')
 assert.match(healthRouteSource, /listBrokerServerTools/, 'MCP health API must inspect server tools through the broker client')
 assert.match(healthRouteSource, /enabledServers/, 'MCP health API must check enabled MCP servers')
 assert.match(registryRouteSource, /registry\.modelcontextprotocol\.io/, 'MCP registry search should default to the official registry')
@@ -122,8 +139,20 @@ assert.match(registryRouteSource, /\/v0\/servers/, 'MCP registry search should c
 assert.match(registryRouteSource, /normalizeRegistryEntry/, 'MCP registry search should normalize results into installable entries')
 assert.match(registryRouteSource, /packageInstall/, 'MCP registry search should support package-backed stdio installs')
 assert.match(registryRouteSource, /remoteInstall/, 'MCP registry search should support remote HTTP installs')
-assert.match(panelSource, /Install Custom Server/, 'MCP page must expose a custom server install action')
-assert.match(panelSource, /Upload Server/, 'MCP custom server accordion must support uploaded server bundles')
+assert.match(registryRouteSource, /searchParams\.get\("baseUrl"\)/, 'MCP registry search must accept a selected registry base URL')
+assert.match(registryStoreSource, /mcp-registries\.json/, 'MCP registries must persist to dashboard state')
+assert.match(registryStoreSource, /DEFAULT_MCP_REGISTRY/, 'MCP registries should start with the official registry before user changes')
+assert.match(registriesRouteSource, /listMcpRegistries/, 'MCP registries API must list registries')
+assert.match(registriesRouteSource, /saveMcpRegistry/, 'MCP registries API must save registries')
+assert.match(registriesRouteSource, /deleteMcpRegistry/, 'MCP registries API must delete registries')
+assert.match(registriesAssistRouteSource, /chat\/completions/, 'MCP registry assistant must use the running OpenAI-compatible LLM endpoint')
+assert.match(registriesAssistRouteSource, /response_format: \{ type: "json_object" \}/, 'MCP registry assistant must request structured JSON')
+assert.match(installAssistRouteSource, /chat\/completions/, 'MCP install wizard assistant must use the running OpenAI-compatible LLM endpoint')
+assert.match(installAssistRouteSource, /uploadRuntime/, 'MCP install wizard assistant must draft upload metadata')
+assert.match(installAssistRouteSource, /response_format: \{ type: "json_object" \}/, 'MCP install wizard assistant must request structured JSON')
+assert.match(panelSource, /Install Server Command/, 'MCP page must expose a server command install action')
+assert.match(panelSource, /Server Install Wizard/, 'MCP page must present custom installation as a wizard')
+assert.match(panelSource, /Upload and Preflight/, 'MCP custom server accordion must support uploaded server bundles')
 assert.match(panelSource, /Choose Directory/, 'MCP custom server upload must accept directories')
 assert.match(panelSource, /Choose Archive/, 'MCP custom server upload must accept archives')
 assert.match(panelSource, /\/api\/mcp\/upload/, 'MCP custom server upload must call the upload API')
@@ -132,13 +161,29 @@ assert.match(panelSource, /uploadEntrypoint/, 'MCP custom server upload must col
 assert.match(panelSource, /uploadEntryMode/, 'MCP custom server upload must collect a launch mode')
 assert.match(panelSource, /Python module/, 'MCP custom server upload must expose Python module launch mode')
 assert.match(panelSource, /Console script/, 'MCP custom server upload must expose console script launch mode')
+assert.match(panelSource, /uploadRepair/, 'MCP custom server upload must expose LLM repair controls')
+assert.match(panelSource, /repairSandboxId/, 'MCP custom server upload must let operators pick a sandbox LLM route for repair')
+assert.match(panelSource, /LLM repair/, 'MCP custom server upload must summarize LLM-assisted repair results')
+assert.match(panelSource, /FieldHint/, 'MCP server install wizard fields must include tooltips')
+assert.match(panelSource, /wizardStep/, 'MCP server install wizard must expose install workflow steps')
+assert.match(panelSource, /assistInstall/, 'MCP server install wizard must let the LLM draft install fields')
+assert.match(panelSource, /Assist Install/, 'MCP server install wizard must expose an assist install action')
+assert.match(panelSource, /Back/, 'MCP server install wizard must expose back navigation')
+assert.match(panelSource, /Next/, 'MCP server install wizard must expose next navigation')
+assert.match(panelSource, /Upload and Preflight/, 'MCP server install wizard must expose upload preflight as the upload action')
 assert.match(panelSource, /preflightServer/, 'MCP page must let operators preflight installed servers')
 assert.match(panelSource, /Preflight/, 'MCP page must show preflight controls and results')
 assert.match(panelSource, /serverPayloadFromJson/, 'MCP page must parse edited server JSON')
 assert.match(panelSource, /startEditingServer/, 'MCP installed server list must expose edit state')
 assert.match(panelSource, /Server JSON/, 'MCP installed server editor must render an inline JSON file editor')
-assert.match(panelSource, /Registry Search/, 'MCP page must expose official registry search')
+assert.match(panelSource, /MCP Repo Search and Preconfigured Servers/, 'MCP page must combine repo search and preconfigured servers')
+assert.match(panelSource, /Available Registries/, 'MCP page must display available registries')
+assert.match(panelSource, /Add an MCP Registry/, 'MCP page must show an add-registry empty state')
+assert.match(panelSource, /Draft With LLM/, 'MCP page must let the running LLM draft registry fields')
+assert.match(panelSource, /Delete Selected Registry/, 'MCP page must allow deleting registries')
+assert.match(panelSource, /selectedRegistryId/, 'MCP page must track and highlight the selected registry')
 assert.match(panelSource, /\/api\/mcp\/registry/, 'MCP page must query the registry search API')
+assert.match(panelSource, /\/api\/mcp\/registries/, 'MCP page must manage registry sources through the registry API')
 assert.match(panelSource, /const REGISTRY_PAGE_SIZE = 4/, 'MCP registry search should page results four at a time')
 assert.match(panelSource, /setRegistryResults\(\[\]\)/, 'MCP registry search should clear stale results before a new search')
 assert.match(panelSource, /pagedRegistryResults/, 'MCP registry search should render paged results instead of the full result set')
@@ -146,6 +191,8 @@ assert.match(panelSource, /Preconfigured Servers/, 'MCP page should label catalo
 assert.match(panelSource, /aria-expanded=\{catalogOpen\}/, 'MCP preconfigured servers should render as an accordion')
 assert.match(panelSource, /aria-expanded=\{customOpen\}/, 'MCP custom server form should render as an accordion')
 assert.match(panelSource, /MCP Security/, 'MCP page must expose sandbox access controls')
+assert.match(panelSource, /openSecurityServers/, 'MCP security must render installed servers as sub accordions')
+assert.match(panelSource, /aria-expanded=\{securityOpen\}/, 'MCP security must render as an accordion')
 assert.match(panelSource, /Allow All/, 'MCP security must support allow-all access')
 assert.match(panelSource, /Allow Only/, 'MCP security must support allow-list access')
 assert.match(panelSource, /syncSandboxBrokerConfig/, 'MCP configuration grants must sync the sandbox broker config automatically')
