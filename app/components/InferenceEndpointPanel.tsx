@@ -57,7 +57,7 @@ export default function InferenceEndpointPanel() {
   const [system, setSystem] = useState<InferenceRoute>(emptyRoute)
   const [name, setName] = useState("vllm-local")
   const [type, setType] = useState("openai")
-  const [model, setModel] = useState("nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4")
+  const [model, setModel] = useState("vllm-local")
   const [baseUrl, setBaseUrl] = useState("http://host.docker.internal:8000/v1")
   const [credentialKey, setCredentialKey] = useState("OPENAI_API_KEY")
   const [apiKey, setApiKey] = useState("")
@@ -143,7 +143,7 @@ export default function InferenceEndpointPanel() {
   function useVllmPreset() {
     setName("vllm-local")
     setType("openai")
-    setModel("nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4")
+    setModel("vllm-local")
     setBaseUrl("http://host.docker.internal:8000/v1")
     setCredentialKey("OPENAI_API_KEY")
     setApiKey("")

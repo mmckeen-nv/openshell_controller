@@ -7,11 +7,11 @@ const execFileAsync = promisify(execFile)
 const DOCKER_BIN = process.env.DOCKER_BIN || "docker"
 const OPENSHELL_CLUSTER_CONTAINER = process.env.OPENSHELL_CLUSTER_CONTAINER || "openshell-cluster-nemoclaw"
 
-function modelEntry(route: SandboxInferenceRoute, compat: Record<string, unknown> | null) {
+function modelEntry(modelId: string, modelName: string, compat: Record<string, unknown> | null) {
   return {
     ...(compat ? { compat } : {}),
-    id: route.model,
-    name: route.model,
+    id: modelId,
+    name: modelName,
     reasoning: false,
     input: ["text"],
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
@@ -20,11 +20,31 @@ function modelEntry(route: SandboxInferenceRoute, compat: Record<string, unknown
   }
 }
 
+function resolveInferenceModelIdentity(route: SandboxInferenceRoute) {
+  const nvidiaModel = route.model.match(/^nvidia\/(.+)$/i)
+  if (nvidiaModel) {
+    return {
+      providerKey: "nvidia",
+      modelId: nvidiaModel[1],
+      modelName: route.model,
+      modelRef: route.model,
+    }
+  }
+  return {
+    providerKey: "inference",
+    modelId: route.model,
+    modelName: route.model,
+    modelRef: `inference/${route.model}`,
+  }
+}
+
 function resolveOpenClawRoute(route: SandboxInferenceRoute) {
   switch (route.provider) {
     case "openai-api":
       return {
         providerKey: "openai",
+        modelId: route.model,
+        modelName: route.model,
         modelRef: `openai/${route.model}`,
         baseUrl: "https://inference.local/v1",
         api: "openai-completions",
@@ -34,6 +54,8 @@ function resolveOpenClawRoute(route: SandboxInferenceRoute) {
     case "compatible-anthropic-endpoint":
       return {
         providerKey: "anthropic",
+        modelId: route.model,
+        modelName: route.model,
         modelRef: `anthropic/${route.model}`,
         baseUrl: "https://inference.local",
         api: "anthropic-messages",
@@ -41,26 +63,28 @@ function resolveOpenClawRoute(route: SandboxInferenceRoute) {
       }
     case "bedrock":
     case "compatible-endpoint":
-    case "gemini-api":
+    case "gemini-api": {
+      const identity = resolveInferenceModelIdentity(route)
       return {
-        providerKey: "inference",
-        modelRef: `inference/${route.model}`,
+        ...identity,
         baseUrl: "https://inference.local/v1",
         api: "openai-completions",
         compat: { supportsStore: false },
       }
+    }
     case "nvidia-prod":
     case "nvidia-nim":
     case "ollama-local":
     case "vllm-local":
-    default:
+    default: {
+      const identity = resolveInferenceModelIdentity(route)
       return {
-        providerKey: "inference",
-        modelRef: `inference/${route.model}`,
+        ...identity,
         baseUrl: "https://inference.local/v1",
         api: "openai-completions",
         compat: null,
       }
+    }
   }
 }
 
@@ -78,7 +102,7 @@ function buildOpenClawConfig(current: any, routes: SandboxInferenceRoute[], prim
       api: resolved.api,
       models: [],
     }
-    providers[resolved.providerKey].models.push(modelEntry(route, resolved.compat))
+    providers[resolved.providerKey].models.push(modelEntry(resolved.modelId, resolved.modelName, resolved.compat))
     if (route.id === primary.id) primaryModelRef = resolved.modelRef
   }
 
