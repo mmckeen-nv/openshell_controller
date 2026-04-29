@@ -32,6 +32,14 @@ type McpResponse = {
   error?: string
 }
 
+type McpRegistry = {
+  id: string
+  name: string
+  baseUrl: string
+  description: string
+  addedAt: string
+}
+
 type McpPreflightResult = {
   ok: boolean
   checkedAt: string
@@ -47,6 +55,34 @@ type McpPreflightResult = {
   }
 }
 
+type McpPreflightRepairResult = {
+  attempted: boolean
+  ok: boolean
+  provider: "openai-compatible"
+  model: string
+  baseUrl: string
+  summary: string
+  changes: Array<{
+    type: "file" | "launch"
+    path?: string
+    summary: string
+  }>
+  error?: string
+}
+
+type McpInstallSuggestion = {
+  name?: string
+  summary?: string
+  transport?: McpTransport
+  command?: string
+  args?: string[]
+  env?: Record<string, string>
+  uploadRuntime?: string
+  uploadEntryMode?: "file" | "python-module" | "console-script" | ""
+  uploadEntrypoint?: string
+  notes?: string
+}
+
 type McpSandbox = {
   id: string
   name: string
@@ -58,9 +94,22 @@ type McpConfigurationPanelProps = {
 }
 
 const REGISTRY_PAGE_SIZE = 4
+const WIZARD_STEPS = ["basics", "launch", "upload", "review"] as const
+type WizardStep = typeof WIZARD_STEPS[number]
 
 function FieldLabel({ children }: { children: React.ReactNode }) {
   return <label className="text-[10px] uppercase tracking-wider text-[var(--foreground-dim)]">{children}</label>
+}
+
+function FieldHint({ children }: { children: React.ReactNode }) {
+  return (
+    <span
+      title={typeof children === "string" ? children : undefined}
+      className="inline-flex h-4 w-4 items-center justify-center rounded-full border border-[var(--border-subtle)] text-[10px] text-[var(--foreground-dim)]"
+    >
+      ?
+    </span>
+  )
 }
 
 function parseLines(value: string) {
@@ -79,6 +128,12 @@ function parseEnv(value: string) {
       })
       .filter(([key]) => Boolean(key)),
   )
+}
+
+function envToText(value: Record<string, string>) {
+  return Object.entries(value)
+    .map(([key, item]) => `${key}=${item}`)
+    .join("\n")
 }
 
 export default function McpConfigurationPanel({ sandboxes = [] }: McpConfigurationPanelProps) {
@@ -100,6 +155,10 @@ export default function McpConfigurationPanel({ sandboxes = [] }: McpConfigurati
   const [uploadRuntime, setUploadRuntime] = useState("python3")
   const [uploadEntryMode, setUploadEntryMode] = useState<"file" | "python-module" | "console-script">("file")
   const [uploadEntrypoint, setUploadEntrypoint] = useState("server.py")
+  const [uploadRepair, setUploadRepair] = useState(true)
+  const [repairSandboxId, setRepairSandboxId] = useState("")
+  const [installPrompt, setInstallPrompt] = useState("")
+  const [installAssistNotes, setInstallAssistNotes] = useState("")
   const [editingServerId, setEditingServerId] = useState<string | null>(null)
   const [editorText, setEditorText] = useState("")
   const [registrySearch, setRegistrySearch] = useState("github")
@@ -107,34 +166,177 @@ export default function McpConfigurationPanel({ sandboxes = [] }: McpConfigurati
   const [registryLoading, setRegistryLoading] = useState(false)
   const [registryPage, setRegistryPage] = useState(1)
   const [lastRegistrySearch, setLastRegistrySearch] = useState("")
+  const [registries, setRegistries] = useState<McpRegistry[]>([])
+  const [selectedRegistryId, setSelectedRegistryId] = useState("")
+  const [registryName, setRegistryName] = useState("")
+  const [registryUrl, setRegistryUrl] = useState("")
+  const [registryDescription, setRegistryDescription] = useState("")
+  const [registryPrompt, setRegistryPrompt] = useState("")
   const [preflightResults, setPreflightResults] = useState<Record<string, McpPreflightResult>>({})
+  const [securityOpen, setSecurityOpen] = useState(true)
+  const [openSecurityServers, setOpenSecurityServers] = useState<Record<string, boolean>>({})
+  const [repoOpen, setRepoOpen] = useState(true)
   const [catalogOpen, setCatalogOpen] = useState(false)
   const [customOpen, setCustomOpen] = useState(false)
+  const [wizardStep, setWizardStep] = useState<WizardStep>("basics")
 
   const installedIds = useMemo(() => new Set(servers.map((server) => server.id)), [servers])
   const enabledCount = servers.filter((server) => server.enabled).length
   const configText = JSON.stringify(config, null, 2)
   const registryPageCount = Math.max(1, Math.ceil(registryResults.length / REGISTRY_PAGE_SIZE))
+  const selectedRegistry = registries.find((registry) => registry.id === selectedRegistryId) || registries[0] || null
   const pagedRegistryResults = registryResults.slice(
     (registryPage - 1) * REGISTRY_PAGE_SIZE,
     registryPage * REGISTRY_PAGE_SIZE,
   )
+  const wizardStepIndex = WIZARD_STEPS.indexOf(wizardStep)
+  const hasUploadBundle = Boolean(uploadArchive || uploadFiles.length > 0)
 
   async function load() {
     try {
       setLoading(true)
-      const response = await fetch("/api/mcp", { cache: "no-store" })
+      const [response, registryResponse] = await Promise.all([
+        fetch("/api/mcp", { cache: "no-store" }),
+        fetch("/api/mcp/registries", { cache: "no-store" }),
+      ])
       const data = await response.json() as McpResponse
+      const registryData = await registryResponse.json() as { registries?: McpRegistry[]; error?: string }
       if (!response.ok) throw new Error(data.error || "Failed to load MCP configuration")
+      if (!registryResponse.ok) throw new Error(registryData.error || "Failed to load MCP registries")
       setCatalog(Array.isArray(data.catalog) ? data.catalog : [])
       setServers(Array.isArray(data.servers) ? data.servers : [])
       setConfig(data.config || { mcpServers: {} })
+      const nextRegistries = Array.isArray(registryData.registries) ? registryData.registries : []
+      setRegistries(nextRegistries)
+      setSelectedRegistryId((current) => current && nextRegistries.some((registry) => registry.id === current) ? current : nextRegistries[0]?.id || "")
       setMessage("")
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Failed to load MCP configuration")
     } finally {
       setLoading(false)
     }
+  }
+
+  async function saveRegistry() {
+    try {
+      setSaving(true)
+      const response = await fetch("/api/mcp/registries", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: registryName, baseUrl: registryUrl, description: registryDescription }),
+      })
+      const data = await response.json() as { registry?: McpRegistry; registries?: McpRegistry[]; error?: string }
+      if (!response.ok || !data.registry) throw new Error(data.error || "Failed to save MCP registry")
+      const nextRegistries = Array.isArray(data.registries) ? data.registries : []
+      setRegistries(nextRegistries)
+      setSelectedRegistryId(data.registry.id)
+      setRegistryName("")
+      setRegistryUrl("")
+      setRegistryDescription("")
+      setRegistryPrompt("")
+      setMessage(`${data.registry.name} registry added.`)
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Failed to save MCP registry")
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  async function deleteRegistry(registry: McpRegistry) {
+    try {
+      setSaving(true)
+      const response = await fetch("/api/mcp/registries", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "delete", registryId: registry.id }),
+      })
+      const data = await response.json() as { registries?: McpRegistry[]; error?: string }
+      if (!response.ok) throw new Error(data.error || "Failed to delete MCP registry")
+      const nextRegistries = Array.isArray(data.registries) ? data.registries : []
+      setRegistries(nextRegistries)
+      setSelectedRegistryId((current) => current === registry.id ? nextRegistries[0]?.id || "" : current)
+      setRegistryResults([])
+      setMessage(`${registry.name} registry deleted.`)
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Failed to delete MCP registry")
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  async function assistRegistry() {
+    try {
+      setSaving(true)
+      const response = await fetch("/api/mcp/registries/assist", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ prompt: registryPrompt || `${registryName} ${registryUrl}`.trim() }),
+      })
+      const data = await response.json() as { suggestion?: Partial<McpRegistry>; error?: string }
+      if (!response.ok || !data.suggestion) throw new Error(data.error || "Failed to generate registry suggestion")
+      setRegistryName(data.suggestion.name || registryName)
+      setRegistryUrl(data.suggestion.baseUrl || registryUrl)
+      setRegistryDescription(data.suggestion.description || registryDescription)
+      setMessage("Registry fields drafted from the running LLM endpoint.")
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Failed to generate registry suggestion")
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  function applyInstallSuggestion(suggestion: McpInstallSuggestion) {
+    if (suggestion.name) setCustomName(suggestion.name)
+    if (suggestion.summary) setCustomSummary(suggestion.summary)
+    if (suggestion.transport) setCustomTransport(suggestion.transport)
+    if (suggestion.command) setCustomCommand(suggestion.command)
+    if (Array.isArray(suggestion.args)) setCustomArgs(suggestion.args.join("\n"))
+    if (suggestion.env) setCustomEnv(envToText(suggestion.env))
+    if (suggestion.uploadRuntime) setUploadRuntime(suggestion.uploadRuntime)
+    if (suggestion.uploadEntryMode) setUploadEntryMode(suggestion.uploadEntryMode)
+    if (suggestion.uploadEntrypoint) setUploadEntrypoint(suggestion.uploadEntrypoint)
+    if (suggestion.notes) setInstallAssistNotes(suggestion.notes)
+  }
+
+  async function assistInstall() {
+    try {
+      setSaving(true)
+      const response = await fetch("/api/mcp/install-assist", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          prompt: installPrompt,
+          current: {
+            name: customName,
+            summary: customSummary,
+            transport: customTransport,
+            command: customCommand,
+            args: parseLines(customArgs),
+            env: parseEnv(customEnv),
+            uploadRuntime,
+            uploadEntryMode,
+            uploadEntrypoint,
+          },
+        }),
+      })
+      const data = await response.json() as { suggestion?: McpInstallSuggestion; error?: string }
+      if (!response.ok || !data.suggestion) throw new Error(data.error || "Failed to draft MCP install")
+      applyInstallSuggestion(data.suggestion)
+      setWizardStep("launch")
+      setMessage("Install wizard fields drafted from the running LLM endpoint.")
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Failed to draft MCP install")
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  function nextWizardStep() {
+    setWizardStep(WIZARD_STEPS[Math.min(WIZARD_STEPS.length - 1, wizardStepIndex + 1)])
+  }
+
+  function previousWizardStep() {
+    setWizardStep(WIZARD_STEPS[Math.max(0, wizardStepIndex - 1)])
   }
 
   async function postUpdate(body: Record<string, unknown>, success: string) {
@@ -322,6 +524,16 @@ export default function McpConfigurationPanel({ sandboxes = [] }: McpConfigurati
     return `${preflight.diagnosis.summary}\n${preflight.error || "MCP tool discovery failed."}${causes}${fixes}`
   }
 
+  function summarizeRepair(repair?: McpPreflightRepairResult | null) {
+    if (!repair?.attempted) return ""
+    const changeSummary = repair.changes.length > 0
+      ? `\nChanged: ${repair.changes.map((change) => change.path ? `${change.path}: ${change.summary}` : change.summary).join(" ")}`
+      : ""
+    const route = repair.model ? `\nRepair model: ${repair.model}` : ""
+    const error = repair.error ? `\nRepair error: ${repair.error}` : ""
+    return `\nLLM repair ${repair.ok ? "applied" : "did not apply changes"}: ${repair.summary}${changeSummary}${route}${error}`
+  }
+
   async function preflightServer(server: McpServerInstall) {
     try {
       setSaving(true)
@@ -357,6 +569,8 @@ export default function McpConfigurationPanel({ sandboxes = [] }: McpConfigurati
       form.set("entrypoint", uploadEntrypoint)
       form.set("args", customArgs)
       form.set("env", customEnv)
+      form.set("repair", uploadRepair ? "true" : "false")
+      if (repairSandboxId) form.set("sandboxId", repairSandboxId)
       if (uploadArchive) {
         form.set("archive", uploadArchive)
       } else {
@@ -366,7 +580,7 @@ export default function McpConfigurationPanel({ sandboxes = [] }: McpConfigurati
         })
       }
       const response = await fetch("/api/mcp/upload", { method: "POST", body: form })
-      const data = await response.json() as McpResponse & { dependencyInstall?: { kind?: string; logs?: string[] }; preflight?: McpPreflightResult; server?: McpServerInstall }
+      const data = await response.json() as McpResponse & { dependencyInstall?: { kind?: string; logs?: string[] }; preflight?: McpPreflightResult; repair?: McpPreflightRepairResult; server?: McpServerInstall }
       if (!response.ok) throw new Error(data.error || "Failed to upload MCP server")
       setCatalog(Array.isArray(data.catalog) ? data.catalog : catalog)
       setServers(Array.isArray(data.servers) ? data.servers : [])
@@ -382,7 +596,7 @@ export default function McpConfigurationPanel({ sandboxes = [] }: McpConfigurati
       const preflightNote = data.preflight
         ? `\nPreflight ${data.preflight.ok ? "passed" : "failed; server saved disabled"}.\n${summarizePreflight(data.preflight)}`
         : ""
-      setMessage(`${customName} uploaded. ${installKind === "generic" ? "No dependency bootstrap was needed." : `${installKind} dependencies bootstrapped${installLogCount > 0 ? ` with ${installLogCount} install step${installLogCount === 1 ? "" : "s"}` : ""}.`}${preflightNote}`)
+      setMessage(`${customName} uploaded. ${installKind === "generic" ? "No dependency bootstrap was needed." : `${installKind} dependencies bootstrapped${installLogCount > 0 ? ` with ${installLogCount} install step${installLogCount === 1 ? "" : "s"}` : ""}.`}${summarizeRepair(data.repair)}${preflightNote}`)
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Failed to upload MCP server")
     } finally {
@@ -408,18 +622,22 @@ export default function McpConfigurationPanel({ sandboxes = [] }: McpConfigurati
 
   async function searchRegistry() {
     const query = registrySearch.trim()
+    if (!selectedRegistry) {
+      setMessage("Add an MCP Registry before searching.")
+      return
+    }
     try {
       setRegistryLoading(true)
       setRegistryResults([])
       setRegistryPage(1)
       setLastRegistrySearch(query)
-      const params = new URLSearchParams({ search: query, limit: "24" })
+      const params = new URLSearchParams({ search: query, limit: "24", baseUrl: selectedRegistry.baseUrl })
       const response = await fetch(`/api/mcp/registry?${params}`, { cache: "no-store" })
       const data = await response.json()
       if (!response.ok) throw new Error(data.error || "Failed to search MCP registry")
       const results = Array.isArray(data.results) ? data.results : []
       setRegistryResults(results)
-      setMessage(results.length > 0 ? `Found ${results.length} registry server${results.length === 1 ? "" : "s"}.` : "No registry servers matched that search.")
+      setMessage(results.length > 0 ? `Found ${results.length} server${results.length === 1 ? "" : "s"} in ${selectedRegistry.name}.` : `${selectedRegistry.name} had no matches for that search.`)
     } catch (error) {
       setRegistryResults([])
       setMessage(error instanceof Error ? error.message : "Failed to search MCP registry")
@@ -475,224 +693,251 @@ export default function McpConfigurationPanel({ sandboxes = [] }: McpConfigurati
         <div className="grid grid-cols-1 gap-6 xl:grid-cols-[minmax(0,1fr)_400px]">
           <section className="space-y-6">
             <div className="panel p-6">
-              <div className="border-b border-[var(--border-subtle)] pb-4">
-                <h2 className="text-sm font-semibold uppercase tracking-wider text-[var(--foreground)]">MCP Security</h2>
-                <p className="mt-1 text-xs text-[var(--foreground-dim)]">Control which installed MCP servers are available to sandboxes.</p>
-              </div>
-              <div className="mt-5 space-y-4">
-                {servers.length === 0 ? (
-                  <div className="rounded-sm border border-[var(--border-subtle)] bg-[var(--background-tertiary)] p-4 text-xs text-[var(--foreground-dim)]">
-                    Install an MCP server before configuring sandbox access.
-                  </div>
-                ) : servers.map((server) => (
-                  <div key={server.id} className="rounded-sm border border-[var(--border-subtle)] bg-[var(--background-tertiary)] p-4">
-                    <div className="flex items-start justify-between gap-4 max-lg:flex-col">
-                      <div className="min-w-0">
-                        <div className="flex items-center gap-2">
-                          <h3 className="truncate text-sm font-mono font-semibold text-[var(--foreground)]">{server.name}</h3>
-                          <span className={`status-chip px-2 py-1 ${server.enabled ? "bg-[var(--status-running-bg)] text-[var(--status-running)]" : "bg-[var(--status-pending-bg)] text-[var(--status-pending)]"}`}>
-                            {server.enabled ? "enabled" : "disabled"}
-                          </span>
-                        </div>
-                        <p className="mt-2 break-all font-mono text-[11px] text-[var(--foreground-dim)]">{server.command} {server.args.join(" ")}</p>
-                      </div>
-                      <div className="flex shrink-0 gap-2 max-sm:w-full max-sm:[&>button]:flex-1">
-                        <button
-                          onClick={() => setServerEnabled(server, true)}
-                          disabled={saving || server.enabled}
-                          className="action-button px-3 py-2"
-                        >
-                          Enable
-                        </button>
-                        <button
-                          onClick={() => setServerEnabled(server, false)}
-                          disabled={saving || !server.enabled}
-                          className="action-button px-3 py-2"
-                        >
-                          Disable
-                        </button>
-                      </div>
+              <button
+                type="button"
+                onClick={() => setSecurityOpen((open) => !open)}
+                className="flex w-full items-center justify-between gap-4 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--nvidia-green)]"
+                aria-expanded={securityOpen}
+              >
+                <div>
+                  <h2 className="text-sm font-semibold uppercase tracking-wider text-[var(--foreground)]">MCP Security</h2>
+                  <p className="mt-1 text-xs text-[var(--foreground-dim)]">Control which installed MCP servers are available to sandboxes.</p>
+                </div>
+                <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-sm border border-[var(--border-subtle)] bg-[var(--background-tertiary)] text-sm text-[var(--foreground)]">
+                  {securityOpen ? "-" : "+"}
+                </span>
+              </button>
+              {securityOpen && (
+                <div className="mt-5 space-y-3 border-t border-[var(--border-subtle)] pt-5">
+                  {servers.length === 0 ? (
+                    <div className="rounded-sm border border-[var(--border-subtle)] bg-[var(--background-tertiary)] p-4 text-xs text-[var(--foreground-dim)]">
+                      Install an MCP server before configuring sandbox access.
                     </div>
-
-                    <div className="mt-4 grid grid-cols-1 gap-3 lg:grid-cols-[240px_minmax(0,1fr)]">
-                      <div className="space-y-2">
-                        <FieldLabel>Availability</FieldLabel>
-                        <select
-                          value={server.accessMode}
-                          onChange={(event) => syncAccessModeChange(server, event.target.value)}
-                          disabled={saving}
-                          className="field-control w-full px-3 py-2 text-xs font-mono uppercase tracking-wider"
+                  ) : servers.map((server) => {
+                    const expanded = openSecurityServers[server.id] !== false
+                    return (
+                      <div key={server.id} className="rounded-sm border border-[var(--border-subtle)] bg-[var(--background-tertiary)]">
+                        <button
+                          type="button"
+                          onClick={() => setOpenSecurityServers((current) => ({ ...current, [server.id]: !expanded }))}
+                          className="flex w-full items-start justify-between gap-4 p-4 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--nvidia-green)]"
+                          aria-expanded={expanded}
                         >
-                          <option value="disabled">Disabled</option>
-                          <option value="allow_all">Allow All</option>
-                          <option value="allow_only">Allow Only</option>
-                        </select>
-                      </div>
-                      <div className={server.accessMode === "allow_only" ? "space-y-2" : "opacity-50"}>
-                        <FieldLabel>Allowed Sandboxes</FieldLabel>
-                        {sandboxes.length === 0 ? (
-                          <div className="rounded-sm border border-[var(--border-subtle)] bg-[var(--background)] p-3 text-xs text-[var(--foreground-dim)]">
-                            No sandboxes detected.
-                          </div>
-                        ) : (
-                          <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
-                            {sandboxes.map((sandbox) => (
-                              <label key={sandbox.id} className="flex items-center justify-between gap-3 rounded-sm border border-[var(--border-subtle)] bg-[var(--background)] p-3 text-xs">
-                                <span className="min-w-0">
-                                  <span className="block truncate font-mono text-[var(--foreground)]">{sandbox.name}</span>
-                                  <span className="mt-1 block truncate text-[10px] uppercase tracking-wider text-[var(--foreground-dim)]">{sandbox.status}</span>
-                                </span>
-                                <input
-                                  type="checkbox"
-                                  checked={sandboxAllowed(server, sandbox)}
-                                  disabled={saving || server.accessMode !== "allow_only"}
-                                  onChange={(event) => toggleServerSandbox(server, sandbox, event.target.checked)}
-                                  className="h-4 w-4 accent-[var(--nvidia-green)]"
-                                />
-                              </label>
-                            ))}
+                          <span className="min-w-0">
+                            <span className="flex items-center gap-2">
+                              <span className="truncate text-sm font-mono font-semibold text-[var(--foreground)]">{server.name}</span>
+                              <span className={`status-chip px-2 py-1 ${server.enabled ? "bg-[var(--status-running-bg)] text-[var(--status-running)]" : "bg-[var(--status-pending-bg)] text-[var(--status-pending)]"}`}>
+                                {server.enabled ? "enabled" : "disabled"}
+                              </span>
+                            </span>
+                            <span className="mt-2 block break-all font-mono text-[11px] text-[var(--foreground-dim)]">{server.command} {server.args.join(" ")}</span>
+                          </span>
+                          <span className="text-sm text-[var(--foreground)]">{expanded ? "-" : "+"}</span>
+                        </button>
+
+                        {expanded && (
+                          <div className="border-t border-[var(--border-subtle)] p-4">
+                            <div className="flex gap-2 max-sm:[&>button]:flex-1">
+                              <button onClick={() => setServerEnabled(server, true)} disabled={saving || server.enabled} className="action-button px-3 py-2">Enable</button>
+                              <button onClick={() => setServerEnabled(server, false)} disabled={saving || !server.enabled} className="action-button px-3 py-2">Disable</button>
+                            </div>
+                            <div className="mt-4 grid grid-cols-1 gap-3 lg:grid-cols-[240px_minmax(0,1fr)]">
+                              <div className="space-y-2">
+                                <FieldLabel>Availability</FieldLabel>
+                                <select value={server.accessMode} onChange={(event) => syncAccessModeChange(server, event.target.value)} disabled={saving} className="field-control w-full px-3 py-2 text-xs font-mono uppercase tracking-wider">
+                                  <option value="disabled">Disabled</option>
+                                  <option value="allow_all">Allow All</option>
+                                  <option value="allow_only">Allow Only</option>
+                                </select>
+                              </div>
+                              <div className={server.accessMode === "allow_only" ? "space-y-2" : "opacity-50"}>
+                                <FieldLabel>Allowed Sandboxes</FieldLabel>
+                                {sandboxes.length === 0 ? (
+                                  <div className="rounded-sm border border-[var(--border-subtle)] bg-[var(--background)] p-3 text-xs text-[var(--foreground-dim)]">No sandboxes detected.</div>
+                                ) : (
+                                  <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
+                                    {sandboxes.map((sandbox) => (
+                                      <label key={sandbox.id} className="flex items-center justify-between gap-3 rounded-sm border border-[var(--border-subtle)] bg-[var(--background)] p-3 text-xs">
+                                        <span className="min-w-0">
+                                          <span className="block truncate font-mono text-[var(--foreground)]">{sandbox.name}</span>
+                                          <span className="mt-1 block truncate text-[10px] uppercase tracking-wider text-[var(--foreground-dim)]">{sandbox.status}</span>
+                                        </span>
+                                        <input type="checkbox" checked={sandboxAllowed(server, sandbox)} disabled={saving || server.accessMode !== "allow_only"} onChange={(event) => toggleServerSandbox(server, sandbox, event.target.checked)} className="h-4 w-4 accent-[var(--nvidia-green)]" />
+                                      </label>
+                                    ))}
+                                  </div>
+                                )}
+                              </div>
+                            </div>
                           </div>
                         )}
                       </div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            <div className="panel p-6">
-              <div className="flex items-start justify-between gap-4 border-b border-[var(--border-subtle)] pb-4 max-md:flex-col">
-                <div>
-                  <h2 className="text-sm font-semibold uppercase tracking-wider text-[var(--foreground)]">Registry Search</h2>
-                  <p className="mt-1 text-xs text-[var(--foreground-dim)]">Search the Official MCP Registry and install compatible stdio or remote HTTP servers.</p>
+                    )
+                  })}
                 </div>
-                <a href="https://registry.modelcontextprotocol.io/" target="_blank" rel="noreferrer" className="action-button px-3 py-2">
-                  Open Registry
-                </a>
-              </div>
-              <div className="mt-5 flex gap-3 max-sm:flex-col">
-                <input
-                  value={registrySearch}
-                  onChange={(event) => setRegistrySearch(event.target.value)}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter") searchRegistry()
-                  }}
-                  placeholder="Search GitHub, Slack, filesystem, Postgres..."
-                  className="field-control min-w-0 flex-1 px-3 py-2 text-sm"
-                />
-                <button onClick={searchRegistry} disabled={registryLoading || saving} className="rounded-sm bg-[var(--nvidia-green)] px-4 py-2 text-xs font-mono uppercase tracking-wider text-black disabled:opacity-50">
-                  {registryLoading ? "Searching..." : "Search"}
-                </button>
-              </div>
-              {registryResults.length > 0 && (
-                <>
-                  <div className="mt-5 flex items-center justify-between gap-3 border-t border-[var(--border-subtle)] pt-4 max-sm:flex-col max-sm:items-start">
-                    <p className="text-xs text-[var(--foreground-dim)]">
-                      Showing {((registryPage - 1) * REGISTRY_PAGE_SIZE) + 1}-{Math.min(registryPage * REGISTRY_PAGE_SIZE, registryResults.length)} of {registryResults.length}
-                      {lastRegistrySearch ? ` for "${lastRegistrySearch}"` : ""}
-                    </p>
-                    <div className="flex items-center gap-2">
-                      <button
-                        onClick={() => setRegistryPage((page) => Math.max(1, page - 1))}
-                        disabled={registryPage === 1}
-                        className="action-button px-3 py-2"
-                      >
-                        Prev
-                      </button>
-                      <span className="min-w-16 text-center text-xs font-mono text-[var(--foreground-dim)]">
-                        {registryPage} / {registryPageCount}
-                      </span>
-                      <button
-                        onClick={() => setRegistryPage((page) => Math.min(registryPageCount, page + 1))}
-                        disabled={registryPage === registryPageCount}
-                        className="action-button px-3 py-2"
-                      >
-                        Next
-                      </button>
-                    </div>
-                  </div>
-                  <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-2">
-                    {pagedRegistryResults.map((entry, index) => {
-                      const installed = installedIds.has(entry.id)
-                      return (
-                        <div key={`${entry.id}-${entry.command}-${entry.args.join("|")}-${index}`} className="metric flex min-h-44 flex-col p-4">
-                          <div className="flex items-start justify-between gap-3">
-                            <div className="min-w-0">
-                              <h3 className="truncate text-sm font-semibold text-[var(--foreground)]">{entry.name}</h3>
-                              <p className="mt-2 text-xs leading-5 text-[var(--foreground-dim)]">{entry.summary}</p>
-                            </div>
-                            <span className="status-chip bg-[var(--status-pending-bg)] px-2 py-1 text-[var(--status-pending)]">{entry.transport}</span>
-                          </div>
-                          <div className="mt-3 min-w-0 rounded-sm border border-[var(--border-subtle)] bg-[var(--background)] p-2 font-mono text-[11px] text-[var(--foreground-dim)]">
-                            <span className="text-[var(--foreground)]">{entry.command}</span> {entry.args.join(" ")}
-                          </div>
-                          <div className="mt-auto flex items-center justify-between gap-3 pt-4">
-                            <p className="truncate text-[10px] uppercase tracking-wider text-[var(--foreground-dim)]">{entry.tags.join(" / ")}</p>
-                            <button
-                              onClick={() => postUpdate({ action: "install", ...entry, source: "registry" }, installed ? `${entry.name} refreshed from registry.` : `${entry.name} installed from registry.`)}
-                              disabled={saving}
-                              className={installed ? "action-button px-3 py-2" : "rounded-sm bg-[var(--nvidia-green)] px-3 py-2 text-xs font-mono uppercase tracking-wider text-black disabled:opacity-50"}
-                            >
-                              {installed ? "Refresh" : "Install"}
-                            </button>
-                          </div>
-                        </div>
-                      )
-                    })}
-                  </div>
-                </>
               )}
             </div>
 
             <div className="panel p-6">
               <button
                 type="button"
-                onClick={() => setCatalogOpen((open) => !open)}
+                onClick={() => setRepoOpen((open) => !open)}
                 className="flex w-full items-center justify-between gap-4 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--nvidia-green)]"
-                aria-expanded={catalogOpen}
+                aria-expanded={repoOpen}
               >
                 <div>
-                  <h2 className="text-sm font-semibold uppercase tracking-wider text-[var(--foreground)]">Preconfigured Servers</h2>
-                  <p className="mt-1 text-xs text-[var(--foreground-dim)]">Presets install as MCP command definitions; clients start them when needed.</p>
+                  <h2 className="text-sm font-semibold uppercase tracking-wider text-[var(--foreground)]">MCP Repo Search and Preconfigured Servers</h2>
+                  <p className="mt-1 text-xs text-[var(--foreground-dim)]">Choose a registry, search installable MCP servers, or install a preset.</p>
                 </div>
                 <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-sm border border-[var(--border-subtle)] bg-[var(--background-tertiary)] text-sm text-[var(--foreground)]">
-                  {catalogOpen ? "-" : "+"}
+                  {repoOpen ? "-" : "+"}
                 </span>
               </button>
-              {catalogOpen && (
-                <div className="mt-5 grid grid-cols-1 gap-3 border-t border-[var(--border-subtle)] pt-5 md:grid-cols-2">
-                  {catalog.map((entry) => {
-                    const installed = installedIds.has(entry.id)
-                    return (
-                      <div key={entry.id} className="metric flex min-h-44 flex-col p-4">
-                        <div className="flex items-start justify-between gap-3">
-                          <div>
-                            <h3 className="text-sm font-semibold uppercase tracking-wider text-[var(--foreground)]">{entry.name}</h3>
-                            <p className="mt-2 text-xs leading-5 text-[var(--foreground-dim)]">{entry.summary}</p>
-                            {entry.websiteUrl && (
-                              <a href={entry.websiteUrl} target="_blank" rel="noreferrer" className="mt-2 inline-block text-[11px] font-mono uppercase tracking-wider text-[var(--nvidia-green)] hover:underline">
-                                Setup Guide
-                              </a>
-                            )}
-                          </div>
-                          <span className="status-chip bg-[var(--status-pending-bg)] px-2 py-1 text-[var(--status-pending)]">{entry.transport}</span>
-                        </div>
-                        <div className="mt-3 min-w-0 rounded-sm border border-[var(--border-subtle)] bg-[var(--background)] p-2 font-mono text-[11px] text-[var(--foreground-dim)]">
-                          <span className="text-[var(--foreground)]">{entry.command}</span> {entry.args.join(" ")}
-                        </div>
-                        <div className="mt-auto flex items-center justify-between gap-3 pt-4">
-                          <p className="truncate text-[10px] uppercase tracking-wider text-[var(--foreground-dim)]">{entry.tags.join(" / ")}</p>
-                          <button
-                            onClick={() => postUpdate({ action: "install", id: entry.id }, installed ? `${entry.name} refreshed.` : `${entry.name} installed.`)}
-                            disabled={saving}
-                            className={installed ? "action-button px-3 py-2" : "rounded-sm bg-[var(--nvidia-green)] px-3 py-2 text-xs font-mono uppercase tracking-wider text-black disabled:opacity-50"}
-                          >
-                            {installed ? "Refresh" : "Install"}
-                          </button>
+              {repoOpen && (
+                <div className="mt-5 space-y-5 border-t border-[var(--border-subtle)] pt-5">
+                  <div className="space-y-3">
+                    <div className="flex items-center justify-between gap-3">
+                      <FieldLabel>Available Registries</FieldLabel>
+                      {selectedRegistry && (
+                        <a href={selectedRegistry.baseUrl} target="_blank" rel="noreferrer" className="text-[11px] font-mono uppercase tracking-wider text-[var(--nvidia-green)] hover:underline">Open</a>
+                      )}
+                    </div>
+                    {registries.length === 0 ? (
+                      <div className="rounded-sm border border-[var(--border-subtle)] bg-[var(--background-tertiary)] p-4 text-xs text-[var(--foreground-dim)]">
+                        Add an MCP Registry
+                      </div>
+                    ) : (
+                      <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
+                        {registries.map((registry) => {
+                          const selected = registry.id === selectedRegistryId
+                          return (
+                            <button
+                              key={registry.id}
+                              type="button"
+                              onClick={() => { setSelectedRegistryId(registry.id); setRegistryResults([]) }}
+                              className={`rounded-sm border p-3 text-left ${selected ? "border-[var(--nvidia-green)] bg-[var(--status-running-bg)]" : "border-[var(--border-subtle)] bg-[var(--background)]"}`}
+                            >
+                              <span className="block truncate text-xs font-mono font-semibold text-[var(--foreground)]">{registry.name}</span>
+                              <span className="mt-1 block truncate text-[11px] text-[var(--foreground-dim)]">{registry.baseUrl}</span>
+                            </button>
+                          )
+                        })}
+                      </div>
+                    )}
+                    {selectedRegistry && (
+                      <button onClick={() => deleteRegistry(selectedRegistry)} disabled={saving} className="action-button px-3 py-2">
+                        Delete Selected Registry
+                      </button>
+                    )}
+                  </div>
+
+                  <div className="rounded-sm border border-[var(--border-subtle)] bg-[var(--background-tertiary)] p-4">
+                    <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                      <div className="space-y-2">
+                        <div className="flex items-center gap-2"><FieldLabel>Registry Name</FieldLabel><FieldHint>Name shown in the registry selector.</FieldHint></div>
+                        <input value={registryName} onChange={(event) => setRegistryName(event.target.value)} placeholder="Company MCP Repo" className="field-control w-full px-3 py-2 text-sm" />
+                      </div>
+                      <div className="space-y-2">
+                        <div className="flex items-center gap-2"><FieldLabel>Registry URL</FieldLabel><FieldHint>Root URL for a registry that exposes /v0/servers.</FieldHint></div>
+                        <input value={registryUrl} onChange={(event) => setRegistryUrl(event.target.value)} placeholder="https://registry.example.com" className="field-control w-full px-3 py-2 text-sm font-mono" />
+                      </div>
+                      <div className="space-y-2 md:col-span-2">
+                        <div className="flex items-center gap-2"><FieldLabel>LLM Registry Assist</FieldLabel><FieldHint>Describe a registry and the running LLM endpoint drafts the fields.</FieldHint></div>
+                        <textarea value={registryPrompt} onChange={(event) => setRegistryPrompt(event.target.value)} rows={3} placeholder="Add the Acme internal MCP registry at https://mcp.acme.example" className="field-control w-full resize-y px-3 py-2 text-sm" />
+                      </div>
+                      <div className="space-y-2 md:col-span-2">
+                        <div className="flex items-center gap-2"><FieldLabel>Description</FieldLabel><FieldHint>Short operator-facing note for this registry.</FieldHint></div>
+                        <input value={registryDescription} onChange={(event) => setRegistryDescription(event.target.value)} className="field-control w-full px-3 py-2 text-sm" />
+                      </div>
+                    </div>
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      <button onClick={assistRegistry} disabled={saving || (!registryPrompt.trim() && !registryUrl.trim())} className="action-button px-3 py-2">Draft With LLM</button>
+                      <button onClick={saveRegistry} disabled={saving || !registryUrl.trim()} className="rounded-sm bg-[var(--nvidia-green)] px-3 py-2 text-xs font-mono uppercase tracking-wider text-black disabled:opacity-50">Add Registry</button>
+                    </div>
+                  </div>
+
+                  <div className="flex gap-3 max-sm:flex-col">
+                    <input value={registrySearch} onChange={(event) => setRegistrySearch(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") searchRegistry() }} placeholder="Search GitHub, Slack, filesystem, Postgres..." className="field-control min-w-0 flex-1 px-3 py-2 text-sm" />
+                    <button onClick={searchRegistry} disabled={registryLoading || saving || !selectedRegistry} className="rounded-sm bg-[var(--nvidia-green)] px-4 py-2 text-xs font-mono uppercase tracking-wider text-black disabled:opacity-50">
+                      {registryLoading ? "Searching..." : "Search"}
+                    </button>
+                  </div>
+                  {registryResults.length > 0 && (
+                    <>
+                      <div className="flex items-center justify-between gap-3 border-t border-[var(--border-subtle)] pt-4 max-sm:flex-col max-sm:items-start">
+                        <p className="text-xs text-[var(--foreground-dim)]">
+                          Showing {((registryPage - 1) * REGISTRY_PAGE_SIZE) + 1}-{Math.min(registryPage * REGISTRY_PAGE_SIZE, registryResults.length)} of {registryResults.length}
+                          {lastRegistrySearch ? ` for "${lastRegistrySearch}"` : ""}{selectedRegistry ? ` in ${selectedRegistry.name}` : ""}
+                        </p>
+                        <div className="flex items-center gap-2">
+                          <button onClick={() => setRegistryPage((page) => Math.max(1, page - 1))} disabled={registryPage === 1} className="action-button px-3 py-2">Prev</button>
+                          <span className="min-w-16 text-center text-xs font-mono text-[var(--foreground-dim)]">{registryPage} / {registryPageCount}</span>
+                          <button onClick={() => setRegistryPage((page) => Math.min(registryPageCount, page + 1))} disabled={registryPage === registryPageCount} className="action-button px-3 py-2">Next</button>
                         </div>
                       </div>
-                    )
-                  })}
+                      <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                        {pagedRegistryResults.map((entry, index) => {
+                          const installed = installedIds.has(entry.id)
+                          return (
+                            <div key={`${entry.id}-${entry.command}-${entry.args.join("|")}-${index}`} className="metric flex min-h-44 flex-col p-4">
+                              <div className="flex items-start justify-between gap-3">
+                                <div className="min-w-0">
+                                  <h3 className="truncate text-sm font-semibold text-[var(--foreground)]">{entry.name}</h3>
+                                  <p className="mt-2 text-xs leading-5 text-[var(--foreground-dim)]">{entry.summary}</p>
+                                </div>
+                                <span className="status-chip bg-[var(--status-pending-bg)] px-2 py-1 text-[var(--status-pending)]">{entry.transport}</span>
+                              </div>
+                              <div className="mt-3 min-w-0 rounded-sm border border-[var(--border-subtle)] bg-[var(--background)] p-2 font-mono text-[11px] text-[var(--foreground-dim)]">
+                                <span className="text-[var(--foreground)]">{entry.command}</span> {entry.args.join(" ")}
+                              </div>
+                              <div className="mt-auto flex items-center justify-between gap-3 pt-4">
+                                <p className="truncate text-[10px] uppercase tracking-wider text-[var(--foreground-dim)]">{entry.tags.join(" / ")}</p>
+                                <button onClick={() => postUpdate({ action: "install", ...entry, source: "registry" }, installed ? `${entry.name} refreshed from registry.` : `${entry.name} installed from registry.`)} disabled={saving} className={installed ? "action-button px-3 py-2" : "rounded-sm bg-[var(--nvidia-green)] px-3 py-2 text-xs font-mono uppercase tracking-wider text-black disabled:opacity-50"}>
+                                  {installed ? "Refresh" : "Install"}
+                                </button>
+                              </div>
+                            </div>
+                          )
+                        })}
+                      </div>
+                    </>
+                  )}
+
+                  <button type="button" onClick={() => setCatalogOpen((open) => !open)} className="flex w-full items-center justify-between gap-4 border-t border-[var(--border-subtle)] pt-5 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--nvidia-green)]" aria-expanded={catalogOpen}>
+                    <div>
+                      <h3 className="text-sm font-semibold uppercase tracking-wider text-[var(--foreground)]">Preconfigured Servers</h3>
+                      <p className="mt-1 text-xs text-[var(--foreground-dim)]">Presets install as MCP command definitions; clients start them when needed.</p>
+                    </div>
+                    <span className="text-sm text-[var(--foreground)]">{catalogOpen ? "-" : "+"}</span>
+                  </button>
+                  {catalogOpen && (
+                    <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                      {catalog.map((entry) => {
+                        const installed = installedIds.has(entry.id)
+                        return (
+                          <div key={entry.id} className="metric flex min-h-44 flex-col p-4">
+                            <div className="flex items-start justify-between gap-3">
+                              <div>
+                                <h3 className="text-sm font-semibold uppercase tracking-wider text-[var(--foreground)]">{entry.name}</h3>
+                                <p className="mt-2 text-xs leading-5 text-[var(--foreground-dim)]">{entry.summary}</p>
+                                {entry.websiteUrl && <a href={entry.websiteUrl} target="_blank" rel="noreferrer" className="mt-2 inline-block text-[11px] font-mono uppercase tracking-wider text-[var(--nvidia-green)] hover:underline">Setup Guide</a>}
+                              </div>
+                              <span className="status-chip bg-[var(--status-pending-bg)] px-2 py-1 text-[var(--status-pending)]">{entry.transport}</span>
+                            </div>
+                            <div className="mt-3 min-w-0 rounded-sm border border-[var(--border-subtle)] bg-[var(--background)] p-2 font-mono text-[11px] text-[var(--foreground-dim)]">
+                              <span className="text-[var(--foreground)]">{entry.command}</span> {entry.args.join(" ")}
+                            </div>
+                            <div className="mt-auto flex items-center justify-between gap-3 pt-4">
+                              <p className="truncate text-[10px] uppercase tracking-wider text-[var(--foreground-dim)]">{entry.tags.join(" / ")}</p>
+                              <button onClick={() => postUpdate({ action: "install", id: entry.id }, installed ? `${entry.name} refreshed.` : `${entry.name} installed.`)} disabled={saving} className={installed ? "action-button px-3 py-2" : "rounded-sm bg-[var(--nvidia-green)] px-3 py-2 text-xs font-mono uppercase tracking-wider text-black disabled:opacity-50"}>
+                                {installed ? "Refresh" : "Install"}
+                              </button>
+                            </div>
+                          </div>
+                        )
+                      })}
+                    </div>
+                  )}
                 </div>
               )}
             </div>
@@ -705,8 +950,8 @@ export default function McpConfigurationPanel({ sandboxes = [] }: McpConfigurati
                 aria-expanded={customOpen}
               >
                 <div>
-                  <h2 className="text-sm font-semibold uppercase tracking-wider text-[var(--foreground)]">Custom Server</h2>
-                  <p className="mt-1 text-xs text-[var(--foreground-dim)]">Add a server command that is not in the catalog.</p>
+                  <h2 className="text-sm font-semibold uppercase tracking-wider text-[var(--foreground)]">Server Install Wizard</h2>
+                  <p className="mt-1 text-xs text-[var(--foreground-dim)]">Install a command, HTTP endpoint, or uploaded MCP bundle with assisted preflight repair.</p>
                 </div>
                 <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-sm border border-[var(--border-subtle)] bg-[var(--background-tertiary)] text-sm text-[var(--foreground)]">
                   {customOpen ? "-" : "+"}
@@ -714,52 +959,148 @@ export default function McpConfigurationPanel({ sandboxes = [] }: McpConfigurati
               </button>
               {customOpen && (
                 <div className="mt-5 border-t border-[var(--border-subtle)] pt-5">
-                  <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-                    <div className="space-y-2">
-                      <FieldLabel>Name</FieldLabel>
-                      <input value={customName} onChange={(event) => setCustomName(event.target.value)} className="field-control w-full px-3 py-2 text-sm font-mono" />
-                    </div>
-                    <div className="space-y-2">
-                      <FieldLabel>Transport</FieldLabel>
-                      <select value={customTransport} onChange={(event) => setCustomTransport(event.target.value as McpTransport)} className="field-control w-full px-3 py-2 text-sm font-mono">
-                        <option value="stdio">stdio</option>
-                        <option value="http">http</option>
-                      </select>
-                    </div>
-                    <div className="space-y-2 md:col-span-2">
-                      <FieldLabel>Summary</FieldLabel>
-                      <input value={customSummary} onChange={(event) => setCustomSummary(event.target.value)} className="field-control w-full px-3 py-2 text-sm" />
-                    </div>
-                    <div className="space-y-2 md:col-span-2">
-                      <FieldLabel>{customTransport === "http" ? "URL" : "Command"}</FieldLabel>
-                      <input value={customCommand} onChange={(event) => setCustomCommand(event.target.value)} placeholder={customTransport === "http" ? "https://mcp.example.com/mcp" : "npx, uvx, node, python"} className="field-control w-full px-3 py-2 text-sm font-mono" />
-                    </div>
-                    <div className="space-y-2">
-                      <FieldLabel>Args</FieldLabel>
-                      <textarea value={customArgs} onChange={(event) => setCustomArgs(event.target.value)} rows={6} className="field-control w-full resize-y px-3 py-2 text-sm font-mono" />
-                    </div>
-                    <div className="space-y-2">
-                      <FieldLabel>{customTransport === "http" ? "Headers" : "Env"}</FieldLabel>
-                      <textarea value={customEnv} onChange={(event) => setCustomEnv(event.target.value)} rows={6} placeholder={customTransport === "http" ? "Authorization=Bearer token" : "API_KEY=value\nBASE_URL=http://localhost:3000"} className="field-control w-full resize-y px-3 py-2 text-sm font-mono" />
-                    </div>
-                    <div className="space-y-2">
-                      <FieldLabel>Upload Runtime</FieldLabel>
-                      <input value={uploadRuntime} onChange={(event) => setUploadRuntime(event.target.value)} placeholder="python3, node, uv, uvx" className="field-control w-full px-3 py-2 text-sm font-mono" />
-                    </div>
-                    <div className="space-y-2">
-                      <FieldLabel>Upload Launch Mode</FieldLabel>
-                      <select value={uploadEntryMode} onChange={(event) => setUploadEntryMode(event.target.value as "file" | "python-module" | "console-script")} className="field-control w-full px-3 py-2 text-sm font-mono">
-                        <option value="file">File</option>
-                        <option value="python-module">Python module</option>
-                        <option value="console-script">Console script</option>
-                      </select>
-                    </div>
-                    <div className="space-y-2">
-                      <FieldLabel>Upload Entrypoint</FieldLabel>
-                      <input value={uploadEntrypoint} onChange={(event) => setUploadEntrypoint(event.target.value)} placeholder={uploadEntryMode === "python-module" ? "isaac_mcp_poc.server" : uploadEntryMode === "console-script" ? "isaac-mcp-poc" : "server.py, src/server.py, index.js"} className="field-control w-full px-3 py-2 text-sm font-mono" />
-                    </div>
+                  <div className="mb-5 grid grid-cols-2 gap-2 md:grid-cols-4">
+                    {(["basics", "launch", "upload", "review"] as const).map((step) => (
+                      <button
+                        key={step}
+                        type="button"
+                        onClick={() => setWizardStep(step)}
+                        className={`rounded-sm border px-3 py-2 text-xs font-mono uppercase tracking-wider ${wizardStep === step ? "border-[var(--nvidia-green)] bg-[var(--status-running-bg)] text-[var(--foreground)]" : "border-[var(--border-subtle)] bg-[var(--background)] text-[var(--foreground-dim)]"}`}
+                      >
+                        {step}
+                      </button>
+                    ))}
                   </div>
+                  {wizardStep === "basics" && (
+                    <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                      <div className="space-y-2 md:col-span-2">
+                        <div className="flex items-center gap-2"><FieldLabel>Assist Install</FieldLabel><FieldHint>Describe the MCP server and the running LLM endpoint will draft the install fields.</FieldHint></div>
+                        <textarea value={installPrompt} onChange={(event) => setInstallPrompt(event.target.value)} rows={4} placeholder="Install the GitHub MCP server with npx, or prepare this uploaded Python MCP bundle." className="field-control w-full resize-y px-3 py-2 text-sm" />
+                      </div>
+                      <div className="space-y-2">
+                        <div className="flex items-center gap-2"><FieldLabel>Name</FieldLabel><FieldHint>Stable display name and default id for this MCP server.</FieldHint></div>
+                        <input value={customName} onChange={(event) => setCustomName(event.target.value)} className="field-control w-full px-3 py-2 text-sm font-mono" />
+                      </div>
+                      <div className="space-y-2">
+                        <div className="flex items-center gap-2"><FieldLabel>Transport</FieldLabel><FieldHint>Use stdio for local commands, HTTP for remote streamable MCP endpoints.</FieldHint></div>
+                        <select value={customTransport} onChange={(event) => setCustomTransport(event.target.value as McpTransport)} className="field-control w-full px-3 py-2 text-sm font-mono">
+                          <option value="stdio">stdio</option>
+                          <option value="http">http</option>
+                        </select>
+                      </div>
+                      <div className="space-y-2 md:col-span-2">
+                        <div className="flex items-center gap-2"><FieldLabel>Summary</FieldLabel><FieldHint>Short note shown in the installed server list.</FieldHint></div>
+                        <input value={customSummary} onChange={(event) => setCustomSummary(event.target.value)} className="field-control w-full px-3 py-2 text-sm" />
+                      </div>
+                      {installAssistNotes && (
+                        <div className="rounded-sm border border-[var(--border-subtle)] bg-[var(--background)] p-3 text-xs text-[var(--foreground-dim)] md:col-span-2">
+                          {installAssistNotes}
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {wizardStep === "launch" && (
+                    <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                      <div className="space-y-2 md:col-span-2">
+                        <div className="flex items-center gap-2"><FieldLabel>{customTransport === "http" ? "URL" : "Command"}</FieldLabel><FieldHint>{customTransport === "http" ? "Full remote MCP endpoint URL." : "Executable available to the controller, such as npx, uvx, node, or python."}</FieldHint></div>
+                        <input value={customCommand} onChange={(event) => setCustomCommand(event.target.value)} placeholder={customTransport === "http" ? "https://mcp.example.com/mcp" : "npx, uvx, node, python"} className="field-control w-full px-3 py-2 text-sm font-mono" />
+                      </div>
+                      <div className="space-y-2">
+                        <div className="flex items-center gap-2"><FieldLabel>Args</FieldLabel><FieldHint>One argument per line, passed to the command in order.</FieldHint></div>
+                        <textarea value={customArgs} onChange={(event) => setCustomArgs(event.target.value)} rows={8} className="field-control w-full resize-y px-3 py-2 text-sm font-mono" />
+                      </div>
+                      <div className="space-y-2">
+                        <div className="flex items-center gap-2"><FieldLabel>{customTransport === "http" ? "Headers" : "Env"}</FieldLabel><FieldHint>KEY=value lines. HTTP entries become headers; stdio entries become environment variables.</FieldHint></div>
+                        <textarea value={customEnv} onChange={(event) => setCustomEnv(event.target.value)} rows={8} placeholder={customTransport === "http" ? "Authorization=Bearer token" : "API_KEY=value\nBASE_URL=http://localhost:3000"} className="field-control w-full resize-y px-3 py-2 text-sm font-mono" />
+                      </div>
+                    </div>
+                  )}
+
+                  {wizardStep === "upload" && (
+                    <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                      <div className="space-y-2">
+                        <div className="flex items-center gap-2"><FieldLabel>Upload Runtime</FieldLabel><FieldHint>Runtime used to bootstrap uploaded bundles before preflight.</FieldHint></div>
+                        <input value={uploadRuntime} onChange={(event) => setUploadRuntime(event.target.value)} placeholder="python3, node, uv, uvx" className="field-control w-full px-3 py-2 text-sm font-mono" />
+                      </div>
+                      <div className="space-y-2">
+                        <div className="flex items-center gap-2"><FieldLabel>Upload Launch Mode</FieldLabel><FieldHint>How the uploaded server should start after dependencies are installed.</FieldHint></div>
+                        <select value={uploadEntryMode} onChange={(event) => setUploadEntryMode(event.target.value as "file" | "python-module" | "console-script")} className="field-control w-full px-3 py-2 text-sm font-mono">
+                          <option value="file">File</option>
+                          <option value="python-module">Python module</option>
+                          <option value="console-script">Console script</option>
+                        </select>
+                      </div>
+                      <div className="space-y-2 md:col-span-2">
+                        <div className="flex items-center gap-2"><FieldLabel>Upload Entrypoint</FieldLabel><FieldHint>File path, Python module name, or installed console script to launch.</FieldHint></div>
+                        <input value={uploadEntrypoint} onChange={(event) => setUploadEntrypoint(event.target.value)} placeholder={uploadEntryMode === "python-module" ? "isaac_mcp_poc.server" : uploadEntryMode === "console-script" ? "isaac-mcp-poc" : "server.py, src/server.py, index.js"} className="field-control w-full px-3 py-2 text-sm font-mono" />
+                      </div>
+                      <div className="space-y-2">
+                        <div className="flex items-center gap-2"><FieldLabel>Preflight Repair</FieldLabel><FieldHint>When preflight fails, ask the running LLM endpoint for a bounded repair and run preflight again.</FieldHint></div>
+                        <label className="flex min-h-10 items-center justify-between gap-3 rounded-sm border border-[var(--border-subtle)] bg-[var(--background)] px-3 py-2 text-xs text-[var(--foreground)]">
+                          <span>Use sandbox LLM on failed uploads</span>
+                          <input type="checkbox" checked={uploadRepair} onChange={(event) => setUploadRepair(event.target.checked)} className="h-4 w-4 accent-[var(--nvidia-green)]" />
+                        </label>
+                      </div>
+                      <div className="space-y-2">
+                        <div className="flex items-center gap-2"><FieldLabel>Repair Route</FieldLabel><FieldHint>Optional sandbox whose configured model should be used for repair assistance.</FieldHint></div>
+                        <select value={repairSandboxId} onChange={(event) => setRepairSandboxId(event.target.value)} disabled={!uploadRepair} className="field-control w-full px-3 py-2 text-sm font-mono">
+                          <option value="">Default controller model</option>
+                          {sandboxes.map((sandbox) => (
+                            <option key={sandbox.id} value={sandbox.id}>{sandbox.name}</option>
+                          ))}
+                        </select>
+                      </div>
+                      <div className="flex flex-wrap items-center gap-3 md:col-span-2">
+                        <label className="action-button cursor-pointer px-4 py-2">
+                          Choose Directory
+                          <input type="file" multiple onChange={(event) => chooseUploadDirectory(event.target.files)} className="sr-only" {...({ webkitdirectory: "", directory: "" } as Record<string, string>)} />
+                        </label>
+                        <label className="action-button cursor-pointer px-4 py-2">
+                          Choose Archive
+                          <input type="file" accept=".zip,.tgz,.tar.gz,.tar,application/zip,application/gzip,application/x-tar" onChange={(event) => chooseUploadArchive(event.target.files?.[0] || null)} className="sr-only" />
+                        </label>
+                        {(uploadArchive || uploadFiles.length > 0) && (
+                          <span className="text-xs font-mono text-[var(--foreground-dim)]">
+                            {uploadArchive ? uploadArchive.name : `${uploadFiles.length} file${uploadFiles.length === 1 ? "" : "s"}`}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  )}
+
+                  {wizardStep === "review" && (
+                    <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+                      <div className="rounded-sm border border-[var(--border-subtle)] bg-[var(--background)] p-4">
+                        <h3 className="text-xs font-semibold uppercase tracking-wider text-[var(--foreground)]">Command Install</h3>
+                        <pre className="mt-3 overflow-auto text-[11px] leading-5 text-[var(--foreground-dim)]">{JSON.stringify({
+                          id: customName,
+                          name: customName,
+                          summary: customSummary,
+                          transport: customTransport,
+                          command: customCommand,
+                          args: parseLines(customArgs),
+                          env: parseEnv(customEnv),
+                        }, null, 2)}</pre>
+                      </div>
+                      <div className="rounded-sm border border-[var(--border-subtle)] bg-[var(--background)] p-4">
+                        <h3 className="text-xs font-semibold uppercase tracking-wider text-[var(--foreground)]">Upload Install</h3>
+                        <pre className="mt-3 overflow-auto text-[11px] leading-5 text-[var(--foreground-dim)]">{JSON.stringify({
+                          selectedBundle: uploadArchive?.name || (uploadFiles.length > 0 ? `${uploadFiles.length} files` : "none"),
+                          runtime: uploadRuntime,
+                          entryMode: uploadEntryMode,
+                          entrypoint: uploadEntrypoint,
+                          repair: uploadRepair,
+                          repairSandboxId: repairSandboxId || null,
+                        }, null, 2)}</pre>
+                      </div>
+                    </div>
+                  )}
+
                   <div className="mt-5 flex flex-wrap items-center gap-3">
+                    <button onClick={previousWizardStep} disabled={saving || wizardStepIndex === 0} className="action-button px-4 py-2">Back</button>
+                    <button onClick={nextWizardStep} disabled={saving || wizardStepIndex === WIZARD_STEPS.length - 1} className="action-button px-4 py-2">Next</button>
+                    <button onClick={assistInstall} disabled={saving || !installPrompt.trim()} className="action-button px-4 py-2">Assist Install</button>
                     <button
                       onClick={() => postUpdate({
                         action: "install",
@@ -776,39 +1117,15 @@ export default function McpConfigurationPanel({ sandboxes = [] }: McpConfigurati
                       disabled={saving}
                       className="rounded-sm bg-[var(--nvidia-green)] px-4 py-2 text-xs font-mono uppercase tracking-wider text-black disabled:opacity-50"
                     >
-                      Install Custom Server
+                      Install Server Command
                     </button>
-                    <label className="action-button cursor-pointer px-4 py-2">
-                      Choose Directory
-                      <input
-                        type="file"
-                        multiple
-                        onChange={(event) => chooseUploadDirectory(event.target.files)}
-                        className="sr-only"
-                        {...({ webkitdirectory: "", directory: "" } as Record<string, string>)}
-                      />
-                    </label>
-                    <label className="action-button cursor-pointer px-4 py-2">
-                      Choose Archive
-                      <input
-                        type="file"
-                        accept=".zip,.tgz,.tar.gz,.tar,application/zip,application/gzip,application/x-tar"
-                        onChange={(event) => chooseUploadArchive(event.target.files?.[0] || null)}
-                        className="sr-only"
-                      />
-                    </label>
                     <button
                       onClick={uploadServer}
-                      disabled={saving || (!uploadArchive && uploadFiles.length === 0)}
+                      disabled={saving || !hasUploadBundle}
                       className="action-button px-4 py-2"
                     >
-                      Upload Server
+                      Upload and Preflight
                     </button>
-                    {(uploadArchive || uploadFiles.length > 0) && (
-                      <span className="text-xs font-mono text-[var(--foreground-dim)]">
-                        {uploadArchive ? uploadArchive.name : `${uploadFiles.length} file${uploadFiles.length === 1 ? "" : "s"}`}
-                      </span>
-                    )}
                   </div>
                 </div>
               )}

@@ -5,7 +5,8 @@ import os from "node:os"
 import path from "node:path"
 import { promisify } from "node:util"
 import { preflightMcpServer } from "@/app/lib/mcpPreflight"
-import { installMcpServer, listMcpServers } from "@/app/lib/mcpServerStore"
+import { repairUploadedMcpServerWithLlm, type McpPreflightRepairResult } from "@/app/lib/mcpPreflightRepair"
+import { installMcpServer, listMcpServers, type McpServerInstall } from "@/app/lib/mcpServerStore"
 
 const execFileAsync = promisify(execFile)
 const HOME = process.env.HOME || "/tmp"
@@ -295,6 +296,8 @@ export async function POST(request: Request) {
     const runtime = String(form.get("runtime") || "python3").trim()
     const entrypoint = String(form.get("entrypoint") || "server.py").trim()
     const entryMode = normalizeEntryMode(form.get("entryMode"))
+    const sandboxId = String(form.get("sandboxId") || "").trim()
+    const repairEnabled = String(form.get("repair") || "true") !== "false"
     const root = path.join(UPLOAD_DIR, id)
 
     if (!runtime) throw new Error("runtime command is required")
@@ -311,7 +314,7 @@ export async function POST(request: Request) {
     const projectRoot = await resolveProjectRoot(root, entrypointPath)
     const bootstrap = await bootstrapUploadedServer(projectRoot, runtime, entrypoint)
     const launch = await launchCommandForUpload(projectRoot, bootstrap, entryMode, entrypoint, entrypointPath, parseLines(form.get("args")))
-    const candidate = {
+    let candidate = {
       id,
       name,
       summary,
@@ -322,7 +325,7 @@ export async function POST(request: Request) {
       tags: ["uploaded", "custom"],
       source: "custom",
       enabled: true,
-    } as const satisfies {
+    } satisfies {
       id: string
       name: string
       summary: string
@@ -334,13 +337,51 @@ export async function POST(request: Request) {
       source: "custom"
       enabled: boolean
     }
-    const preflight = await preflightMcpServer({
+    const installCandidate = (): McpServerInstall => ({
       ...candidate,
       installedAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
       accessMode: "disabled",
       allowedSandboxIds: [],
     })
+    let preflight = await preflightMcpServer(installCandidate())
+    let repair: McpPreflightRepairResult | null = null
+
+    if (!preflight.ok && repairEnabled) {
+      try {
+        repair = await repairUploadedMcpServerWithLlm({
+          uploadRoot: root,
+          projectRoot,
+          server: installCandidate(),
+          preflight,
+          dependencyLogs: bootstrap.logs,
+          sandboxId: sandboxId || null,
+        })
+        if (repair.updatedServer) {
+          candidate = {
+            ...candidate,
+            command: repair.updatedServer.command,
+            args: repair.updatedServer.args,
+            env: repair.updatedServer.env,
+          }
+        }
+        if (repair.ok) {
+          preflight = await preflightMcpServer(installCandidate())
+        }
+      } catch (error) {
+        repair = {
+          attempted: true,
+          ok: false,
+          provider: "openai-compatible",
+          model: "",
+          baseUrl: process.env.MCP_PREFLIGHT_LLM_BASE_URL || process.env.OPENAI_BASE_URL || process.env.VLLM_BASE_URL || "",
+          summary: "LLM-assisted repair could not complete.",
+          changes: [],
+          error: error instanceof Error ? error.message : "MCP repair failed",
+        }
+      }
+    }
+
     const server = await installMcpServer({
       ...candidate,
       enabled: preflight.ok,
@@ -357,6 +398,7 @@ export async function POST(request: Request) {
         logs: bootstrap.logs,
       },
       preflight,
+      repair,
       ...(await listMcpServers()),
     })
   } catch (error) {
