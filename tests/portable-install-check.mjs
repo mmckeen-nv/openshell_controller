@@ -58,6 +58,11 @@ assert.match(hostCommandsSource, /\.nemoclaw\/source\/scripts\/setup\.sh/, 'host
 assert.match(hostCommandsSource, /discoverHomeFiles\("scripts\/setup\.sh"\)/, 'runtime command resolution must scan user home directories for setup.sh')
 assert.match(hostCommandsSource, /discoverHomeFiles\("bin\/nemoclaw\.js"\)/, 'runtime command resolution must scan user home directories for nemoclaw.js')
 assert.match(hostCommandsSource, /export const NEMOCLAW_SETUP_CANDIDATES/, 'runtime command resolution must expose searched setup candidates')
+assert.ok(
+  hostCommandsSource.indexOf('HOME ? path.join(HOME, ".nemoclaw/source") : undefined') <
+    hostCommandsSource.indexOf('NEMOCLAW_SETUP ? path.dirname(path.dirname(NEMOCLAW_SETUP)) : undefined'),
+  'NemoClaw onboard must prefer the installed package root over stale legacy checkout setup paths',
+)
 assert.doesNotMatch(hostCommandsSource, /\/Users\/markmckeen|\/home\/nvidia/, 'host command resolution must not bake in developer machine paths')
 assert.match(mcpBrokerUrlSource, /discoverOpenShellDockerGateway/, 'MCP broker URL generation must discover the active OpenShell Docker gateway')
 assert.match(mcpBrokerUrlSource, /OPEN_SHELL_CONTAINER/, 'MCP broker URL generation must respect the configured cluster container')

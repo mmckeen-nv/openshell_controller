@@ -163,9 +163,9 @@ export const NEMOCLAW_SETUP = firstExisting(NEMOCLAW_SETUP_CANDIDATES, "")
 
 export const NEMOCLAW_CWD_CANDIDATES = unique([
   process.env.NEMOCLAW_CWD,
+  HOME ? path.join(HOME, ".nemoclaw/source") : undefined,
   NEMOCLAW_SETUP ? path.dirname(path.dirname(NEMOCLAW_SETUP)) : undefined,
   NEMOCLAW_BIN.includes("/") ? path.dirname(path.dirname(NEMOCLAW_BIN)) : undefined,
-  HOME ? path.join(HOME, ".nemoclaw/source") : undefined,
   HOME ? path.join(HOME, "NemoClaw") : undefined,
   HOME ? path.join(HOME, "nemoclaw") : undefined,
 ])
