@@ -25,6 +25,7 @@ const sandboxMcpRoutePath = path.join(root, 'app/api/sandbox/[sandboxId]/mcp/rou
 const brokerUrlPath = path.join(root, 'app/lib/mcpBrokerUrl.ts')
 const preflightLibPath = path.join(root, 'app/lib/mcpPreflight.ts')
 const preflightRepairLibPath = path.join(root, 'app/lib/mcpPreflightRepair.ts')
+const mcpServerSpecsPath = path.join(root, 'mcp_server_specs.md')
 const middlewarePath = path.join(root, 'middleware.ts')
 const panelPath = path.join(root, 'app/components/McpConfigurationPanel.tsx')
 const helpPath = path.join(root, 'app/components/HelpPanel.tsx')
@@ -32,7 +33,7 @@ const sidebarPath = path.join(root, 'app/components/Sidebar.tsx')
 const sandboxListPath = path.join(root, 'app/components/SandboxList.tsx')
 const pagePath = path.join(root, 'app/page.tsx')
 
-const [storeSource, brokerStoreSource, brokerClientSource, manifestSource, privilegedFilesSource, routeSource, uploadRouteSource, preflightRouteSource, healthRouteSource, registryRouteSource, registriesRouteSource, registriesAssistRouteSource, installAssistRouteSource, registryStoreSource, inferenceModelSource, brokerCapabilitiesRouteSource, brokerCallRouteSource, sandboxMcpRouteSource, brokerUrlSource, preflightLibSource, preflightRepairLibSource, middlewareSource, panelSource, helpSource, sidebarSource, sandboxListSource, pageSource] = await Promise.all([
+const [storeSource, brokerStoreSource, brokerClientSource, manifestSource, privilegedFilesSource, routeSource, uploadRouteSource, preflightRouteSource, healthRouteSource, registryRouteSource, registriesRouteSource, registriesAssistRouteSource, installAssistRouteSource, registryStoreSource, inferenceModelSource, brokerCapabilitiesRouteSource, brokerCallRouteSource, sandboxMcpRouteSource, brokerUrlSource, preflightLibSource, preflightRepairLibSource, mcpServerSpecsSource, middlewareSource, panelSource, helpSource, sidebarSource, sandboxListSource, pageSource] = await Promise.all([
   readFile(storePath, 'utf8'),
   readFile(brokerStorePath, 'utf8'),
   readFile(brokerClientPath, 'utf8'),
@@ -54,6 +55,7 @@ const [storeSource, brokerStoreSource, brokerClientSource, manifestSource, privi
   readFile(brokerUrlPath, 'utf8'),
   readFile(preflightLibPath, 'utf8'),
   readFile(preflightRepairLibPath, 'utf8'),
+  readFile(mcpServerSpecsPath, 'utf8'),
   readFile(middlewarePath, 'utf8'),
   readFile(panelPath, 'utf8'),
   readFile(helpPath, 'utf8'),
@@ -121,6 +123,9 @@ assert.match(uploadRouteSource, /console-script/, 'MCP upload API must support i
 assert.match(uploadRouteSource, /resolveProjectRoot/, 'MCP upload API must find project manifests inside uploaded directories')
 assert.match(uploadRouteSource, /preflightMcpServer/, 'MCP upload API must preflight uploaded server bundles')
 assert.match(uploadRouteSource, /repairUploadedMcpServerWithLlm/, 'MCP upload API must attempt bounded LLM repair when uploaded server preflight fails')
+assert.match(uploadRouteSource, /mode"\).*"stage"/s, 'MCP upload API must support a file-staging mode')
+assert.match(uploadRouteSource, /mode === "preflight"/, 'MCP upload API must support preflighting staged uploads')
+assert.match(uploadRouteSource, /mode === "install-staged"/, 'MCP upload API must support installing staged uploads')
 assert.match(uploadRouteSource, /form\.get\("sandboxId"\)/, 'MCP upload API must accept a sandbox id so repair can mirror that sandbox LLM route')
 assert.match(uploadRouteSource, /preflight-failed/, 'MCP upload API must mark failed preflight installs')
 assert.match(uploadRouteSource, /installMcpServer/, 'MCP upload API must install uploaded server bundles')
@@ -134,6 +139,10 @@ assert.match(preflightRepairLibSource, /chat\/completions/, 'MCP preflight repai
 assert.match(preflightRepairLibSource, /response_format: \{ type: "json_object" \}/, 'MCP preflight repair must ask the model for structured JSON')
 assert.match(preflightRepairLibSource, /repair path must stay inside the uploaded server/, 'MCP preflight repair must confine edits to the uploaded server')
 assert.match(preflightRepairLibSource, /provided context/, 'MCP preflight repair must only edit files shown to the model')
+assert.match(preflightRepairLibSource, /mcp_server_specs\.md/, 'MCP preflight repair must read the uploaded-server requirements spec')
+assert.match(preflightRepairLibSource, /You are inspecting an MCP server/, 'MCP preflight repair must use the dedicated inspection prompt')
+assert.match(mcpServerSpecsSource, /per-server virtual environment/, 'MCP server spec must document isolated Python virtualenvs')
+assert.match(mcpServerSpecsSource, /Broker Expectations/, 'MCP server spec must document broker preflight expectations')
 assert.match(healthRouteSource, /listBrokerServerTools/, 'MCP health API must inspect server tools through the broker client')
 assert.match(healthRouteSource, /enabledServers/, 'MCP health API must check enabled MCP servers')
 assert.match(registryRouteSource, /registry\.modelcontextprotocol\.io/, 'MCP registry search should default to the official registry')
@@ -158,9 +167,11 @@ assert.match(inferenceModelSource, /\["inference", "get"\]/, 'MCP LLM assistants
 assert.match(inferenceModelSource, /Gateway inference/, 'MCP LLM assistants must prefer gateway inference model resolution')
 assert.match(inferenceModelSource, /System inference/, 'MCP LLM assistants may fall back to system inference model resolution')
 assert.doesNotMatch(inferenceModelSource, /gpt-4o-mini/, 'MCP LLM assistants must not hardcode a ChatGPT model fallback')
-assert.match(panelSource, /Install Server Command/, 'MCP page must expose a server command install action')
 assert.match(panelSource, /Server Install Wizard/, 'MCP page must present custom installation as a wizard')
-assert.match(panelSource, /Upload and Preflight/, 'MCP custom server accordion must support uploaded server bundles')
+assert.match(panelSource, /Upload Server Files/, 'MCP server install wizard must use a clear upload step')
+assert.match(panelSource, /Preflight Check/, 'MCP server install wizard must use a clear preflight step')
+assert.match(panelSource, /Review/, 'MCP server install wizard must use a clear review step')
+assert.match(panelSource, /Install/, 'MCP server install wizard must use a clear install step')
 assert.match(panelSource, /Choose Directory/, 'MCP custom server upload must accept directories')
 assert.match(panelSource, /Choose Archive/, 'MCP custom server upload must accept archives')
 assert.match(panelSource, /\/api\/mcp\/upload/, 'MCP custom server upload must call the upload API')
@@ -174,11 +185,14 @@ assert.match(panelSource, /repairSandboxId/, 'MCP custom server upload must let 
 assert.match(panelSource, /LLM repair/, 'MCP custom server upload must summarize LLM-assisted repair results')
 assert.match(panelSource, /FieldHint/, 'MCP server install wizard fields must include tooltips')
 assert.match(panelSource, /wizardStep/, 'MCP server install wizard must expose install workflow steps')
-assert.match(panelSource, /assistInstall/, 'MCP server install wizard must let the LLM draft install fields')
-assert.match(panelSource, /Assist Install/, 'MCP server install wizard must expose an assist install action')
 assert.match(panelSource, /Back/, 'MCP server install wizard must expose back navigation')
 assert.match(panelSource, /Next/, 'MCP server install wizard must expose next navigation')
-assert.match(panelSource, /Upload and Preflight/, 'MCP server install wizard must expose upload preflight as the upload action')
+assert.match(panelSource, /Start Preflight checks/, 'MCP server install wizard must expose a preflight-step action')
+assert.match(panelSource, /Install Server/, 'MCP server install wizard must expose an install-step action')
+assert.match(panelSource, /stageUploadServer/, 'MCP server install wizard must stage uploads before preflight')
+assert.match(panelSource, /startWizardPreflightChecks/, 'MCP server install wizard must run preflight separately from upload')
+assert.match(panelSource, /installStagedUpload/, 'MCP server install wizard must install only after review')
+assert.doesNotMatch(panelSource, /Upload and Preflight/, 'MCP server install wizard must not collapse upload and preflight into one action')
 assert.match(panelSource, /preflightServer/, 'MCP page must let operators preflight installed servers')
 assert.match(panelSource, /Preflight/, 'MCP page must show preflight controls and results')
 assert.match(panelSource, /serverPayloadFromJson/, 'MCP page must parse edited server JSON')

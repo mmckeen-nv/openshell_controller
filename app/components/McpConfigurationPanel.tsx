@@ -83,6 +83,18 @@ type McpInstallSuggestion = {
   notes?: string
 }
 
+type StagedMcpUpload = {
+  id: string
+  name: string
+  summary: string
+  runtime: string
+  entryMode: "file" | "python-module" | "console-script"
+  entrypoint: string
+  uploadRoot: string
+  projectRoot: string
+  selectedBundle?: string
+}
+
 type McpSandbox = {
   id: string
   name: string
@@ -94,8 +106,14 @@ type McpConfigurationPanelProps = {
 }
 
 const REGISTRY_PAGE_SIZE = 4
-const WIZARD_STEPS = ["basics", "launch", "upload", "review"] as const
+const WIZARD_STEPS = ["upload", "preflight", "review", "install"] as const
 type WizardStep = typeof WIZARD_STEPS[number]
+const WIZARD_STEP_LABELS: Record<WizardStep, string> = {
+  upload: "Upload Server Files",
+  preflight: "Preflight Check",
+  review: "Review",
+  install: "Install",
+}
 
 function FieldLabel({ children }: { children: React.ReactNode }) {
   return <label className="text-[10px] uppercase tracking-wider text-[var(--foreground-dim)]">{children}</label>
@@ -157,6 +175,12 @@ export default function McpConfigurationPanel({ sandboxes = [] }: McpConfigurati
   const [uploadEntrypoint, setUploadEntrypoint] = useState("server.py")
   const [uploadRepair, setUploadRepair] = useState(true)
   const [repairSandboxId, setRepairSandboxId] = useState("")
+  const [stagedUpload, setStagedUpload] = useState<StagedMcpUpload | null>(null)
+  const [wizardPreflight, setWizardPreflight] = useState<McpPreflightResult | null>(null)
+  const [wizardRepair, setWizardRepair] = useState<McpPreflightRepairResult | null>(null)
+  const [wizardCandidate, setWizardCandidate] = useState<McpCatalogEntry | null>(null)
+  const [wizardDependencyInstall, setWizardDependencyInstall] = useState<{ kind?: string; logs?: string[] } | null>(null)
+  const [wizardInstallResult, setWizardInstallResult] = useState<McpServerInstall | null>(null)
   const [installPrompt, setInstallPrompt] = useState("")
   const [installAssistNotes, setInstallAssistNotes] = useState("")
   const [editingServerId, setEditingServerId] = useState<string | null>(null)
@@ -178,7 +202,7 @@ export default function McpConfigurationPanel({ sandboxes = [] }: McpConfigurati
   const [repoOpen, setRepoOpen] = useState(true)
   const [catalogOpen, setCatalogOpen] = useState(false)
   const [customOpen, setCustomOpen] = useState(false)
-  const [wizardStep, setWizardStep] = useState<WizardStep>("basics")
+  const [wizardStep, setWizardStep] = useState<WizardStep>("upload")
 
   const installedIds = useMemo(() => new Set(servers.map((server) => server.id)), [servers])
   const enabledCount = servers.filter((server) => server.enabled).length
@@ -322,7 +346,7 @@ export default function McpConfigurationPanel({ sandboxes = [] }: McpConfigurati
       const data = await response.json() as { suggestion?: McpInstallSuggestion; error?: string }
       if (!response.ok || !data.suggestion) throw new Error(data.error || "Failed to draft MCP install")
       applyInstallSuggestion(data.suggestion)
-      setWizardStep("launch")
+      setWizardStep("upload")
       setMessage("Install wizard fields drafted from the running LLM endpoint.")
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Failed to draft MCP install")
@@ -501,6 +525,7 @@ export default function McpConfigurationPanel({ sandboxes = [] }: McpConfigurati
       return withRelativePath.webkitRelativePath || file.name
     }))
     if (files.length > 0) setUploadArchive(null)
+    resetWizardPreflightState()
   }
 
   function chooseUploadArchive(file: File | null) {
@@ -509,6 +534,16 @@ export default function McpConfigurationPanel({ sandboxes = [] }: McpConfigurati
       setUploadFiles([])
       setUploadPaths([])
     }
+    resetWizardPreflightState()
+  }
+
+  function resetWizardPreflightState() {
+    setStagedUpload(null)
+    setWizardPreflight(null)
+    setWizardRepair(null)
+    setWizardCandidate(null)
+    setWizardDependencyInstall(null)
+    setWizardInstallResult(null)
   }
 
   function summarizePreflight(preflight: McpPreflightResult) {
@@ -553,24 +588,29 @@ export default function McpConfigurationPanel({ sandboxes = [] }: McpConfigurati
     }
   }
 
-  async function uploadServer() {
+  function appendWizardMetadata(form: FormData) {
+    form.set("id", customName)
+    form.set("name", customName)
+    form.set("summary", customSummary)
+    form.set("runtime", uploadRuntime)
+    form.set("entryMode", uploadEntryMode)
+    form.set("entrypoint", uploadEntrypoint)
+    form.set("args", customArgs)
+    form.set("env", customEnv)
+    form.set("repair", uploadRepair ? "true" : "false")
+    if (repairSandboxId) form.set("sandboxId", repairSandboxId)
+  }
+
+  async function stageUploadServer() {
     try {
       if (!uploadArchive && uploadFiles.length === 0) {
         setMessage("Choose a server directory or archive before uploading.")
-        return
+        return false
       }
       setSaving(true)
       const form = new FormData()
-      form.set("id", customName)
-      form.set("name", customName)
-      form.set("summary", customSummary)
-      form.set("runtime", uploadRuntime)
-      form.set("entryMode", uploadEntryMode)
-      form.set("entrypoint", uploadEntrypoint)
-      form.set("args", customArgs)
-      form.set("env", customEnv)
-      form.set("repair", uploadRepair ? "true" : "false")
-      if (repairSandboxId) form.set("sandboxId", repairSandboxId)
+      form.set("mode", "stage")
+      appendWizardMetadata(form)
       if (uploadArchive) {
         form.set("archive", uploadArchive)
       } else {
@@ -580,27 +620,110 @@ export default function McpConfigurationPanel({ sandboxes = [] }: McpConfigurati
         })
       }
       const response = await fetch("/api/mcp/upload", { method: "POST", body: form })
-      const data = await response.json() as McpResponse & { dependencyInstall?: { kind?: string; logs?: string[] }; preflight?: McpPreflightResult; repair?: McpPreflightRepairResult; server?: McpServerInstall }
-      if (!response.ok) throw new Error(data.error || "Failed to upload MCP server")
+      const data = await response.json() as { stagedUpload?: StagedMcpUpload; error?: string }
+      if (!response.ok || !data.stagedUpload) throw new Error(data.error || "Failed to upload MCP server files")
+      setStagedUpload(data.stagedUpload)
+      setWizardPreflight(null)
+      setWizardRepair(null)
+      setWizardCandidate(null)
+      setWizardDependencyInstall(null)
+      setWizardInstallResult(null)
+      setMessage(`${data.stagedUpload.name} files uploaded. Continue to preflight when ready.`)
+      return true
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Failed to upload MCP server files")
+      return false
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  async function startWizardPreflightChecks() {
+    try {
+      if (!stagedUpload) {
+        setMessage("Upload server files before starting preflight checks.")
+        return
+      }
+      setSaving(true)
+      const form = new FormData()
+      form.set("mode", "preflight")
+      appendWizardMetadata(form)
+      const response = await fetch("/api/mcp/upload", { method: "POST", body: form })
+      const data = await response.json() as {
+        stagedUpload?: StagedMcpUpload
+        candidate?: McpCatalogEntry
+        dependencyInstall?: { kind?: string; logs?: string[] }
+        preflight?: McpPreflightResult
+        repair?: McpPreflightRepairResult
+        error?: string
+      }
+      if (!response.ok || !data.preflight || !data.candidate) throw new Error(data.error || "Failed to preflight MCP server")
+      setStagedUpload(data.stagedUpload || stagedUpload)
+      setWizardCandidate(data.candidate)
+      setWizardDependencyInstall(data.dependencyInstall || null)
+      setWizardPreflight(data.preflight)
+      setWizardRepair(data.repair || null)
+      const installKind = data.dependencyInstall?.kind || "generic"
+      const installLogCount = data.dependencyInstall?.logs?.filter(Boolean).length || 0
+      setMessage(`Preflight ${data.preflight.ok ? "passed" : "found failures"}. ${installKind === "generic" ? "No dependency bootstrap was needed." : `${installKind} dependencies bootstrapped${installLogCount > 0 ? ` with ${installLogCount} install step${installLogCount === 1 ? "" : "s"}` : ""}.`}${summarizeRepair(data.repair)}\n${summarizePreflight(data.preflight)}`)
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Failed to preflight MCP server")
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  async function installStagedUpload() {
+    try {
+      if (!stagedUpload || !wizardCandidate) {
+        setMessage("Run preflight before installing this MCP server.")
+        return
+      }
+      setSaving(true)
+      const form = new FormData()
+      form.set("mode", "install-staged")
+      appendWizardMetadata(form)
+      form.set("command", wizardCandidate.command)
+      form.set("commandArgs", wizardCandidate.args.join("\n"))
+      form.set("installEnv", envToText(wizardCandidate.env))
+      form.set("preflightOk", wizardPreflight?.ok ? "true" : "false")
+      const response = await fetch("/api/mcp/upload", { method: "POST", body: form })
+      const data = await response.json() as McpResponse & { server?: McpServerInstall; error?: string }
+      if (!response.ok || !data.server) throw new Error(data.error || "Failed to install staged MCP server")
       setCatalog(Array.isArray(data.catalog) ? data.catalog : catalog)
       setServers(Array.isArray(data.servers) ? data.servers : [])
       setConfig(data.config || { mcpServers: {} })
-      if (data.preflight && data.server?.id) {
-        setPreflightResults((current) => ({ ...current, [data.server!.id]: data.preflight as McpPreflightResult }))
+      setWizardInstallResult(data.server)
+      if (wizardPreflight) {
+        setPreflightResults((current) => ({ ...current, [data.server!.id]: wizardPreflight }))
       }
       setUploadFiles([])
       setUploadPaths([])
       setUploadArchive(null)
-      const installKind = data.dependencyInstall?.kind || "generic"
-      const installLogCount = data.dependencyInstall?.logs?.filter(Boolean).length || 0
-      const preflightNote = data.preflight
-        ? `\nPreflight ${data.preflight.ok ? "passed" : "failed; server saved disabled"}.\n${summarizePreflight(data.preflight)}`
-        : ""
-      setMessage(`${customName} uploaded. ${installKind === "generic" ? "No dependency bootstrap was needed." : `${installKind} dependencies bootstrapped${installLogCount > 0 ? ` with ${installLogCount} install step${installLogCount === 1 ? "" : "s"}` : ""}.`}${summarizeRepair(data.repair)}${preflightNote}`)
+      setMessage(`${data.server.name} installed${data.server.enabled ? "." : " disabled because preflight did not pass."}`)
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : "Failed to upload MCP server")
+      setMessage(error instanceof Error ? error.message : "Failed to install staged MCP server")
     } finally {
       setSaving(false)
+    }
+  }
+
+  async function handleWizardNext() {
+    if (wizardStep === "upload") {
+      const staged = stagedUpload ? true : await stageUploadServer()
+      if (staged) nextWizardStep()
+      return
+    }
+    if (wizardStep === "preflight") {
+      if (!wizardPreflight) {
+        setMessage("Start preflight checks before reviewing this MCP server.")
+        return
+      }
+      nextWizardStep()
+      return
+    }
+    if (wizardStep === "review") {
+      nextWizardStep()
     }
   }
 
@@ -960,72 +1083,34 @@ export default function McpConfigurationPanel({ sandboxes = [] }: McpConfigurati
               {customOpen && (
                 <div className="mt-5 border-t border-[var(--border-subtle)] pt-5">
                   <div className="mb-5 grid grid-cols-2 gap-2 md:grid-cols-4">
-                    {(["basics", "launch", "upload", "review"] as const).map((step) => (
+                    {WIZARD_STEPS.map((step) => (
                       <button
                         key={step}
                         type="button"
                         onClick={() => setWizardStep(step)}
                         className={`rounded-sm border px-3 py-2 text-xs font-mono uppercase tracking-wider ${wizardStep === step ? "border-[var(--nvidia-green)] bg-[var(--status-running-bg)] text-[var(--foreground)]" : "border-[var(--border-subtle)] bg-[var(--background)] text-[var(--foreground-dim)]"}`}
                       >
-                        {step}
+                        {WIZARD_STEP_LABELS[step]}
                       </button>
                     ))}
                   </div>
-                  {wizardStep === "basics" && (
-                    <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-                      <div className="space-y-2 md:col-span-2">
-                        <div className="flex items-center gap-2"><FieldLabel>Assist Install</FieldLabel><FieldHint>Describe the MCP server and the running LLM endpoint will draft the install fields.</FieldHint></div>
-                        <textarea value={installPrompt} onChange={(event) => setInstallPrompt(event.target.value)} rows={4} placeholder="Install the GitHub MCP server with npx, or prepare this uploaded Python MCP bundle." className="field-control w-full resize-y px-3 py-2 text-sm" />
-                      </div>
-                      <div className="space-y-2">
-                        <div className="flex items-center gap-2"><FieldLabel>Name</FieldLabel><FieldHint>Stable display name and default id for this MCP server.</FieldHint></div>
-                        <input value={customName} onChange={(event) => setCustomName(event.target.value)} className="field-control w-full px-3 py-2 text-sm font-mono" />
-                      </div>
-                      <div className="space-y-2">
-                        <div className="flex items-center gap-2"><FieldLabel>Transport</FieldLabel><FieldHint>Use stdio for local commands, HTTP for remote streamable MCP endpoints.</FieldHint></div>
-                        <select value={customTransport} onChange={(event) => setCustomTransport(event.target.value as McpTransport)} className="field-control w-full px-3 py-2 text-sm font-mono">
-                          <option value="stdio">stdio</option>
-                          <option value="http">http</option>
-                        </select>
-                      </div>
-                      <div className="space-y-2 md:col-span-2">
-                        <div className="flex items-center gap-2"><FieldLabel>Summary</FieldLabel><FieldHint>Short note shown in the installed server list.</FieldHint></div>
-                        <input value={customSummary} onChange={(event) => setCustomSummary(event.target.value)} className="field-control w-full px-3 py-2 text-sm" />
-                      </div>
-                      {installAssistNotes && (
-                        <div className="rounded-sm border border-[var(--border-subtle)] bg-[var(--background)] p-3 text-xs text-[var(--foreground-dim)] md:col-span-2">
-                          {installAssistNotes}
-                        </div>
-                      )}
-                    </div>
-                  )}
-
-                  {wizardStep === "launch" && (
-                    <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-                      <div className="space-y-2 md:col-span-2">
-                        <div className="flex items-center gap-2"><FieldLabel>{customTransport === "http" ? "URL" : "Command"}</FieldLabel><FieldHint>{customTransport === "http" ? "Full remote MCP endpoint URL." : "Executable available to the controller, such as npx, uvx, node, or python."}</FieldHint></div>
-                        <input value={customCommand} onChange={(event) => setCustomCommand(event.target.value)} placeholder={customTransport === "http" ? "https://mcp.example.com/mcp" : "npx, uvx, node, python"} className="field-control w-full px-3 py-2 text-sm font-mono" />
-                      </div>
-                      <div className="space-y-2">
-                        <div className="flex items-center gap-2"><FieldLabel>Args</FieldLabel><FieldHint>One argument per line, passed to the command in order.</FieldHint></div>
-                        <textarea value={customArgs} onChange={(event) => setCustomArgs(event.target.value)} rows={8} className="field-control w-full resize-y px-3 py-2 text-sm font-mono" />
-                      </div>
-                      <div className="space-y-2">
-                        <div className="flex items-center gap-2"><FieldLabel>{customTransport === "http" ? "Headers" : "Env"}</FieldLabel><FieldHint>KEY=value lines. HTTP entries become headers; stdio entries become environment variables.</FieldHint></div>
-                        <textarea value={customEnv} onChange={(event) => setCustomEnv(event.target.value)} rows={8} placeholder={customTransport === "http" ? "Authorization=Bearer token" : "API_KEY=value\nBASE_URL=http://localhost:3000"} className="field-control w-full resize-y px-3 py-2 text-sm font-mono" />
-                      </div>
-                    </div>
-                  )}
-
                   {wizardStep === "upload" && (
                     <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
                       <div className="space-y-2">
+                        <div className="flex items-center gap-2"><FieldLabel>Server Name</FieldLabel><FieldHint>Stable display name and default id for this uploaded MCP server.</FieldHint></div>
+                        <input value={customName} onChange={(event) => { setCustomName(event.target.value); resetWizardPreflightState() }} className="field-control w-full px-3 py-2 text-sm font-mono" />
+                      </div>
+                      <div className="space-y-2">
+                        <div className="flex items-center gap-2"><FieldLabel>Summary</FieldLabel><FieldHint>Short note shown in the installed server list.</FieldHint></div>
+                        <input value={customSummary} onChange={(event) => { setCustomSummary(event.target.value); resetWizardPreflightState() }} className="field-control w-full px-3 py-2 text-sm" />
+                      </div>
+                      <div className="space-y-2">
                         <div className="flex items-center gap-2"><FieldLabel>Upload Runtime</FieldLabel><FieldHint>Runtime used to bootstrap uploaded bundles before preflight.</FieldHint></div>
-                        <input value={uploadRuntime} onChange={(event) => setUploadRuntime(event.target.value)} placeholder="python3, node, uv, uvx" className="field-control w-full px-3 py-2 text-sm font-mono" />
+                        <input value={uploadRuntime} onChange={(event) => { setUploadRuntime(event.target.value); resetWizardPreflightState() }} placeholder="python3, node, uv, uvx" className="field-control w-full px-3 py-2 text-sm font-mono" />
                       </div>
                       <div className="space-y-2">
                         <div className="flex items-center gap-2"><FieldLabel>Upload Launch Mode</FieldLabel><FieldHint>How the uploaded server should start after dependencies are installed.</FieldHint></div>
-                        <select value={uploadEntryMode} onChange={(event) => setUploadEntryMode(event.target.value as "file" | "python-module" | "console-script")} className="field-control w-full px-3 py-2 text-sm font-mono">
+                        <select value={uploadEntryMode} onChange={(event) => { setUploadEntryMode(event.target.value as "file" | "python-module" | "console-script"); resetWizardPreflightState() }} className="field-control w-full px-3 py-2 text-sm font-mono">
                           <option value="file">File</option>
                           <option value="python-module">Python module</option>
                           <option value="console-script">Console script</option>
@@ -1033,23 +1118,7 @@ export default function McpConfigurationPanel({ sandboxes = [] }: McpConfigurati
                       </div>
                       <div className="space-y-2 md:col-span-2">
                         <div className="flex items-center gap-2"><FieldLabel>Upload Entrypoint</FieldLabel><FieldHint>File path, Python module name, or installed console script to launch.</FieldHint></div>
-                        <input value={uploadEntrypoint} onChange={(event) => setUploadEntrypoint(event.target.value)} placeholder={uploadEntryMode === "python-module" ? "isaac_mcp_poc.server" : uploadEntryMode === "console-script" ? "isaac-mcp-poc" : "server.py, src/server.py, index.js"} className="field-control w-full px-3 py-2 text-sm font-mono" />
-                      </div>
-                      <div className="space-y-2">
-                        <div className="flex items-center gap-2"><FieldLabel>Preflight Repair</FieldLabel><FieldHint>When preflight fails, ask the running LLM endpoint for a bounded repair and run preflight again.</FieldHint></div>
-                        <label className="flex min-h-10 items-center justify-between gap-3 rounded-sm border border-[var(--border-subtle)] bg-[var(--background)] px-3 py-2 text-xs text-[var(--foreground)]">
-                          <span>Use sandbox LLM on failed uploads</span>
-                          <input type="checkbox" checked={uploadRepair} onChange={(event) => setUploadRepair(event.target.checked)} className="h-4 w-4 accent-[var(--nvidia-green)]" />
-                        </label>
-                      </div>
-                      <div className="space-y-2">
-                        <div className="flex items-center gap-2"><FieldLabel>Repair Route</FieldLabel><FieldHint>Optional sandbox whose configured model should be used for repair assistance.</FieldHint></div>
-                        <select value={repairSandboxId} onChange={(event) => setRepairSandboxId(event.target.value)} disabled={!uploadRepair} className="field-control w-full px-3 py-2 text-sm font-mono">
-                          <option value="">Default controller model</option>
-                          {sandboxes.map((sandbox) => (
-                            <option key={sandbox.id} value={sandbox.id}>{sandbox.name}</option>
-                          ))}
-                        </select>
+                        <input value={uploadEntrypoint} onChange={(event) => { setUploadEntrypoint(event.target.value); resetWizardPreflightState() }} placeholder={uploadEntryMode === "python-module" ? "isaac_mcp_poc.server" : uploadEntryMode === "console-script" ? "isaac-mcp-poc" : "server.py, src/server.py, index.js"} className="field-control w-full px-3 py-2 text-sm font-mono" />
                       </div>
                       <div className="flex flex-wrap items-center gap-3 md:col-span-2">
                         <label className="action-button cursor-pointer px-4 py-2">
@@ -1066,66 +1135,107 @@ export default function McpConfigurationPanel({ sandboxes = [] }: McpConfigurati
                           </span>
                         )}
                       </div>
+                      {stagedUpload && (
+                        <div className="rounded-sm border border-[var(--status-running)] bg-[var(--status-running-bg)] p-3 text-xs text-[var(--status-running)] md:col-span-2">
+                          Uploaded to staged server workspace: {stagedUpload.name}
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {wizardStep === "preflight" && (
+                    <div className="space-y-4">
+                      <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                        <div className="space-y-2">
+                          <div className="flex items-center gap-2"><FieldLabel>LLM Repair</FieldLabel><FieldHint>When preflight fails, ask the configured primary inference model for a bounded repair and run preflight again.</FieldHint></div>
+                          <label className="flex min-h-10 items-center justify-between gap-3 rounded-sm border border-[var(--border-subtle)] bg-[var(--background)] px-3 py-2 text-xs text-[var(--foreground)]">
+                            <span>Attempt repairs on failures</span>
+                            <input type="checkbox" checked={uploadRepair} onChange={(event) => setUploadRepair(event.target.checked)} className="h-4 w-4 accent-[var(--nvidia-green)]" />
+                          </label>
+                        </div>
+                        <div className="space-y-2">
+                          <div className="flex items-center gap-2"><FieldLabel>Inference Route</FieldLabel><FieldHint>Optional sandbox whose configured primary inference model should be used for preflight repair assistance.</FieldHint></div>
+                          <select value={repairSandboxId} onChange={(event) => setRepairSandboxId(event.target.value)} disabled={!uploadRepair} className="field-control w-full px-3 py-2 text-sm font-mono">
+                            <option value="">Default configured inference model</option>
+                            {sandboxes.map((sandbox) => (
+                              <option key={sandbox.id} value={sandbox.id}>{sandbox.name}</option>
+                            ))}
+                          </select>
+                        </div>
+                      </div>
+                      <button onClick={startWizardPreflightChecks} disabled={saving || !stagedUpload} className="rounded-sm bg-[var(--nvidia-green)] px-4 py-2 text-xs font-mono uppercase tracking-wider text-black disabled:opacity-50">
+                        {saving ? "Running Preflight..." : "Start Preflight checks"}
+                      </button>
+                      {!stagedUpload && (
+                        <div className="rounded-sm border border-[var(--border-subtle)] bg-[var(--background-tertiary)] p-4 text-xs text-[var(--foreground-dim)]">
+                          Upload server files before starting preflight checks.
+                        </div>
+                      )}
+                      {wizardDependencyInstall && (
+                        <div className="rounded-sm border border-[var(--border-subtle)] bg-[var(--background)] p-4">
+                          <h3 className="text-xs font-semibold uppercase tracking-wider text-[var(--foreground)]">Dependency Bootstrap</h3>
+                          <p className="mt-2 text-xs text-[var(--foreground-dim)]">{wizardDependencyInstall.kind || "generic"} bootstrap{wizardDependencyInstall.logs?.length ? `, ${wizardDependencyInstall.logs.length} log item${wizardDependencyInstall.logs.length === 1 ? "" : "s"}` : ""}.</p>
+                        </div>
+                      )}
+                      {wizardPreflight && (
+                        <div className={`rounded-sm border p-4 text-xs ${wizardPreflight.ok ? "border-[var(--status-running)] bg-[var(--status-running-bg)] text-[var(--status-running)]" : "border-[var(--status-error)] bg-[var(--status-error-bg)] text-[var(--status-error)]"}`}>
+                          <div className="font-mono uppercase tracking-wider">Preflight {wizardPreflight.ok ? "passed" : "found failures"} / {wizardPreflight.durationMs} ms</div>
+                          <p className="mt-2 whitespace-pre-wrap text-[11px] leading-5">{summarizePreflight(wizardPreflight)}{summarizeRepair(wizardRepair)}</p>
+                        </div>
+                      )}
                     </div>
                   )}
 
                   {wizardStep === "review" && (
                     <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
                       <div className="rounded-sm border border-[var(--border-subtle)] bg-[var(--background)] p-4">
-                        <h3 className="text-xs font-semibold uppercase tracking-wider text-[var(--foreground)]">Command Install</h3>
+                        <h3 className="text-xs font-semibold uppercase tracking-wider text-[var(--foreground)]">Staged Upload</h3>
                         <pre className="mt-3 overflow-auto text-[11px] leading-5 text-[var(--foreground-dim)]">{JSON.stringify({
-                          id: customName,
-                          name: customName,
-                          summary: customSummary,
-                          transport: customTransport,
-                          command: customCommand,
-                          args: parseLines(customArgs),
-                          env: parseEnv(customEnv),
+                          selectedBundle: uploadArchive?.name || (uploadFiles.length > 0 ? `${uploadFiles.length} files` : stagedUpload?.selectedBundle || "staged"),
+                          stagedUpload,
+                          dependencyInstall: wizardDependencyInstall,
+                          preflight: wizardPreflight ? {
+                            ok: wizardPreflight.ok,
+                            toolCount: wizardPreflight.toolCount,
+                            tools: wizardPreflight.tools,
+                            error: wizardPreflight.error || null,
+                          } : null,
+                          repair: wizardRepair,
                         }, null, 2)}</pre>
                       </div>
                       <div className="rounded-sm border border-[var(--border-subtle)] bg-[var(--background)] p-4">
-                        <h3 className="text-xs font-semibold uppercase tracking-wider text-[var(--foreground)]">Upload Install</h3>
-                        <pre className="mt-3 overflow-auto text-[11px] leading-5 text-[var(--foreground-dim)]">{JSON.stringify({
-                          selectedBundle: uploadArchive?.name || (uploadFiles.length > 0 ? `${uploadFiles.length} files` : "none"),
-                          runtime: uploadRuntime,
-                          entryMode: uploadEntryMode,
-                          entrypoint: uploadEntrypoint,
-                          repair: uploadRepair,
-                          repairSandboxId: repairSandboxId || null,
+                        <h3 className="text-xs font-semibold uppercase tracking-wider text-[var(--foreground)]">Broker Launch Definition</h3>
+                        <pre className="mt-3 overflow-auto text-[11px] leading-5 text-[var(--foreground-dim)]">{JSON.stringify(wizardCandidate || {
+                          status: "Run preflight checks to generate the launch definition.",
                         }, null, 2)}</pre>
                       </div>
                     </div>
                   )}
 
+                  {wizardStep === "install" && (
+                    <div className="space-y-4">
+                      <div className="rounded-sm border border-[var(--border-subtle)] bg-[var(--background)] p-4">
+                        <h3 className="text-xs font-semibold uppercase tracking-wider text-[var(--foreground)]">Ready To Install</h3>
+                        <p className="mt-2 text-xs leading-5 text-[var(--foreground-dim)]">
+                          {wizardCandidate
+                            ? `${wizardCandidate.name} will be installed ${wizardPreflight?.ok ? "enabled" : "disabled until preflight passes"}.`
+                            : "Run preflight checks before installing this MCP server."}
+                        </p>
+                      </div>
+                      <button onClick={installStagedUpload} disabled={saving || !wizardCandidate || Boolean(wizardInstallResult)} className="rounded-sm bg-[var(--nvidia-green)] px-4 py-2 text-xs font-mono uppercase tracking-wider text-black disabled:opacity-50">
+                        {wizardInstallResult ? "Installed" : saving ? "Installing..." : "Install Server"}
+                      </button>
+                      {wizardInstallResult && (
+                        <div className="rounded-sm border border-[var(--status-running)] bg-[var(--status-running-bg)] p-4 text-xs text-[var(--status-running)]">
+                          {wizardInstallResult.name} installed successfully.
+                        </div>
+                      )}
+                    </div>
+                  )}
+
                   <div className="mt-5 flex flex-wrap items-center gap-3">
                     <button onClick={previousWizardStep} disabled={saving || wizardStepIndex === 0} className="action-button px-4 py-2">Back</button>
-                    <button onClick={nextWizardStep} disabled={saving || wizardStepIndex === WIZARD_STEPS.length - 1} className="action-button px-4 py-2">Next</button>
-                    <button onClick={assistInstall} disabled={saving || !installPrompt.trim()} className="action-button px-4 py-2">Assist Install</button>
-                    <button
-                      onClick={() => postUpdate({
-                        action: "install",
-                        id: customName,
-                        name: customName,
-                        summary: customSummary,
-                        transport: customTransport,
-                        command: customCommand,
-                        args: parseLines(customArgs),
-                        env: parseEnv(customEnv),
-                        tags: ["custom"],
-                        source: "custom",
-                      }, `${customName} installed.`)}
-                      disabled={saving}
-                      className="rounded-sm bg-[var(--nvidia-green)] px-4 py-2 text-xs font-mono uppercase tracking-wider text-black disabled:opacity-50"
-                    >
-                      Install Server Command
-                    </button>
-                    <button
-                      onClick={uploadServer}
-                      disabled={saving || !hasUploadBundle}
-                      className="action-button px-4 py-2"
-                    >
-                      Upload and Preflight
-                    </button>
+                    <button onClick={handleWizardNext} disabled={saving || wizardStepIndex === WIZARD_STEPS.length - 1 || (wizardStep === "upload" && !hasUploadBundle && !stagedUpload)} className="action-button px-4 py-2">Next</button>
                   </div>
                 </div>
               )}

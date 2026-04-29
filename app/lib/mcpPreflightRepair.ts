@@ -47,6 +47,7 @@ const MAX_CONTEXT_FILE_BYTES = Number.parseInt(process.env.MCP_PREFLIGHT_REPAIR_
 const MAX_CONTEXT_FILES = Number.parseInt(process.env.MCP_PREFLIGHT_REPAIR_MAX_FILES || "18", 10)
 const MAX_REPAIR_FILE_BYTES = Number.parseInt(process.env.MCP_PREFLIGHT_REPAIR_MAX_OUTPUT_FILE_BYTES || String(512 * 1024), 10)
 const REQUEST_TIMEOUT_MS = Number.parseInt(process.env.MCP_PREFLIGHT_REPAIR_TIMEOUT_MS || "60000", 10)
+const MCP_SERVER_SPEC_PATH = path.join(process.cwd(), "mcp_server_specs.md")
 
 function relativeInside(root: string, candidate: string) {
   const fullPath = path.resolve(root, candidate)
@@ -104,6 +105,14 @@ async function readContextFiles(root: string) {
   return context
 }
 
+async function readMcpServerSpec() {
+  return await readFile(MCP_SERVER_SPEC_PATH, "utf8").catch(() => [
+    "Uploaded MCP servers must initialize through the MCP broker and list tools successfully.",
+    "Python uploads must use a per-server .venv and local dependency installation.",
+    "Repairs must stay inside the uploaded server directory.",
+  ].join("\n"))
+}
+
 async function resolveRepairRoute(sandboxId?: string | null) {
   let explicitModel = ""
   if (sandboxId) {
@@ -129,6 +138,7 @@ function extractJsonObject(value: string) {
 async function requestRepairPlan(context: RepairContext, files: Awaited<ReturnType<typeof readContextFiles>>) {
   const route = await resolveRepairRoute(context.sandboxId)
   if (!route.model) throw new Error("No primary inference model is configured")
+  const mcpServerSpec = await readMcpServerSpec()
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS)
   try {
@@ -149,7 +159,11 @@ async function requestRepairPlan(context: RepairContext, files: Awaited<ReturnTy
           {
             role: "system",
             content: [
-              "You repair uploaded Model Context Protocol stdio servers.",
+              "You are inspecting an MCP server to ensure it is going to function with the MCP broker.",
+              "Review the files, run a preflight check on them as they stand, and perform any tasks required in the returned repair plan.",
+              "If Python dependencies are required, use the per-server virtualenv described in mcp_server_specs.md.",
+              "If there are failures, advise that failures exist and whether they can be resolved.",
+              "Read mcp_server_specs.md in the user payload to understand the requirements.",
               "Return only JSON with optional files and launch keys.",
               "Only modify files that are included in the context.",
               "Do not invent dependencies unless required by the observed error.",
@@ -166,6 +180,7 @@ async function requestRepairPlan(context: RepairContext, files: Awaited<ReturnTy
               },
               preflight: context.preflight,
               dependencyLogs: context.dependencyLogs || [],
+              mcp_server_specs_md: mcpServerSpec,
               files,
               expectedJson: {
                 summary: "short explanation",

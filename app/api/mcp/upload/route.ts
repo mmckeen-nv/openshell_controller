@@ -15,6 +15,7 @@ const UPLOAD_DIR = path.join(STORE_DIR, "mcp-server-uploads")
 const MAX_UPLOAD_BYTES = Number.parseInt(process.env.MCP_SERVER_UPLOAD_MAX_BYTES || String(128 * 1024 * 1024), 10)
 const INSTALL_TIMEOUT_MS = Number.parseInt(process.env.MCP_SERVER_DEPENDENCY_INSTALL_TIMEOUT_MS || String(5 * 60 * 1000), 10)
 const ENTRY_MODES = new Set(["file", "python-module", "console-script"])
+const UPLOAD_MODES = new Set(["stage", "preflight", "install-staged"])
 
 function slugify(value: string) {
   return value
@@ -46,6 +47,11 @@ function parseEnv(value: unknown) {
 function normalizeEntryMode(value: unknown) {
   const mode = String(value || "file").trim()
   return ENTRY_MODES.has(mode) ? mode : "file"
+}
+
+function normalizeUploadMode(value: unknown) {
+  const mode = String(value || "").trim()
+  return UPLOAD_MODES.has(mode) ? mode : ""
 }
 
 function normalizeRelativePath(value: string) {
@@ -83,6 +89,16 @@ async function pathExists(candidate: string) {
   } catch {
     return false
   }
+}
+
+async function ensureUploadRoot(id: string) {
+  const root = path.resolve(UPLOAD_DIR, id)
+  const uploadRoot = path.resolve(UPLOAD_DIR)
+  if (root !== uploadRoot && !root.startsWith(`${uploadRoot}${path.sep}`)) {
+    throw new Error("staged upload id must stay inside the MCP upload directory")
+  }
+  if (!await pathExists(root)) throw new Error("staged MCP server upload was not found")
+  return root
 }
 
 async function findFileByName(root: string, fileName: string): Promise<string | null> {
@@ -239,6 +255,67 @@ async function launchCommandForUpload(
   return { command: bootstrap.command, args: [entrypointPath, ...extraArgs] }
 }
 
+async function buildUploadCandidate({
+  root,
+  id,
+  name,
+  summary,
+  runtime,
+  entryMode,
+  entrypoint,
+  args,
+  env,
+}: {
+  root: string
+  id: string
+  name: string
+  summary: string
+  runtime: string
+  entryMode: string
+  entrypoint: string
+  args: string[]
+  env: Record<string, string>
+}) {
+  const entrypointPath = entryMode === "file" ? await resolveEntryPath(root, entrypoint) : null
+  const projectRoot = await resolveProjectRoot(root, entrypointPath)
+  const bootstrap = await bootstrapUploadedServer(projectRoot, runtime, entrypoint)
+  const launch = await launchCommandForUpload(projectRoot, bootstrap, entryMode, entrypoint, entrypointPath, args)
+  const candidate = {
+    id,
+    name,
+    summary,
+    transport: "stdio",
+    command: launch.command,
+    args: launch.args,
+    env,
+    tags: ["uploaded", "custom"],
+    source: "custom",
+    enabled: true,
+  } satisfies {
+    id: string
+    name: string
+    summary: string
+    transport: "stdio"
+    command: string
+    args: string[]
+    env: Record<string, string>
+    tags: string[]
+    source: "custom"
+    enabled: boolean
+  }
+  return { candidate, projectRoot, bootstrap }
+}
+
+function installCandidateFrom(candidate: Awaited<ReturnType<typeof buildUploadCandidate>>["candidate"]): McpServerInstall {
+  return {
+    ...candidate,
+    installedAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    accessMode: "disabled",
+    allowedSandboxIds: [],
+  }
+}
+
 async function writeDirectoryUpload(form: FormData, root: string) {
   const files = form.getAll("files")
   const paths = form.getAll("paths").map((item) => String(item || ""))
@@ -290,6 +367,7 @@ async function writeArchiveUpload(form: FormData, root: string) {
 export async function POST(request: Request) {
   try {
     const form = await request.formData()
+    const mode = normalizeUploadMode(form.get("mode"))
     const name = String(form.get("name") || "uploaded-server").trim()
     const id = slugify(String(form.get("id") || name))
     const summary = String(form.get("summary") || "Uploaded MCP server").trim()
@@ -303,6 +381,110 @@ export async function POST(request: Request) {
     if (!runtime) throw new Error("runtime command is required")
     if (!entrypoint) throw new Error("entrypoint is required")
 
+    if (mode === "preflight" || mode === "install-staged") {
+      const root = await ensureUploadRoot(id)
+      const { candidate: initialCandidate, projectRoot, bootstrap } = await buildUploadCandidate({
+        root,
+        id,
+        name,
+        summary,
+        runtime,
+        entryMode,
+        entrypoint,
+        args: parseLines(form.get("args")),
+        env: parseEnv(form.get("env")),
+      })
+      let candidate = initialCandidate
+
+      if (mode === "preflight") {
+        let preflight = await preflightMcpServer(installCandidateFrom(candidate))
+        let repair: McpPreflightRepairResult | null = null
+
+        if (!preflight.ok && repairEnabled) {
+          try {
+            repair = await repairUploadedMcpServerWithLlm({
+              uploadRoot: root,
+              projectRoot,
+              server: installCandidateFrom(candidate),
+              preflight,
+              dependencyLogs: bootstrap.logs,
+              sandboxId: sandboxId || null,
+            })
+            if (repair.updatedServer) {
+              candidate = {
+                ...candidate,
+                command: repair.updatedServer.command,
+                args: repair.updatedServer.args,
+                env: repair.updatedServer.env,
+              }
+            }
+            if (repair.ok) {
+              preflight = await preflightMcpServer(installCandidateFrom(candidate))
+            }
+          } catch (error) {
+            repair = {
+              attempted: true,
+              ok: false,
+              provider: "openai-compatible",
+              model: "",
+              baseUrl: process.env.MCP_PREFLIGHT_LLM_BASE_URL || process.env.OPENAI_BASE_URL || process.env.VLLM_BASE_URL || "",
+              summary: "LLM-assisted repair could not complete.",
+              changes: [],
+              error: error instanceof Error ? error.message : "MCP repair failed",
+            }
+          }
+        }
+
+        return NextResponse.json({
+          ok: true,
+          stagedUpload: {
+            id,
+            name,
+            summary,
+            runtime,
+            entryMode,
+            entrypoint,
+            uploadRoot: root,
+            projectRoot,
+          },
+          candidate,
+          dependencyInstall: {
+            kind: bootstrap.kind,
+            logs: bootstrap.logs,
+          },
+          preflight,
+          repair,
+        })
+      }
+
+      const command = String(form.get("command") || candidate.command).trim()
+      const commandArgs = parseLines(form.get("commandArgs"))
+      const suppliedArgs = commandArgs.length > 0 ? commandArgs : candidate.args
+      const installEnvText = String(form.get("installEnv") || "")
+      const suppliedEnv = installEnvText ? parseEnv(installEnvText) : candidate.env
+      const preflightOk = String(form.get("preflightOk") || "true") !== "false"
+      const server = await installMcpServer({
+        ...candidate,
+        command: command || candidate.command,
+        args: suppliedArgs,
+        env: suppliedEnv,
+        enabled: preflightOk,
+        tags: preflightOk ? candidate.tags : [...candidate.tags, "preflight-failed"],
+      })
+
+      return NextResponse.json({
+        ok: true,
+        server,
+        uploadRoot: root,
+        projectRoot,
+        dependencyInstall: {
+          kind: bootstrap.kind,
+          logs: bootstrap.logs,
+        },
+        ...(await listMcpServers()),
+      })
+    }
+
     await rm(root, { recursive: true, force: true })
     await mkdir(root, { recursive: true, mode: 0o700 })
 
@@ -310,41 +492,40 @@ export async function POST(request: Request) {
     const uploadedArchive = uploadedDirectory ? false : await writeArchiveUpload(form, root)
     if (!uploadedDirectory && !uploadedArchive) throw new Error("choose a directory, .zip, .tgz, .tar.gz, or .tar server upload")
 
-    const entrypointPath = entryMode === "file" ? await resolveEntryPath(root, entrypoint) : null
-    const projectRoot = await resolveProjectRoot(root, entrypointPath)
-    const bootstrap = await bootstrapUploadedServer(projectRoot, runtime, entrypoint)
-    const launch = await launchCommandForUpload(projectRoot, bootstrap, entryMode, entrypoint, entrypointPath, parseLines(form.get("args")))
-    let candidate = {
+    if (mode === "stage") {
+      const entrypointPath = entryMode === "file" ? await resolveEntryPath(root, entrypoint).catch(() => null) : null
+      const projectRoot = entrypointPath ? await resolveProjectRoot(root, entrypointPath) : await resolveProjectRoot(root, null)
+      return NextResponse.json({
+        ok: true,
+        stagedUpload: {
+          id,
+          name,
+          summary,
+          runtime,
+          entryMode,
+          entrypoint,
+          uploadRoot: root,
+          projectRoot,
+          selectedBundle: uploadedArchive ? "archive" : "directory",
+        },
+      })
+    }
+
+    const built = await buildUploadCandidate({
+      root,
       id,
       name,
       summary,
-      transport: "stdio",
-      command: launch.command,
-      args: launch.args,
+      runtime,
+      entryMode,
+      entrypoint,
+      args: parseLines(form.get("args")),
       env: parseEnv(form.get("env")),
-      tags: ["uploaded", "custom"],
-      source: "custom",
-      enabled: true,
-    } satisfies {
-      id: string
-      name: string
-      summary: string
-      transport: "stdio"
-      command: string
-      args: string[]
-      env: Record<string, string>
-      tags: string[]
-      source: "custom"
-      enabled: boolean
-    }
-    const installCandidate = (): McpServerInstall => ({
-      ...candidate,
-      installedAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-      accessMode: "disabled",
-      allowedSandboxIds: [],
     })
-    let preflight = await preflightMcpServer(installCandidate())
+    let candidate = built.candidate
+    const projectRoot = built.projectRoot
+    const bootstrap = built.bootstrap
+    let preflight = await preflightMcpServer(installCandidateFrom(candidate))
     let repair: McpPreflightRepairResult | null = null
 
     if (!preflight.ok && repairEnabled) {
@@ -352,7 +533,7 @@ export async function POST(request: Request) {
         repair = await repairUploadedMcpServerWithLlm({
           uploadRoot: root,
           projectRoot,
-          server: installCandidate(),
+          server: installCandidateFrom(candidate),
           preflight,
           dependencyLogs: bootstrap.logs,
           sandboxId: sandboxId || null,
@@ -366,7 +547,7 @@ export async function POST(request: Request) {
           }
         }
         if (repair.ok) {
-          preflight = await preflightMcpServer(installCandidate())
+          preflight = await preflightMcpServer(installCandidateFrom(candidate))
         }
       } catch (error) {
         repair = {
