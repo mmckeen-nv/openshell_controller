@@ -1,8 +1,7 @@
 import { NextResponse } from "next/server"
+import { resolveOpenAiCompatibleBaseUrl, resolvePrimaryInferenceModel } from "@/app/lib/inferenceModel"
 
 const REQUEST_TIMEOUT_MS = Number.parseInt(process.env.MCP_REGISTRY_ASSIST_TIMEOUT_MS || "45000", 10)
-const MODEL = process.env.MCP_PREFLIGHT_LLM_MODEL || process.env.OPENAI_MODEL || "gpt-4o-mini"
-const BASE_URL = (process.env.MCP_PREFLIGHT_LLM_BASE_URL || process.env.OPENAI_BASE_URL || process.env.VLLM_BASE_URL || "http://localhost:8000/v1").replace(/\/+$/, "")
 
 function extractJsonObject(value: string) {
   const trimmed = value.trim()
@@ -19,8 +18,10 @@ export async function POST(request: Request) {
     const body = await request.json().catch(() => ({}))
     const prompt = typeof body?.prompt === "string" ? body.prompt.trim() : ""
     if (!prompt) throw new Error("registry prompt is required")
+    const model = await resolvePrimaryInferenceModel()
+    if (!model) throw new Error("No primary inference model is configured")
 
-    const response = await fetch(`${BASE_URL}/chat/completions`, {
+    const response = await fetch(`${resolveOpenAiCompatibleBaseUrl()}/chat/completions`, {
       method: "POST",
       signal: controller.signal,
       headers: {
@@ -30,7 +31,7 @@ export async function POST(request: Request) {
           : {}),
       },
       body: JSON.stringify({
-        model: MODEL,
+        model,
         temperature: 0.1,
         response_format: { type: "json_object" },
         messages: [
@@ -56,7 +57,7 @@ export async function POST(request: Request) {
         baseUrl: typeof suggestion?.baseUrl === "string" ? suggestion.baseUrl : "",
         description: typeof suggestion?.description === "string" ? suggestion.description : "",
       },
-      model: MODEL,
+      model,
     })
   } catch (error) {
     const message = error instanceof Error ? error.message : "Failed to assist registry setup"

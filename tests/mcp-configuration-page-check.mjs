@@ -18,6 +18,7 @@ const registriesRoutePath = path.join(root, 'app/api/mcp/registries/route.ts')
 const registriesAssistRoutePath = path.join(root, 'app/api/mcp/registries/assist/route.ts')
 const installAssistRoutePath = path.join(root, 'app/api/mcp/install-assist/route.ts')
 const registryStorePath = path.join(root, 'app/lib/mcpRegistryStore.ts')
+const inferenceModelPath = path.join(root, 'app/lib/inferenceModel.ts')
 const brokerCapabilitiesRoutePath = path.join(root, 'app/api/mcp/broker/capabilities/route.ts')
 const brokerCallRoutePath = path.join(root, 'app/api/mcp/broker/call/route.ts')
 const sandboxMcpRoutePath = path.join(root, 'app/api/sandbox/[sandboxId]/mcp/route.ts')
@@ -31,7 +32,7 @@ const sidebarPath = path.join(root, 'app/components/Sidebar.tsx')
 const sandboxListPath = path.join(root, 'app/components/SandboxList.tsx')
 const pagePath = path.join(root, 'app/page.tsx')
 
-const [storeSource, brokerStoreSource, brokerClientSource, manifestSource, privilegedFilesSource, routeSource, uploadRouteSource, preflightRouteSource, healthRouteSource, registryRouteSource, registriesRouteSource, registriesAssistRouteSource, installAssistRouteSource, registryStoreSource, brokerCapabilitiesRouteSource, brokerCallRouteSource, sandboxMcpRouteSource, brokerUrlSource, preflightLibSource, preflightRepairLibSource, middlewareSource, panelSource, helpSource, sidebarSource, sandboxListSource, pageSource] = await Promise.all([
+const [storeSource, brokerStoreSource, brokerClientSource, manifestSource, privilegedFilesSource, routeSource, uploadRouteSource, preflightRouteSource, healthRouteSource, registryRouteSource, registriesRouteSource, registriesAssistRouteSource, installAssistRouteSource, registryStoreSource, inferenceModelSource, brokerCapabilitiesRouteSource, brokerCallRouteSource, sandboxMcpRouteSource, brokerUrlSource, preflightLibSource, preflightRepairLibSource, middlewareSource, panelSource, helpSource, sidebarSource, sandboxListSource, pageSource] = await Promise.all([
   readFile(storePath, 'utf8'),
   readFile(brokerStorePath, 'utf8'),
   readFile(brokerClientPath, 'utf8'),
@@ -46,6 +47,7 @@ const [storeSource, brokerStoreSource, brokerClientSource, manifestSource, privi
   readFile(registriesAssistRoutePath, 'utf8'),
   readFile(installAssistRoutePath, 'utf8'),
   readFile(registryStorePath, 'utf8'),
+  readFile(inferenceModelPath, 'utf8'),
   readFile(brokerCapabilitiesRoutePath, 'utf8'),
   readFile(brokerCallRoutePath, 'utf8'),
   readFile(sandboxMcpRoutePath, 'utf8'),
@@ -147,9 +149,15 @@ assert.match(registriesRouteSource, /saveMcpRegistry/, 'MCP registries API must 
 assert.match(registriesRouteSource, /deleteMcpRegistry/, 'MCP registries API must delete registries')
 assert.match(registriesAssistRouteSource, /chat\/completions/, 'MCP registry assistant must use the running OpenAI-compatible LLM endpoint')
 assert.match(registriesAssistRouteSource, /response_format: \{ type: "json_object" \}/, 'MCP registry assistant must request structured JSON')
+assert.match(registriesAssistRouteSource, /resolvePrimaryInferenceModel/, 'MCP registry assistant must use the configured primary inference model')
 assert.match(installAssistRouteSource, /chat\/completions/, 'MCP install wizard assistant must use the running OpenAI-compatible LLM endpoint')
 assert.match(installAssistRouteSource, /uploadRuntime/, 'MCP install wizard assistant must draft upload metadata')
 assert.match(installAssistRouteSource, /response_format: \{ type: "json_object" \}/, 'MCP install wizard assistant must request structured JSON')
+assert.match(installAssistRouteSource, /resolvePrimaryInferenceModel/, 'MCP install wizard assistant must use the configured primary inference model')
+assert.match(inferenceModelSource, /\["inference", "get"\]/, 'MCP LLM assistants must resolve the configured OpenShell inference route')
+assert.match(inferenceModelSource, /Gateway inference/, 'MCP LLM assistants must prefer gateway inference model resolution')
+assert.match(inferenceModelSource, /System inference/, 'MCP LLM assistants may fall back to system inference model resolution')
+assert.doesNotMatch(inferenceModelSource, /gpt-4o-mini/, 'MCP LLM assistants must not hardcode a ChatGPT model fallback')
 assert.match(panelSource, /Install Server Command/, 'MCP page must expose a server command install action')
 assert.match(panelSource, /Server Install Wizard/, 'MCP page must present custom installation as a wizard')
 assert.match(panelSource, /Upload and Preflight/, 'MCP custom server accordion must support uploaded server bundles')

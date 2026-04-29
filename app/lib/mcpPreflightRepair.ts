@@ -1,5 +1,6 @@
 import { readdir, readFile, stat, writeFile } from "node:fs/promises"
 import path from "node:path"
+import { resolveOpenAiCompatibleBaseUrl, resolvePrimaryInferenceModel } from "./inferenceModel"
 import { getSandboxInferenceConfig } from "./sandboxInferenceStore"
 import type { McpPreflightResult } from "./mcpPreflight"
 import type { McpServerInstall } from "./mcpServerStore"
@@ -46,12 +47,6 @@ const MAX_CONTEXT_FILE_BYTES = Number.parseInt(process.env.MCP_PREFLIGHT_REPAIR_
 const MAX_CONTEXT_FILES = Number.parseInt(process.env.MCP_PREFLIGHT_REPAIR_MAX_FILES || "18", 10)
 const MAX_REPAIR_FILE_BYTES = Number.parseInt(process.env.MCP_PREFLIGHT_REPAIR_MAX_OUTPUT_FILE_BYTES || String(512 * 1024), 10)
 const REQUEST_TIMEOUT_MS = Number.parseInt(process.env.MCP_PREFLIGHT_REPAIR_TIMEOUT_MS || "60000", 10)
-const DEFAULT_MODEL = process.env.MCP_PREFLIGHT_LLM_MODEL || process.env.OPENAI_MODEL || "gpt-4o-mini"
-const DEFAULT_BASE_URL = process.env.MCP_PREFLIGHT_LLM_BASE_URL || process.env.OPENAI_BASE_URL || process.env.VLLM_BASE_URL || "http://localhost:8000/v1"
-
-function cleanBaseUrl(value: string) {
-  return value.replace(/\/+$/, "")
-}
 
 function relativeInside(root: string, candidate: string) {
   const fullPath = path.resolve(root, candidate)
@@ -110,20 +105,16 @@ async function readContextFiles(root: string) {
 }
 
 async function resolveRepairRoute(sandboxId?: string | null) {
+  let explicitModel = ""
   if (sandboxId) {
     const config = await getSandboxInferenceConfig(sandboxId)
     const enabled = config.routes.filter((route) => route.enabled)
     const primary = enabled.find((route) => route.id === config.primaryRouteId) || enabled[0]
-    if (primary?.model) {
-      return {
-        model: process.env.MCP_PREFLIGHT_LLM_MODEL || primary.model,
-        baseUrl: cleanBaseUrl(DEFAULT_BASE_URL),
-      }
-    }
+    explicitModel = primary?.model || ""
   }
   return {
-    model: DEFAULT_MODEL,
-    baseUrl: cleanBaseUrl(DEFAULT_BASE_URL),
+    model: await resolvePrimaryInferenceModel(explicitModel),
+    baseUrl: resolveOpenAiCompatibleBaseUrl(),
   }
 }
 
@@ -137,6 +128,7 @@ function extractJsonObject(value: string) {
 
 async function requestRepairPlan(context: RepairContext, files: Awaited<ReturnType<typeof readContextFiles>>) {
   const route = await resolveRepairRoute(context.sandboxId)
+  if (!route.model) throw new Error("No primary inference model is configured")
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS)
   try {

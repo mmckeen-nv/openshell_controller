@@ -373,7 +373,7 @@ export async function POST(request: Request) {
           attempted: true,
           ok: false,
           provider: "openai-compatible",
-          model: process.env.MCP_PREFLIGHT_LLM_MODEL || process.env.OPENAI_MODEL || "",
+          model: "",
           baseUrl: process.env.MCP_PREFLIGHT_LLM_BASE_URL || process.env.OPENAI_BASE_URL || process.env.VLLM_BASE_URL || "",
           summary: "LLM-assisted repair could not complete.",
           changes: [],
