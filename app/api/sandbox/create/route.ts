@@ -44,8 +44,95 @@ type SandboxVerification = {
 const AUTHORITATIVE_SUCCESS_PHASE = "Ready"
 const NO_PENDING_DEVICE_REQUESTS = /no pending device pairing requests/i
 
+type ConfiguredInferenceRoute = {
+  provider: string
+  model: string
+}
+
 function elapsedMs(start: number) {
   return Date.now() - start
+}
+
+function stripAnsi(value: string) {
+  return value.replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, "")
+}
+
+function readField(output: string, label: string) {
+  const match = output.match(new RegExp(`^\\s*${label}:\\s*(.+?)\\s*$`, "im"))
+  return match ? match[1].trim() : ""
+}
+
+function parseConfiguredInferenceRoute(output: string, label: "Gateway inference" | "System inference"): ConfiguredInferenceRoute | null {
+  const otherLabel = label === "Gateway inference" ? "System inference" : "Gateway inference"
+  const pattern = new RegExp(`${label}:\\s*([\\s\\S]*?)(?:\\n\\s*${otherLabel}:|$)`, "i")
+  const section = output.match(pattern)?.[1] ?? ""
+  if (!section || /Not configured/i.test(section)) return null
+  const provider = readField(section, "Provider")
+  const model = readField(section, "Model")
+  return provider && model ? { provider, model } : null
+}
+
+async function resolveConfiguredPrimaryInferenceRoute() {
+  try {
+    const { stdout } = await execFileAsync(OPENSHELL_BIN, ["inference", "get"], {
+      env: hostCommandEnv({
+        OPENSHELL_GATEWAY: process.env.OPENSHELL_GATEWAY || "nemoclaw",
+      }),
+      timeout: 30000,
+      maxBuffer: 5 * 1024 * 1024,
+    })
+    const output = stripAnsi(String(stdout).trim())
+    return parseConfiguredInferenceRoute(output, "Gateway inference") || parseConfiguredInferenceRoute(output, "System inference")
+  } catch {
+    return null
+  }
+}
+
+function mapOpenShellProviderToNemoClawProvider(provider: string) {
+  const normalized = provider.trim().toLowerCase()
+  const mappings: Record<string, string> = {
+    "nvidia-inference": "build",
+    "nvidia-prod": "build",
+    "nvidia": "build",
+    "nvidia-nim": "nim-local",
+    "nim-local": "nim-local",
+    "ollama-local": "ollama",
+    "ollama": "ollama",
+    "vllm-local": "vllm",
+    "vllm": "vllm",
+    "openai-api": "openai",
+    "openai": "openai",
+    "anthropic-prod": "anthropic",
+    "anthropic": "anthropic",
+    "compatible-anthropic-endpoint": "anthropicCompatible",
+    "anthropiccompatible": "anthropicCompatible",
+    "compatible-endpoint": "custom",
+    "custom": "custom",
+  }
+  return mappings[normalized] || ""
+}
+
+function applyConfiguredInferenceToOnboardEnv(env: NodeJS.ProcessEnv, route: ConfiguredInferenceRoute | null) {
+  if (!route) return null
+  const provider = mapOpenShellProviderToNemoClawProvider(route.provider)
+  if (!provider) return null
+
+  env.NEMOCLAW_PROVIDER = provider
+  env.NEMOCLAW_MODEL = route.model
+  if (provider === "nim-local" || provider === "vllm") {
+    env.NEMOCLAW_EXPERIMENTAL = env.NEMOCLAW_EXPERIMENTAL || "1"
+  }
+  if (provider === "custom") {
+    const endpointUrl = process.env.NEMOCLAW_ENDPOINT_URL || process.env.OPENAI_BASE_URL || process.env.VLLM_BASE_URL || ""
+    if (endpointUrl) env.NEMOCLAW_ENDPOINT_URL = endpointUrl
+    const providerKey = process.env.NEMOCLAW_PROVIDER_KEY || process.env.OPENAI_API_KEY || process.env.VLLM_API_KEY || ""
+    if (providerKey) env.NEMOCLAW_PROVIDER_KEY = providerKey
+  }
+  return {
+    openshellProvider: route.provider,
+    nemoclawProvider: provider,
+    model: route.model,
+  }
 }
 
 function appendNote(...parts: Array<string | false | null | undefined>) {
@@ -335,6 +422,7 @@ export async function POST(request: Request) {
 
     if (blueprint === "nemoclaw-blueprint") {
       const createCommand = buildNemoClawCreateCommand()
+      const configuredInferenceRoute = await resolveConfiguredPrimaryInferenceRoute()
       const env: NodeJS.ProcessEnv = hostCommandEnv({
         NEMOCLAW_SANDBOX_NAME: sandboxName,
         NEMOCLAW_NON_INTERACTIVE: "1",
@@ -342,8 +430,12 @@ export async function POST(request: Request) {
         NEMOCLAW_ACCEPT_THIRD_PARTY_SOFTWARE: "1",
         OPENSHELL_GATEWAY: process.env.OPENSHELL_GATEWAY || "nemoclaw",
       })
+      const onboardInference = applyConfiguredInferenceToOnboardEnv(env, configuredInferenceRoute)
+      console.log(
+        `[sandbox/create] inference-default sandbox=${sandboxName} openshellProvider=${onboardInference?.openshellProvider || "unconfigured"} nemoclawProvider=${onboardInference?.nemoclawProvider || "default"} model=${onboardInference?.model || "default"} elapsedMs=${elapsedMs(requestStartedAt)}`,
+      )
 
-      if (!enableTailscale) {
+      if (!enableTailscale && !onboardInference) {
         env.NVIDIA_API_KEY = env.NVIDIA_API_KEY || "optional-local-mode"
       }
 
@@ -363,6 +455,8 @@ export async function POST(request: Request) {
           blueprint,
           sandboxName,
           enableTailscale,
+          configuredInferenceRoute,
+          onboardInference,
         }, { status: 500 })
       }
 
@@ -387,6 +481,8 @@ export async function POST(request: Request) {
         verification,
         mode: "nemoclaw-blueprint",
         enableTailscale,
+        configuredInferenceRoute,
+        onboardInference,
         createCommand,
         hostPath: HOST_PATH,
         readiness: {

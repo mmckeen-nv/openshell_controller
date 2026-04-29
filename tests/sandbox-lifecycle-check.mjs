@@ -53,6 +53,11 @@ assert.match(
   /readiness:\s*\{\s*attempts: readiness\.attempts,\s*elapsedMs: readiness\.elapsedMs,/,
   'blueprint create response must expose readiness polling metadata',
 )
+assert.match(createRouteSource, /resolveConfiguredPrimaryInferenceRoute/, 'blueprint create must resolve the configured primary OpenShell inference route')
+assert.match(createRouteSource, /applyConfiguredInferenceToOnboardEnv/, 'blueprint create must pass the configured inference route into NemoClaw onboarding')
+assert.match(createRouteSource, /NEMOCLAW_PROVIDER/, 'blueprint create must set NemoClaw provider from inference configuration')
+assert.match(createRouteSource, /NEMOCLAW_MODEL/, 'blueprint create must set NemoClaw model from inference configuration')
+assert.match(createRouteSource, /!enableTailscale && !onboardInference/, 'blueprint create must not inject the optional NVIDIA placeholder when a primary inference route is configured')
 
 assert.match(hookSource, /type RefreshOptions = \{\s*force\?: boolean\s*\}/, 'inventory refresh must accept a force option')
 assert.match(hookSource, /!refreshOptions\?\.force && inFlightRef\.current/, 'forced inventory refresh must bypass existing in-flight reads')
