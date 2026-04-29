@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server"
 import type { McpCatalogEntry } from "@/app/lib/mcpServerStore"
 
-const REGISTRY_BASE_URL = process.env.MCP_REGISTRY_BASE_URL || "https://registry.modelcontextprotocol.io"
+const DEFAULT_REGISTRY_BASE_URL = process.env.MCP_REGISTRY_BASE_URL || "https://registry.modelcontextprotocol.io"
 
 type RegistryArgument = {
   value?: string
@@ -126,7 +126,8 @@ export async function GET(request: Request) {
     const requestUrl = new URL(request.url)
     const search = requestUrl.searchParams.get("search") || requestUrl.searchParams.get("q") || ""
     const limit = Math.max(1, Math.min(Number.parseInt(requestUrl.searchParams.get("limit") || "12", 10) || 12, 30))
-    const registryUrl = new URL("/v0/servers", REGISTRY_BASE_URL)
+    const baseUrl = requestUrl.searchParams.get("baseUrl") || DEFAULT_REGISTRY_BASE_URL
+    const registryUrl = new URL("/v0/servers", baseUrl)
     registryUrl.searchParams.set("limit", String(limit))
     registryUrl.searchParams.set("is_latest", "true")
     if (search.trim()) registryUrl.searchParams.set("search", search.trim())
