@@ -60,6 +60,10 @@ assert.match(versionedInstallSource, /https:\/\/github\.com\/NVIDIA\/NemoClaw\/a
 assert.match(versionedInstallSource, /OPENSHELL_VERSION="\$OPENSHELL_VERSION" sh/, 'versioned installer must pass the pinned OpenShell version to upstream install.sh')
 assert.match(versionedInstallSource, /NEMOCLAW_ACCEPT_THIRD_PARTY_SOFTWARE="\$NEMOCLAW_ACCEPT_THIRD_PARTY_SOFTWARE"/, 'versioned installer must support non-interactive third-party acceptance')
 assert.match(versionedInstallSource, /NEMOCLAW_NON_INTERACTIVE="\$NEMOCLAW_NON_INTERACTIVE"/, 'versioned installer must run NemoClaw non-interactively by default')
+assert.match(versionedInstallSource, /NEMOCLAW_EXPERIMENTAL="\$\{NEMOCLAW_EXPERIMENTAL:-1\}"/, 'versioned installer must default NemoClaw to experimental mode')
+assert.match(versionedInstallSource, /NEMOCLAW_PROVIDER="\$\{NEMOCLAW_PROVIDER:-vllm\}"/, 'versioned installer must default NemoClaw to the vLLM provider')
+assert.match(versionedInstallSource, /NEMOCLAW_EXPERIMENTAL="\$NEMOCLAW_EXPERIMENTAL"/, 'versioned installer must pass experimental mode through to NemoClaw install')
+assert.match(versionedInstallSource, /NEMOCLAW_PROVIDER="\$NEMOCLAW_PROVIDER"/, 'versioned installer must pass the provider through to NemoClaw install')
 assert.match(versionedInstallSource, /NVIDIA_API_KEY="\$\{NVIDIA_API_KEY:-\}"/, 'versioned installer must pass NVIDIA_API_KEY through to NemoClaw install')
 
 assert.match(hostCommandsSource, /export const HOST_PATH/, 'host command resolution must centralize PATH construction')
