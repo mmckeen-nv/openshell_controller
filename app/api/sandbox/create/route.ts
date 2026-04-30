@@ -57,6 +57,60 @@ type NemoClawCreateCommand = {
   mode: "cli-onboard" | "legacy-setup"
 }
 
+type CreateInferenceMode = "auto" | "vllm" | "nim"
+
+type CreateInferenceSettings = {
+  mode: CreateInferenceMode
+  model: string
+  hasApiKey: boolean
+  envSummary: string[]
+}
+
+function parseCreateInferenceSettings(body: any): CreateInferenceSettings {
+  const raw = body?.createInference && typeof body.createInference === "object" ? body.createInference : {}
+  const requestedMode = typeof raw.mode === "string" ? raw.mode : "auto"
+  const mode: CreateInferenceMode = requestedMode === "vllm" || requestedMode === "nim" ? requestedMode : "auto"
+  const model = typeof raw.model === "string" ? raw.model.trim() : ""
+  const apiKey = typeof raw.apiKey === "string" ? raw.apiKey.trim() : ""
+
+  return {
+    mode,
+    model,
+    hasApiKey: Boolean(apiKey),
+    envSummary: [],
+  }
+}
+
+function applyCreateInferenceEnv(env: NodeJS.ProcessEnv, settings: CreateInferenceSettings, body: any) {
+  if (settings.mode === "auto") return settings
+
+  env.NEMOCLAW_EXPERIMENTAL = "1"
+  settings.envSummary.push("NEMOCLAW_EXPERIMENTAL=1")
+
+  if (settings.mode === "vllm") {
+    env.NEMOCLAW_PROVIDER = "vllm"
+    settings.envSummary.push("NEMOCLAW_PROVIDER=vllm")
+  }
+
+  if (settings.mode === "nim") {
+    env.NEMOCLAW_PROVIDER = "nim-local"
+    settings.envSummary.push("NEMOCLAW_PROVIDER=nim-local")
+    const apiKey = typeof body?.createInference?.apiKey === "string" ? body.createInference.apiKey.trim() : ""
+    if (apiKey) {
+      env.NVIDIA_API_KEY = apiKey
+      env.NEMOCLAW_PROVIDER_KEY = apiKey
+      settings.envSummary.push("NVIDIA_API_KEY=<provided>", "NEMOCLAW_PROVIDER_KEY=<provided>")
+    }
+  }
+
+  if (settings.model) {
+    env.NEMOCLAW_MODEL = settings.model
+    settings.envSummary.push(`NEMOCLAW_MODEL=${settings.model}`)
+  }
+
+  return settings
+}
+
 function buildNemoClawCreateCommand(): NemoClawCreateCommand {
   if (NEMOCLAW_BIN && commandExists(NEMOCLAW_BIN)) {
     const args = ["onboard", "--non-interactive", "--recreate-sandbox", "--yes-i-accept-third-party-software"]
@@ -331,7 +385,8 @@ export async function POST(request: Request) {
     const sandboxName = validateSandboxName(typeof body?.sandboxName === "string" ? body.sandboxName.trim() : "")
     const policy = body?.policy && typeof body.policy === "object" ? body.policy : null
     const enableTailscale = Boolean(body?.enableTailscale)
-    console.log(`[sandbox/create] request:parsed sandbox=${sandboxName} blueprint=${blueprint} enableTailscale=${enableTailscale} elapsedMs=${elapsedMs(requestStartedAt)}`)
+    const createInference = parseCreateInferenceSettings(body)
+    console.log(`[sandbox/create] request:parsed sandbox=${sandboxName} blueprint=${blueprint} enableTailscale=${enableTailscale} inferenceMode=${createInference.mode} elapsedMs=${elapsedMs(requestStartedAt)}`)
 
     if (!blueprint) {
       return NextResponse.json({ ok: false, error: "blueprint is required" }, { status: 400 })
@@ -353,6 +408,8 @@ export async function POST(request: Request) {
         env.NVIDIA_API_KEY = env.NVIDIA_API_KEY || "optional-local-mode"
       }
 
+      applyCreateInferenceEnv(env, createInference, body)
+
       const result = await runCommand(
         createCommand.file,
         createCommand.mode === "legacy-setup" ? [...createCommand.args, sandboxName] : createCommand.args,
@@ -369,6 +426,7 @@ export async function POST(request: Request) {
           blueprint,
           sandboxName,
           enableTailscale,
+          createInference,
         }, { status: 500 })
       }
 
@@ -393,6 +451,7 @@ export async function POST(request: Request) {
         verification,
         mode: "nemoclaw-blueprint",
         enableTailscale,
+        createInference,
         createCommand,
         hostPath: HOST_PATH,
         readiness: {
