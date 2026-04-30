@@ -49,3 +49,38 @@ export async function writeSandboxFilePrivileged(
     bytes: payload.byteLength,
   }
 }
+
+export async function repairOpenClawWorkspacePermissions(sandboxName: string) {
+  const mutableDirs = [
+    "agents",
+    "extensions",
+    "workspace",
+    "skills",
+    "hooks",
+    "identity",
+    "devices",
+    "canvas",
+    "cron",
+    "memory",
+    "logs",
+    "credentials",
+    "sandbox",
+    "telegram",
+  ]
+  const script = [
+    `for dir in ${mutableDirs.map(shellQuote).join(" ")}; do target="/sandbox/.openclaw-data/$dir"; link="/sandbox/.openclaw/$dir"; mkdir -p "$target"; if [ -d "$link" ] && [ ! -L "$link" ]; then cp -a "$link/." "$target/" 2>/dev/null || true; rm -rf "$link"; fi; ln -sfn "$target" "$link"; done`,
+    `chown -R sandbox:sandbox /sandbox/.openclaw-data 2>/dev/null || chown -R 998:998 /sandbox/.openclaw-data`,
+    `for dir in ${mutableDirs.map(shellQuote).join(" ")}; do chmod 0775 "/sandbox/.openclaw-data/$dir"; done`,
+  ].join(" && ")
+  const result = await runDockerKubectl(
+    ["exec", "-n", OPENSHELL_NAMESPACE, sandboxName, "--", "sh", "-lc", script],
+  )
+  if (result.code !== 0) throw new Error(result.stderr || "failed to repair OpenClaw mutable paths")
+  return {
+    sandboxName,
+    path: "/sandbox/.openclaw",
+    target: "/sandbox/.openclaw-data",
+    mutableDirs,
+    note: "Repaired OpenClaw mutable paths so AGENTS.md, session lock, and agent state writes resolve into writable .openclaw-data storage.",
+  }
+}

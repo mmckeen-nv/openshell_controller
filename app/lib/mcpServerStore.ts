@@ -65,6 +65,16 @@ export const MCP_SERVER_CATALOG: McpCatalogEntry[] = [
     tags: ["state", "local"],
   },
   {
+    id: "inter-sandbox-chat",
+    name: "Inter-Sandbox Chat",
+    summary: "Give allowed sandboxes a shared roomed message board so agents can post updates and read messages from each other through the MCP broker.",
+    transport: "stdio",
+    command: "node",
+    args: [path.join(process.cwd(), "scripts/inter-sandbox-chat-mcp.mjs")],
+    env: {},
+    tags: ["chat", "collaboration", "sandbox"],
+  },
+  {
     id: "git",
     name: "Git",
     summary: "Inspect and operate on a local git repository from an MCP client.",
@@ -116,6 +126,10 @@ function normalizeEnv(value: unknown) {
 
 function normalizeTransport(value: unknown): McpTransport {
   return value === "http" ? "http" : "stdio"
+}
+
+function withoutUndefined<T extends Record<string, unknown>>(input: T): Partial<T> {
+  return Object.fromEntries(Object.entries(input).filter(([, value]) => value !== undefined)) as Partial<T>
 }
 
 function normalizeInstall(input: Partial<McpServerInstall>, existing?: McpServerInstall | null): McpServerInstall {
@@ -224,16 +238,17 @@ export async function listMcpServers() {
 
 export async function installMcpServer(input: Partial<McpServerInstall>) {
   const store = await readStore()
-  const fromCatalog = typeof input.id === "string"
-    ? MCP_SERVER_CATALOG.find((entry) => entry.id === input.id)
+  const cleanInput = withoutUndefined(input as Record<string, unknown>) as Partial<McpServerInstall>
+  const fromCatalog = typeof cleanInput.id === "string"
+    ? MCP_SERVER_CATALOG.find((entry) => entry.id === cleanInput.id)
     : null
   const next = normalizeInstall(
     {
       ...fromCatalog,
-      ...input,
-      source: input.source || (fromCatalog ? "catalog" : "custom"),
+      ...cleanInput,
+      source: cleanInput.source || (fromCatalog ? "catalog" : "custom"),
     },
-    typeof input.id === "string" ? store.servers[slugify(input.id)] : null,
+    typeof cleanInput.id === "string" ? store.servers[slugify(cleanInput.id)] : null,
   )
   store.servers[next.id] = next
   await writeStore(store)

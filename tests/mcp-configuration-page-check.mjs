@@ -36,8 +36,9 @@ const helpPath = path.join(root, 'app/components/HelpPanel.tsx')
 const sidebarPath = path.join(root, 'app/components/Sidebar.tsx')
 const sandboxListPath = path.join(root, 'app/components/SandboxList.tsx')
 const pagePath = path.join(root, 'app/page.tsx')
+const interSandboxChatPath = path.join(root, 'scripts/inter-sandbox-chat-mcp.mjs')
 
-const [storeSource, brokerStoreSource, brokerClientSource, brokerProtocolSource, sandboxAutoSyncSource, manifestSource, privilegedFilesSource, routeSource, uploadRouteSource, preflightRouteSource, healthRouteSource, registryRouteSource, registriesRouteSource, registriesAssistRouteSource, installAssistRouteSource, registryStoreSource, inferenceModelSource, brokerCapabilitiesRouteSource, brokerCallRouteSource, brokerMcpRouteSource, sandboxMcpRouteSource, brokerUrlSource, sandboxOpenClawMcpConfigSource, preflightLibSource, preflightRepairLibSource, mcpServerSpecsSource, middlewareSource, panelSource, helpSource, sidebarSource, sandboxListSource, pageSource] = await Promise.all([
+const [storeSource, brokerStoreSource, brokerClientSource, brokerProtocolSource, sandboxAutoSyncSource, manifestSource, privilegedFilesSource, routeSource, uploadRouteSource, preflightRouteSource, healthRouteSource, registryRouteSource, registriesRouteSource, registriesAssistRouteSource, installAssistRouteSource, registryStoreSource, inferenceModelSource, brokerCapabilitiesRouteSource, brokerCallRouteSource, brokerMcpRouteSource, sandboxMcpRouteSource, brokerUrlSource, sandboxOpenClawMcpConfigSource, preflightLibSource, preflightRepairLibSource, mcpServerSpecsSource, middlewareSource, panelSource, helpSource, sidebarSource, sandboxListSource, pageSource, interSandboxChatSource] = await Promise.all([
   readFile(storePath, 'utf8'),
   readFile(brokerStorePath, 'utf8'),
   readFile(brokerClientPath, 'utf8'),
@@ -70,16 +71,21 @@ const [storeSource, brokerStoreSource, brokerClientSource, brokerProtocolSource,
   readFile(sidebarPath, 'utf8'),
   readFile(sandboxListPath, 'utf8'),
   readFile(pagePath, 'utf8'),
+  readFile(interSandboxChatPath, 'utf8'),
 ])
 
 assert.match(storeSource, /export const MCP_SERVER_CATALOG/, 'MCP store must expose an install catalog')
 assert.match(storeSource, /blendermcp\.org/, 'MCP catalog must include the requested BlenderMCP site')
 assert.match(storeSource, /args:\s*\["blender-mcp"\]/, 'MCP catalog must install BlenderMCP via uvx blender-mcp')
+assert.match(storeSource, /id: "inter-sandbox-chat"/, 'MCP catalog must include Inter-Sandbox Chat')
+assert.match(storeSource, /Inter-Sandbox Chat/, 'MCP catalog must expose the Inter-Sandbox Chat display name')
+assert.match(storeSource, /inter-sandbox-chat-mcp\.mjs/, 'MCP catalog must launch the local Inter-Sandbox Chat server')
 assert.match(storeSource, /BASELINE_MCP_SERVER_IDS = \["memory"\]/, 'MCP dashboard should install Memory as the baseline test server')
 assert.match(storeSource, /ensureBaselineMcpServers/, 'MCP store must seed baseline servers into dashboard state')
 assert.match(storeSource, /mcp-servers\.json/, 'MCP installs must persist to dashboard state')
 assert.match(storeSource, /accessMode/, 'MCP installs must persist sandbox access mode')
 assert.match(storeSource, /allowedSandboxIds/, 'MCP installs must persist allowed sandbox lists')
+assert.match(storeSource, /withoutUndefined/, 'MCP catalog installs must not let omitted API fields erase preset command definitions')
 assert.match(storeSource, /existing\?\.accessMode \|\| "disabled"/, 'MCP server access should default to disabled for sandboxes')
 assert.match(storeSource, /export function buildMcpClientConfig/, 'MCP store must export client config JSON')
 assert.match(storeSource, /mcpServers/, 'MCP client config must use the common mcpServers shape')
@@ -90,6 +96,10 @@ assert.match(brokerClientSource, /@modelcontextprotocol\/sdk\/client\/index\.js/
 assert.match(brokerClientSource, /StdioClientTransport/, 'MCP broker must support stdio servers')
 assert.match(brokerClientSource, /StreamableHTTPClientTransport/, 'MCP broker must support streamable HTTP servers')
 assert.match(brokerClientSource, /callBrokerServerTool/, 'MCP broker must forward allowed tool calls')
+assert.match(interSandboxChatSource, /post_message/, 'Inter-Sandbox Chat MCP server must let agents post messages')
+assert.match(interSandboxChatSource, /read_messages/, 'Inter-Sandbox Chat MCP server must let agents read messages')
+assert.match(interSandboxChatSource, /list_rooms/, 'Inter-Sandbox Chat MCP server must let agents discover rooms')
+assert.match(interSandboxChatSource, /inter-sandbox-chat\.json/, 'Inter-Sandbox Chat MCP server must persist chat state in dashboard storage')
 assert.match(brokerProtocolSource, /tools\/list/, 'MCP broker protocol adapter must expose an MCP tools/list JSON-RPC method')
 assert.match(brokerProtocolSource, /tools\/call/, 'MCP broker protocol adapter must expose an MCP tools/call JSON-RPC method')
 assert.match(brokerProtocolSource, /listAllowedBrokerServers/, 'MCP broker protocol adapter must reuse broker access policy')

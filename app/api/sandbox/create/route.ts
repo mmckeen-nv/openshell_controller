@@ -2,6 +2,7 @@ import { NextResponse } from "next/server"
 import { execFile, spawn } from "node:child_process"
 import { promisify } from "node:util"
 import { inspectSandbox } from "@/app/lib/openshellHost"
+import { repairOpenClawWorkspacePermissions } from "@/app/lib/sandboxPrivilegedFiles"
 import {
   commandExists,
   HOST_PATH,
@@ -437,6 +438,11 @@ export async function POST(request: Request) {
         error: "Sandbox readiness polling produced no verification result.",
       }
       const created = readiness.verified
+      const workspaceRepair = created ? await repairOpenClawWorkspacePermissions(sandboxName).catch((error) => ({
+        sandboxName,
+        path: "/sandbox/.openclaw/workspace",
+        error: error instanceof Error ? error.message : "Failed to repair OpenClaw workspace permissions",
+      })) : null
       const deviceApproval = created ? await approveOpenClawDeviceRequests(sandboxName) : null
       console.log(
         `[sandbox/create] request:complete sandbox=${sandboxName} created=${created} readinessAttempts=${readiness.attempts} deviceApproval=${deviceApproval?.approved ?? false} elapsedMs=${elapsedMs(requestStartedAt)}`,
@@ -458,6 +464,7 @@ export async function POST(request: Request) {
           attempts: readiness.attempts,
           elapsedMs: readiness.elapsedMs,
         },
+        workspaceRepair,
         deviceApproval,
         stdout: result.stdout,
         stderr: result.stderr,
@@ -466,6 +473,8 @@ export async function POST(request: Request) {
               enableTailscale
                 ? "NemoClaw blueprint workflow completed with Tailscale-enabled prerequisites. Existing healthy OpenShell gateways are reused before any new gateway start is attempted."
                 : "NemoClaw blueprint workflow completed in local/default mode. Existing healthy OpenShell gateways are reused before any new gateway start is attempted.",
+              workspaceRepair && "note" in workspaceRepair ? workspaceRepair.note : false,
+              workspaceRepair && "error" in workspaceRepair ? `OpenClaw workspace permission repair failed: ${workspaceRepair.error}` : false,
               deviceApproval?.note,
             )
           : "Blueprint command reported success, but the sandbox never reached a ready verification state afterward.",
@@ -500,6 +509,11 @@ export async function POST(request: Request) {
         error: "Sandbox readiness polling produced no verification result.",
       }
       const created = readiness.verified
+      const workspaceRepair = created ? await repairOpenClawWorkspacePermissions(sandboxName).catch((error) => ({
+        sandboxName,
+        path: "/sandbox/.openclaw/workspace",
+        error: error instanceof Error ? error.message : "Failed to repair OpenClaw workspace permissions",
+      })) : null
       const deviceApproval = created ? await approveOpenClawDeviceRequests(sandboxName) : null
       const policyPrepared = Boolean(policy)
       console.log(
@@ -526,6 +540,7 @@ export async function POST(request: Request) {
           attempts: readiness.attempts,
           elapsedMs: readiness.elapsedMs,
         },
+        workspaceRepair,
         deviceApproval,
         policyPrepared,
         note: created
@@ -535,6 +550,8 @@ export async function POST(request: Request) {
                 : (policyPrepared
                     ? "Custom sandbox created. Policy draft is prepared, but applying it live should be a follow-up action."
                     : "Custom sandbox created."),
+              workspaceRepair && "note" in workspaceRepair ? workspaceRepair.note : false,
+              workspaceRepair && "error" in workspaceRepair ? `OpenClaw workspace permission repair failed: ${workspaceRepair.error}` : false,
               deviceApproval?.note,
             )
           : "Create command started, but the sandbox never reached a ready verification state afterward.",
