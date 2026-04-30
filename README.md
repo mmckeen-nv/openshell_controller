@@ -1,7 +1,7 @@
 
 # OpenShell Control
 
-THIS IS VERSION LOCKED TO OpenShell v0.0.26 and NemoClaw v0.0.15.
+THIS IS VERSION LOCKED TO OpenShell v0.0.36, NemoClaw v0.0.31, and OpenClaw 2026.4.27.
 
 OpenShell Control is a local, development-stage dashboard for operating OpenShell sandboxes and their OpenClaw gateway dashboards.
 
@@ -51,15 +51,16 @@ Tested on the current development host with:
 - Node.js `v22.22.2`
 - npm `10.9.7`
 - Docker `29.1.3`
-- OpenShell CLI `0.0.24`
-- OpenShell cluster image `ghcr.io/nvidia/openshell/cluster:0.0.24`
+- OpenShell CLI `0.0.36`
+- NemoClaw `v0.0.31`
+- OpenClaw `2026.4.27`
 
 Minimum expected versions:
 
 - Node.js `20+`
 - npm `10+`
 - Docker `24+`
-- OpenShell CLI and gateway compatible with OpenShell `0.0.24`
+- OpenShell CLI and gateway compatible with OpenShell `0.0.36`
 
 The app uses Next.js `14.2.35`, React `18.3.1`, TypeScript, Tailwind CSS, `ws`, `node-pty`, and the official MCP TypeScript SDK.
 

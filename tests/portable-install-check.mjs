@@ -53,8 +53,8 @@ assert.match(installSource, /python3 -m venv "\$PROJECT_VENV"/, 'installer must 
 assert.match(installSource, /\$venv_python" -m pip install --upgrade uv/, 'installer must install uvx into the virtual environment')
 assert.match(installSource, /set_env "OPENSHELL_CONTROL_VENV"/, 'installer must persist the virtual environment path for runtime MCP launches')
 
-assert.match(versionedInstallSource, /OPENSHELL_VERSION="\$\{OPENSHELL_VERSION:-v0\.0\.26\}"/, 'versioned installer must pin OpenShell v0.0.26 by default')
-assert.match(versionedInstallSource, /NEMOCLAW_INSTALL_TAG="\$\{NEMOCLAW_INSTALL_TAG:-v0\.0\.15\}"/, 'versioned installer must pin NemoClaw v0.0.15 by default')
+assert.match(versionedInstallSource, /OPENSHELL_VERSION="\$\{OPENSHELL_VERSION:-v0\.0\.36\}"/, 'versioned installer must pin OpenShell v0.0.36 by default')
+assert.match(versionedInstallSource, /NEMOCLAW_INSTALL_TAG="\$\{NEMOCLAW_INSTALL_TAG:-v0\.0\.31\}"/, 'versioned installer must pin NemoClaw v0.0.31 by default')
 assert.match(versionedInstallSource, /https:\/\/raw\.githubusercontent\.com\/NVIDIA\/OpenShell\/main\/install\.sh/, 'versioned installer must use the OpenShell installer URL')
 assert.match(versionedInstallSource, /https:\/\/github\.com\/NVIDIA\/NemoClaw\/archive\/refs\/tags\/\$\{NEMOCLAW_INSTALL_TAG\}\.zip/, 'versioned installer must download NemoClaw from the pinned tag archive')
 assert.match(versionedInstallSource, /OPENSHELL_VERSION="\$OPENSHELL_VERSION" sh/, 'versioned installer must pass the pinned OpenShell version to upstream install.sh')

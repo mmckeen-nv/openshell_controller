@@ -66,7 +66,7 @@ assert.match(createRouteSource, /NEMOCLAW_EXPERIMENTAL = "1"/, 'blueprint create
 assert.match(createRouteSource, /NEMOCLAW_PROVIDER = "vllm"/, 'blueprint create must support the vLLM onboarding provider')
 assert.match(createRouteSource, /NEMOCLAW_PROVIDER = "nim-local"/, 'blueprint create must support the NVIDIA NIM onboarding provider')
 assert.match(createRouteSource, /NEMOCLAW_PROVIDER_KEY = apiKey/, 'blueprint create must pass NVIDIA API keys through provider env without changing NemoClaw')
-assert.match(versionedInstallerSource, /OPENCLAW_VERSION="\$\{OPENCLAW_VERSION:-2026\.4\.24\}"/, 'versioned installer must pin the dashboard-compatible NemoClaw OpenClaw version')
+assert.match(versionedInstallerSource, /OPENCLAW_VERSION="\$\{OPENCLAW_VERSION:-2026\.4\.27\}"/, 'versioned installer must pin the dashboard-compatible NemoClaw OpenClaw version')
 assert.match(versionedInstallerSource, /docker build[\s\S]*Dockerfile\.base[\s\S]*--build-arg "OPENCLAW_VERSION=\$OPENCLAW_VERSION"[\s\S]*"\$source_dir"/, 'versioned installer must rebuild the stock NemoClaw base image with the pinned OpenClaw version')
 assert.doesNotMatch(createRouteSource, /repairOpenClawRuntimePolicy|runtimePolicyRepair/, 'sandbox create must not mutate OpenShell filesystem policy for OpenClaw')
 assert.doesNotMatch(createRouteSource, /stabilizeOpenClawGatewayConfig|gatewayConfigRepair|repairOpenClawWorkspacePermissions|workspaceRepair/, 'sandbox create must not patch OpenClaw internals after the Monday rollback')
