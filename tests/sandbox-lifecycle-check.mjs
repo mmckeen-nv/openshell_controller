@@ -62,6 +62,7 @@ assert.match(
 assert.match(createRouteSource, /"onboard", "--non-interactive", "--recreate-sandbox"/, 'blueprint create must use the Monday-era normal NemoClaw onboard flow')
 assert.doesNotMatch(createRouteSource, /"--from"|resolvePreferredNemoClawDockerfile|prepareDashboardOwnedNemoClawDockerfile/, 'blueprint create must not force the explicit Dockerfile path')
 assert.match(createRouteSource, /NEMOCLAW_SANDBOX_NAME: sandboxName/, 'blueprint create must pass the requested sandbox name to NemoClaw onboarding')
+assert.match(createRouteSource, /const requestedMode = typeof raw\.mode === "string" \? raw\.mode : "vllm"/, 'blueprint create must default to vLLM experimental onboarding when the UI payload is absent')
 assert.match(createRouteSource, /NEMOCLAW_EXPERIMENTAL = "1"/, 'blueprint create must support NemoClaw experimental provider onboarding')
 assert.match(createRouteSource, /NEMOCLAW_PROVIDER = "vllm"/, 'blueprint create must support the vLLM onboarding provider')
 assert.match(createRouteSource, /NEMOCLAW_PROVIDER = "nim-local"/, 'blueprint create must support the NVIDIA NIM onboarding provider')

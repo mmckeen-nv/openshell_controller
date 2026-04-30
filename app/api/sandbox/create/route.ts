@@ -69,7 +69,7 @@ type CreateInferenceSettings = {
 
 function parseCreateInferenceSettings(body: any): CreateInferenceSettings {
   const raw = body?.createInference && typeof body.createInference === "object" ? body.createInference : {}
-  const requestedMode = typeof raw.mode === "string" ? raw.mode : "auto"
+  const requestedMode = typeof raw.mode === "string" ? raw.mode : "vllm"
   const mode: CreateInferenceMode = requestedMode === "vllm" || requestedMode === "nim" ? requestedMode : "auto"
   const model = typeof raw.model === "string" ? raw.model.trim() : ""
   const apiKey = typeof raw.apiKey === "string" ? raw.apiKey.trim() : ""
