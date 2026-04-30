@@ -140,9 +140,29 @@ export async function resolveSandboxNetworkRule(sandboxId: string, action: strin
 }
 
 async function probeBrokerEndpoint(sandboxName: string, brokerBaseUrl: string) {
-  const capabilitiesUrl = `${brokerBaseUrl.replace(/\/+$/, "")}/capabilities`
-  const script = `curl --noproxy '*' -sS --max-time 5 ${JSON.stringify(capabilitiesUrl)} >/dev/null || true`
-  await runOpenShell(["sandbox", "exec", "-n", sandboxName, "--", "sh", "-lc", script], 15000).catch(() => null)
+  const mcpUrl = `${brokerBaseUrl.replace(/\/+$/, "")}/mcp`
+  const payload = {
+    jsonrpc: "2.0",
+    id: 1,
+    method: "initialize",
+    params: {
+      protocolVersion: "2024-11-05",
+      capabilities: {},
+      clientInfo: { name: "openshell-control-mcp-policy-probe", version: "0" },
+    },
+  }
+  const script = [
+    "node",
+    "-e",
+    `
+      fetch(${JSON.stringify(mcpUrl)}, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: ${JSON.stringify(JSON.stringify(payload))},
+      }).catch(() => {});
+    `,
+  ]
+  await runOpenShell(["sandbox", "exec", "-n", sandboxName, "--", ...script], 15000).catch(() => null)
 }
 
 export async function syncBrokerNetworkAccess(sandboxId: string, brokerBaseUrl: string) {
