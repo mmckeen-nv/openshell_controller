@@ -1,6 +1,8 @@
 
 # OpenShell Control
 
+THIS IS VERSION LOCKED TO OpenShell v0.0.26 and NemoClaw v0.0.15.
+
 OpenShell Control is a local, development-stage dashboard for operating OpenShell sandboxes and their OpenClaw gateway dashboards.
 
 It is currently built for active development and lab use. It includes a simple password gate, but it is not a hardened production control plane yet.

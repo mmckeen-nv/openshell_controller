@@ -39,6 +39,9 @@ Options:
 
 This project is in development. The installer prepares a local dev/operator
 environment; it is not a systemd/production service installer.
+
+To install the OpenShell/NemoClaw versions validated with this dashboard, run:
+  ./install_versioned_nemoclaw_openshell.sh
 EOF
 }
 
@@ -308,6 +311,7 @@ set_env() {
 
 echo -e "${GREEN}=== ${APP_NAME} Installer ===${NC}"
 echo "Development build: expect sharp edges; do not expose this UI broadly without hardening."
+echo "This installs the dashboard only. For pinned OpenShell/NemoClaw dependencies, run ./install_versioned_nemoclaw_openshell.sh."
 echo ""
 
 if [[ "${EUID:-$(id -u)}" -eq 0 && "$ALLOW_ROOT" -ne 1 ]]; then

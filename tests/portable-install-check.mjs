@@ -6,6 +6,7 @@ const root = process.cwd()
 
 const [
   installSource,
+  versionedInstallSource,
   hostCommandsSource,
   createRouteSource,
   deleteRouteSource,
@@ -19,6 +20,7 @@ const [
   mcpBrokerClientSource,
 ] = await Promise.all([
   readFile(path.join(root, 'install.sh'), 'utf8'),
+  readFile(path.join(root, 'install_versioned_nemoclaw_openshell.sh'), 'utf8'),
   readFile(path.join(root, 'app/lib/hostCommands.ts'), 'utf8'),
   readFile(path.join(root, 'app/api/sandbox/create/route.ts'), 'utf8'),
   readFile(path.join(root, 'app/api/sandbox/delete/route.ts'), 'utf8'),
@@ -32,6 +34,7 @@ const [
   readFile(path.join(root, 'app/lib/mcpBrokerClient.ts'), 'utf8'),
 ])
 
+assert.match(installSource, /install_versioned_nemoclaw_openshell\.sh/, 'dashboard installer must point operators to the pinned OpenShell/NemoClaw installer')
 assert.match(installSource, /find_nemoclaw_bin\(\)/, 'installer must discover NemoClaw CLI')
 assert.match(installSource, /find_nemoclaw_setup\(\)/, 'installer may discover the legacy NemoClaw setup workflow')
 assert.match(installSource, /\$HOME\/nemoclaw\/scripts\/setup\.sh/, 'installer must check common lowercase ~/nemoclaw setup path')
@@ -49,6 +52,15 @@ assert.match(installSource, /prepend_virtualenv_bin\(\)/, 'installer must prefer
 assert.match(installSource, /python3 -m venv "\$PROJECT_VENV"/, 'installer must create a project virtual environment when none is active')
 assert.match(installSource, /\$venv_python" -m pip install --upgrade uv/, 'installer must install uvx into the virtual environment')
 assert.match(installSource, /set_env "OPENSHELL_CONTROL_VENV"/, 'installer must persist the virtual environment path for runtime MCP launches')
+
+assert.match(versionedInstallSource, /OPENSHELL_VERSION="\$\{OPENSHELL_VERSION:-v0\.0\.26\}"/, 'versioned installer must pin OpenShell v0.0.26 by default')
+assert.match(versionedInstallSource, /NEMOCLAW_INSTALL_TAG="\$\{NEMOCLAW_INSTALL_TAG:-v0\.0\.15\}"/, 'versioned installer must pin NemoClaw v0.0.15 by default')
+assert.match(versionedInstallSource, /https:\/\/raw\.githubusercontent\.com\/NVIDIA\/OpenShell\/main\/install\.sh/, 'versioned installer must use the OpenShell installer URL')
+assert.match(versionedInstallSource, /https:\/\/github\.com\/NVIDIA\/NemoClaw\/archive\/refs\/tags\/\$\{NEMOCLAW_INSTALL_TAG\}\.zip/, 'versioned installer must download NemoClaw from the pinned tag archive')
+assert.match(versionedInstallSource, /OPENSHELL_VERSION="\$OPENSHELL_VERSION" sh/, 'versioned installer must pass the pinned OpenShell version to upstream install.sh')
+assert.match(versionedInstallSource, /NEMOCLAW_ACCEPT_THIRD_PARTY_SOFTWARE="\$NEMOCLAW_ACCEPT_THIRD_PARTY_SOFTWARE"/, 'versioned installer must support non-interactive third-party acceptance')
+assert.match(versionedInstallSource, /NEMOCLAW_NON_INTERACTIVE="\$NEMOCLAW_NON_INTERACTIVE"/, 'versioned installer must run NemoClaw non-interactively by default')
+assert.match(versionedInstallSource, /NVIDIA_API_KEY="\$\{NVIDIA_API_KEY:-\}"/, 'versioned installer must pass NVIDIA_API_KEY through to NemoClaw install')
 
 assert.match(hostCommandsSource, /export const HOST_PATH/, 'host command resolution must centralize PATH construction')
 assert.match(hostCommandsSource, /OPENSHELL_CONTROL_VENV/, 'host command resolution must include the installer-managed virtual environment')

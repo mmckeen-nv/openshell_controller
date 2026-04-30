@@ -1,10 +1,6 @@
 import { NextResponse } from "next/server"
 import { execFile, spawn } from "node:child_process"
-import { existsSync } from "node:fs"
-import { readFile, writeFile } from "node:fs/promises"
-import path from "node:path"
 import { promisify } from "node:util"
-import { normalizeInferenceBaseUrlForGateway } from "@/app/lib/inferenceEndpointUrl"
 import { inspectSandbox } from "@/app/lib/openshellHost"
 import {
   commandExists,
@@ -16,7 +12,6 @@ import {
   NEMOCLAW_SETUP_CANDIDATES,
   NODE_BIN,
   OPENSHELL_BIN,
-  hostCommandEnv,
 } from "@/app/lib/hostCommands"
 
 const execFileAsync = promisify(execFile)
@@ -48,161 +43,80 @@ type SandboxVerification = {
 const AUTHORITATIVE_SUCCESS_PHASE = "Ready"
 const NO_PENDING_DEVICE_REQUESTS = /no pending device pairing requests/i
 
-type ConfiguredInferenceRoute = {
-  provider: string
-  model: string
-}
-
 function elapsedMs(start: number) {
   return Date.now() - start
-}
-
-function stripAnsi(value: string) {
-  return value.replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, "")
-}
-
-function readField(output: string, label: string) {
-  const match = output.match(new RegExp(`^\\s*${label}:\\s*(.+?)\\s*$`, "im"))
-  return match ? match[1].trim() : ""
-}
-
-function parseConfiguredInferenceRoute(output: string, label: "Gateway inference" | "System inference"): ConfiguredInferenceRoute | null {
-  const otherLabel = label === "Gateway inference" ? "System inference" : "Gateway inference"
-  const pattern = new RegExp(`${label}:\\s*([\\s\\S]*?)(?:\\n\\s*${otherLabel}:|$)`, "i")
-  const section = output.match(pattern)?.[1] ?? ""
-  if (!section || /Not configured/i.test(section)) return null
-  const provider = readField(section, "Provider")
-  const model = readField(section, "Model")
-  return provider && model ? { provider, model } : null
-}
-
-async function resolveConfiguredPrimaryInferenceRoute() {
-  try {
-    const { stdout } = await execFileAsync(OPENSHELL_BIN, ["inference", "get"], {
-      env: hostCommandEnv({
-        OPENSHELL_GATEWAY: process.env.OPENSHELL_GATEWAY || "nemoclaw",
-      }),
-      timeout: 30000,
-      maxBuffer: 5 * 1024 * 1024,
-    })
-    const output = stripAnsi(String(stdout).trim())
-    return parseConfiguredInferenceRoute(output, "Gateway inference") || parseConfiguredInferenceRoute(output, "System inference")
-  } catch {
-    return null
-  }
-}
-
-function mapOpenShellProviderToNemoClawProvider(provider: string) {
-  const normalized = provider.trim().toLowerCase()
-  const mappings: Record<string, string> = {
-    "nvidia-inference": "build",
-    "nvidia-prod": "build",
-    "nvidia": "build",
-    "nvidia-nim": "nim-local",
-    "nim-local": "nim-local",
-    "ollama-local": "ollama",
-    "ollama": "ollama",
-    "vllm-local": "vllm",
-    "vllm": "vllm",
-    "openai-api": "openai",
-    "openai": "openai",
-    "anthropic-prod": "anthropic",
-    "anthropic": "anthropic",
-    "compatible-anthropic-endpoint": "anthropicCompatible",
-    "anthropiccompatible": "anthropicCompatible",
-    "compatible-endpoint": "custom",
-    "custom": "custom",
-  }
-  return mappings[normalized] || ""
-}
-
-function applyConfiguredInferenceToOnboardEnv(env: NodeJS.ProcessEnv, route: ConfiguredInferenceRoute | null) {
-  if (!route) return null
-  const provider = mapOpenShellProviderToNemoClawProvider(route.provider)
-  if (!provider) return null
-
-  env.NEMOCLAW_PROVIDER = provider
-  env.NEMOCLAW_MODEL = route.model
-  if (provider === "nim-local" || provider === "vllm") {
-    env.NEMOCLAW_EXPERIMENTAL = env.NEMOCLAW_EXPERIMENTAL || "1"
-  }
-  if (provider === "custom") {
-    const endpointUrl = process.env.NEMOCLAW_ENDPOINT_URL || process.env.OPENAI_BASE_URL || process.env.VLLM_BASE_URL || ""
-    const normalizedEndpointUrl = normalizeInferenceBaseUrlForGateway(endpointUrl, "openai")
-    if (normalizedEndpointUrl) env.NEMOCLAW_ENDPOINT_URL = normalizedEndpointUrl
-    const providerKey = process.env.NEMOCLAW_PROVIDER_KEY || process.env.OPENAI_API_KEY || process.env.VLLM_API_KEY || ""
-    if (providerKey) env.NEMOCLAW_PROVIDER_KEY = providerKey
-  }
-  return {
-    openshellProvider: route.provider,
-    nemoclawProvider: provider,
-    model: route.model,
-  }
 }
 
 function appendNote(...parts: Array<string | false | null | undefined>) {
   return parts.filter(Boolean).join(" ")
 }
 
-function resolvePreferredNemoClawDockerfile() {
-  const home = process.env.HOME || ""
-  const candidates = [
-    process.env.NEMOCLAW_DOCKERFILE,
-    home ? path.join(home, ".nemoclaw/source/Dockerfile") : undefined,
-    NEMOCLAW_CWD ? path.join(NEMOCLAW_CWD, "Dockerfile") : undefined,
-    home ? path.join(home, "NemoClaw/Dockerfile") : undefined,
-  ].filter((candidate): candidate is string => Boolean(candidate))
-  return candidates.find((candidate) => existsSync(candidate)) || null
-}
-
-async function relaxKnownNemoClawDockerfileOpenClawPatch(dockerfilePath: string | null) {
-  if (!dockerfilePath) return null
-  try {
-    const source = await readFile(dockerfilePath, "utf8")
-    const strictAssertion = "assert old in src, 'writeConfigFile(params.nextConfig) pattern not found'"
-    if (!source.includes(strictAssertion)) {
-      return { dockerfilePath, patched: false, reason: "no-known-brittle-openclaw-patch" }
-    }
-
-    let next = source.replace(
-      strictAssertion,
-      "print('[nemoclaw] replaceConfigFile shape changed; skipping optional EACCES compatibility patch', file=sys.stderr)",
-    )
-    next = next.replace(
-      /grep -REq\s+--include='\*\.js'\s+'OPENSHELL_SANDBOX\.\*EACCES'\s+"\$rcf_file"\s+\|\|\s+\{\s+echo\s+"ERROR: Patch 4 \(replaceConfigFile EACCES\) not applied"\s+>&2;\s+exit 1;\s+\}/g,
-      "grep -REq --include='*.js' 'OPENSHELL_SANDBOX.*EACCES' \"$rcf_file\" || echo \"WARN: Patch 4 (replaceConfigFile EACCES) not applied; OpenClaw write shape changed\" >&2",
-    )
-    if (next !== source) {
-      await writeFile(dockerfilePath, next)
-      return { dockerfilePath, patched: true, reason: "relaxed-brittle-openclaw-patch" }
-    }
-    return { dockerfilePath, patched: false, reason: "known-patch-present-but-unmodified" }
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error ?? "unknown error")
-    return { dockerfilePath, patched: false, reason: `patch-check-failed: ${message}` }
-  }
-}
-
 type NemoClawCreateCommand = {
   file: string
   args: string[]
   mode: "cli-onboard" | "legacy-setup"
-  dockerfilePath?: string | null
+}
+
+type CreateInferenceMode = "auto" | "vllm" | "nim"
+
+type CreateInferenceSettings = {
+  mode: CreateInferenceMode
+  model: string
+  hasApiKey: boolean
+  envSummary: string[]
+}
+
+function parseCreateInferenceSettings(body: any): CreateInferenceSettings {
+  const raw = body?.createInference && typeof body.createInference === "object" ? body.createInference : {}
+  const requestedMode = typeof raw.mode === "string" ? raw.mode : "auto"
+  const mode: CreateInferenceMode = requestedMode === "vllm" || requestedMode === "nim" ? requestedMode : "auto"
+  const model = typeof raw.model === "string" ? raw.model.trim() : ""
+  const apiKey = typeof raw.apiKey === "string" ? raw.apiKey.trim() : ""
+
+  return {
+    mode,
+    model,
+    hasApiKey: Boolean(apiKey),
+    envSummary: [],
+  }
+}
+
+function applyCreateInferenceEnv(env: NodeJS.ProcessEnv, settings: CreateInferenceSettings, body: any) {
+  if (settings.mode === "auto") return settings
+
+  env.NEMOCLAW_EXPERIMENTAL = "1"
+  settings.envSummary.push("NEMOCLAW_EXPERIMENTAL=1")
+
+  if (settings.mode === "vllm") {
+    env.NEMOCLAW_PROVIDER = "vllm"
+    settings.envSummary.push("NEMOCLAW_PROVIDER=vllm")
+  }
+
+  if (settings.mode === "nim") {
+    env.NEMOCLAW_PROVIDER = "nim-local"
+    settings.envSummary.push("NEMOCLAW_PROVIDER=nim-local")
+    const apiKey = typeof body?.createInference?.apiKey === "string" ? body.createInference.apiKey.trim() : ""
+    if (apiKey) {
+      env.NVIDIA_API_KEY = apiKey
+      env.NEMOCLAW_PROVIDER_KEY = apiKey
+      settings.envSummary.push("NVIDIA_API_KEY=<provided>", "NEMOCLAW_PROVIDER_KEY=<provided>")
+    }
+  }
+
+  if (settings.model) {
+    env.NEMOCLAW_MODEL = settings.model
+    settings.envSummary.push(`NEMOCLAW_MODEL=${settings.model}`)
+  }
+
+  return settings
 }
 
 function buildNemoClawCreateCommand(): NemoClawCreateCommand {
   if (NEMOCLAW_BIN && commandExists(NEMOCLAW_BIN)) {
-    const dockerfilePath = resolvePreferredNemoClawDockerfile()
-    const args = [
-      "onboard",
-      "--non-interactive",
-      "--recreate-sandbox",
-      "--yes-i-accept-third-party-software",
-      ...(dockerfilePath ? ["--from", dockerfilePath] : []),
-    ]
+    const args = ["onboard", "--non-interactive", "--recreate-sandbox", "--yes-i-accept-third-party-software"]
     return /\.(?:c?m?js|ts)$/i.test(NEMOCLAW_BIN)
-      ? { file: NODE_BIN, args: [NEMOCLAW_BIN, ...args], mode: "cli-onboard", dockerfilePath }
-      : { file: NEMOCLAW_BIN, args, mode: "cli-onboard", dockerfilePath }
+      ? { file: NODE_BIN, args: [NEMOCLAW_BIN, ...args], mode: "cli-onboard" }
+      : { file: NEMOCLAW_BIN, args, mode: "cli-onboard" }
   }
   if (NEMOCLAW_SETUP && commandExists(NEMOCLAW_SETUP)) {
     return { file: "/bin/bash", args: [NEMOCLAW_SETUP], mode: "legacy-setup" }
@@ -380,9 +294,14 @@ async function approveOpenClawDeviceRequests(sandboxName: string) {
     "sh",
     "-lc",
     "openclaw devices approve --latest --json --timeout 10000",
-  ], hostCommandEnv({
+  ], {
+    ...process.env,
+    PATH: HOST_PATH,
     OPENSHELL_GATEWAY: process.env.OPENSHELL_GATEWAY || "nemoclaw",
-  }), 15000)
+    NO_COLOR: "1",
+    CLICOLOR: "0",
+    CLICOLOR_FORCE: "0",
+  }, 15000)
 
   const combinedOutput = `${result.stdout}\n${result.stderr}`.trim()
   const noPending = NO_PENDING_DEVICE_REQUESTS.test(combinedOutput)
@@ -466,7 +385,8 @@ export async function POST(request: Request) {
     const sandboxName = validateSandboxName(typeof body?.sandboxName === "string" ? body.sandboxName.trim() : "")
     const policy = body?.policy && typeof body.policy === "object" ? body.policy : null
     const enableTailscale = Boolean(body?.enableTailscale)
-    console.log(`[sandbox/create] request:parsed sandbox=${sandboxName} blueprint=${blueprint} enableTailscale=${enableTailscale} elapsedMs=${elapsedMs(requestStartedAt)}`)
+    const createInference = parseCreateInferenceSettings(body)
+    console.log(`[sandbox/create] request:parsed sandbox=${sandboxName} blueprint=${blueprint} enableTailscale=${enableTailscale} inferenceMode=${createInference.mode} elapsedMs=${elapsedMs(requestStartedAt)}`)
 
     if (!blueprint) {
       return NextResponse.json({ ok: false, error: "blueprint is required" }, { status: 400 })
@@ -474,23 +394,21 @@ export async function POST(request: Request) {
 
     if (blueprint === "nemoclaw-blueprint") {
       const createCommand = buildNemoClawCreateCommand()
-      const dockerfileCompatibility = await relaxKnownNemoClawDockerfileOpenClawPatch(createCommand.dockerfilePath ?? null)
-      const configuredInferenceRoute = await resolveConfiguredPrimaryInferenceRoute()
-      const env: NodeJS.ProcessEnv = hostCommandEnv({
+      const env: NodeJS.ProcessEnv = {
+        ...process.env,
+        PATH: HOST_PATH,
         NEMOCLAW_SANDBOX_NAME: sandboxName,
         NEMOCLAW_NON_INTERACTIVE: "1",
         NEMOCLAW_RECREATE_SANDBOX: "1",
         NEMOCLAW_ACCEPT_THIRD_PARTY_SOFTWARE: "1",
         OPENSHELL_GATEWAY: process.env.OPENSHELL_GATEWAY || "nemoclaw",
-      })
-      const onboardInference = applyConfiguredInferenceToOnboardEnv(env, configuredInferenceRoute)
-      console.log(
-        `[sandbox/create] inference-default sandbox=${sandboxName} openshellProvider=${onboardInference?.openshellProvider || "unconfigured"} nemoclawProvider=${onboardInference?.nemoclawProvider || "default"} model=${onboardInference?.model || "default"} elapsedMs=${elapsedMs(requestStartedAt)}`,
-      )
+      }
 
-      if (!enableTailscale && !onboardInference) {
+      if (!enableTailscale) {
         env.NVIDIA_API_KEY = env.NVIDIA_API_KEY || "optional-local-mode"
       }
+
+      applyCreateInferenceEnv(env, createInference, body)
 
       const result = await runCommand(
         createCommand.file,
@@ -508,10 +426,7 @@ export async function POST(request: Request) {
           blueprint,
           sandboxName,
           enableTailscale,
-          configuredInferenceRoute,
-          onboardInference,
-          createCommand,
-          dockerfileCompatibility,
+          createInference,
         }, { status: 500 })
       }
 
@@ -536,10 +451,8 @@ export async function POST(request: Request) {
         verification,
         mode: "nemoclaw-blueprint",
         enableTailscale,
-        configuredInferenceRoute,
-        onboardInference,
+        createInference,
         createCommand,
-        dockerfileCompatibility,
         hostPath: HOST_PATH,
         readiness: {
           attempts: readiness.attempts,
@@ -560,7 +473,13 @@ export async function POST(request: Request) {
     }
 
     if (blueprint === "custom-sandbox") {
-      const env: NodeJS.ProcessEnv = hostCommandEnv()
+      const env: NodeJS.ProcessEnv = {
+        ...process.env,
+        PATH: HOST_PATH,
+        NO_COLOR: "1",
+        CLICOLOR: "0",
+        CLICOLOR_FORCE: "0",
+      }
       const createAttempt = await runCreateCommandBounded(OPENSHELL_BIN, ["sandbox", "create", "--name", sandboxName], env, 15000)
 
       if (createAttempt.completed && createAttempt.exitCode !== 0) {
