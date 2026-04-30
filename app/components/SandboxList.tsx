@@ -1,5 +1,5 @@
 "use client"
-import { useCallback, useEffect, useState } from 'react'
+import { useEffect, useState } from 'react'
 import type { ReactNode } from 'react'
 import ConfigurationPanel from './ConfigurationPanel'
 import SandboxArchivePanel from './SandboxArchivePanel'
@@ -150,34 +150,33 @@ export default function SandboxList({
     }
   }, [selectedSandboxId])
 
-  const loadPermissionFeed = useCallback(async (sandbox: SandboxInventoryItem) => {
-    try {
-      const response = await fetch(`/api/sandbox/${encodeURIComponent(sandbox.id)}/permissions`, { cache: 'no-store' })
-      const data = await response.json()
-      const feed = response.ok ? data.feed : { rejectedCount: 1, latest: { status: 'Unavailable', error: data.error } }
-      setPermissionFeeds((current) => ({ ...current, [sandbox.id]: feed }))
-    } catch (error) {
-      setPermissionFeeds((current) => ({
-        ...current,
-        [sandbox.id]: { rejectedCount: 1, latest: { status: 'Unavailable', error: error instanceof Error ? error.message : 'Permission feed unavailable' } },
-      }))
-    }
-  }, [])
-
   useEffect(() => {
     if (sandboxes.length === 0) {
       setPermissionFeeds({})
       return
     }
-    setPermissionFeeds((current) => Object.fromEntries(
-      Object.entries(current).filter(([sandboxId]) => sandboxes.some((sandbox) => sandbox.id === sandboxId)),
-    ))
-  }, [sandboxes])
 
-  useEffect(() => {
-    if (!selectedSandbox || !openDrawers.policy || permissionFeeds[selectedSandbox.id]) return
-    loadPermissionFeed(selectedSandbox)
-  }, [loadPermissionFeed, openDrawers.policy, permissionFeeds, selectedSandbox])
+    let active = true
+    const loadPermissionFeeds = async () => {
+      const entries = await Promise.all(sandboxes.map(async (sandbox) => {
+        try {
+          const response = await fetch(`/api/sandbox/${encodeURIComponent(sandbox.id)}/permissions`, { cache: 'no-store' })
+          const data = await response.json()
+          return [sandbox.id, response.ok ? data.feed : { rejectedCount: 1, latest: { status: 'Unavailable', error: data.error } }] as const
+        } catch (error) {
+          return [sandbox.id, { rejectedCount: 1, latest: { status: 'Unavailable', error: error instanceof Error ? error.message : 'Permission feed unavailable' } }] as const
+        }
+      }))
+      if (active) setPermissionFeeds(Object.fromEntries(entries))
+    }
+
+    loadPermissionFeeds()
+    const interval = window.setInterval(loadPermissionFeeds, 12000)
+    return () => {
+      active = false
+      window.clearInterval(interval)
+    }
+  }, [sandboxes])
 
   useEffect(() => {
     let active = true
@@ -213,31 +212,27 @@ export default function SandboxList({
     }
   }
 
-  const restartSandboxRuntime = async () => {
+  const restartSandbox = async () => {
     if (!selectedSandbox || restartInProgress) return
     try {
       setRestartInProgress(true)
-      setDashboardMessage(`Restarting OpenClaw runtime for ${selectedSandbox.name}...`)
+      setDashboardMessage(`Restarting sandbox ${selectedSandbox.name}...`)
       const response = await fetch(`/api/sandbox/${encodeURIComponent(selectedSandbox.id)}/restart`, {
         method: 'POST',
       })
       const data = await response.json()
-      if (!response.ok) throw new Error(data.error || data.note || 'Failed to restart OpenClaw runtime')
-      setDashboardMessage(data.note || `OpenClaw runtime restarted for ${selectedSandbox.name}.`)
+      if (!response.ok) throw new Error(data.error || data.note || 'Failed to restart sandbox')
+      setDashboardMessage(data.note || `Sandbox ${selectedSandbox.name} restarted.`)
       await onInventoryRefresh()
     } catch (error) {
-      setDashboardMessage(error instanceof Error ? error.message : 'Failed to restart OpenClaw runtime.')
+      setDashboardMessage(error instanceof Error ? error.message : 'Failed to restart sandbox.')
     } finally {
       setRestartInProgress(false)
     }
   }
 
   const toggleDrawer = (key: DrawerKey) => {
-    const opening = !openDrawers[key]
     setOpenDrawers((current) => ({ ...current, [key]: !current[key] }))
-    if (key === 'policy' && opening && selectedSandbox) {
-      loadPermissionFeed(selectedSandbox)
-    }
   }
 
   const sandboxCanAccessMcpServer = (sandbox: SandboxInventoryItem, server: McpServerAccess) => {
@@ -274,25 +269,20 @@ export default function SandboxList({
     }
   }
 
-  const syncMcpManifest = async (sandbox: SandboxInventoryItem, action: 'sync' | 'revoke' = 'sync') => {
+  const syncMcpManifest = async (sandbox: SandboxInventoryItem) => {
     try {
       setMcpSyncing(true)
-      setMcpMessage(action === 'revoke' ? `Revoking MCP broker config for ${sandbox.name}...` : `Issuing MCP broker config for ${sandbox.name}...`)
+      setMcpMessage(`Issuing MCP broker config for ${sandbox.name}...`)
       const response = await fetch(`/api/sandbox/${encodeURIComponent(sandbox.id)}/mcp`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sandboxName: sandbox.name, action }),
+        body: JSON.stringify({ sandboxName: sandbox.name }),
       })
       const data = await response.json()
-      if (!response.ok) throw new Error(data.error || 'Failed to update MCP broker config')
-      const networkNote = data.network?.approved?.length
-        ? ` Approved ${data.network.approved.length} broker network rule${data.network.approved.length === 1 ? '' : 's'}.`
-        : data.network?.rejected?.length
-          ? ` Removed ${data.network.rejected.length} broker network rule${data.network.rejected.length === 1 ? '' : 's'}.`
-          : ''
-      setMcpMessage(`${data.note || 'MCP broker config updated.'}${networkNote}`)
+      if (!response.ok) throw new Error(data.error || 'Failed to issue MCP broker config')
+      setMcpMessage(data.note || 'MCP broker config issued.')
     } catch (error) {
-      setMcpMessage(error instanceof Error ? error.message : 'Failed to update MCP broker config')
+      setMcpMessage(error instanceof Error ? error.message : 'Failed to issue MCP broker config')
     } finally {
       setMcpSyncing(false)
     }
@@ -305,7 +295,7 @@ export default function SandboxList({
       enabled: true,
       accessMode: server.accessMode === 'allow_all' ? 'allow_all' : 'allow_only',
       allowedSandboxIds: Array.from(current),
-    }, `${server.name} enabled for ${sandbox.name}.`)
+    }, `${server.name} enabled for ${sandbox.name}.`).then(() => syncMcpManifest(sandbox))
   }
 
   const revokeMcpForSandbox = (sandbox: SandboxInventoryItem, server: McpServerAccess) => {
@@ -320,7 +310,7 @@ export default function SandboxList({
     return updateMcpServerAccess(server, {
       accessMode: 'allow_only',
       allowedSandboxIds: Array.from(current),
-    }, `${server.name} revoked from ${sandbox.name}.`)
+    }, `${server.name} revoked from ${sandbox.name}.`).then(() => syncMcpManifest(sandbox))
   }
 
   const resolvePermissionRequest = async (sandbox: SandboxInventoryItem, action: 'approve' | 'reject', chunkId: string) => {
@@ -360,25 +350,21 @@ export default function SandboxList({
         </div>
       ) : (
         <>
-          <aside className="border border-[var(--border-subtle)] bg-[var(--background-secondary)]/95 shadow-[12px_0_40px_rgba(0,0,0,0.2)] backdrop-blur lg:fixed lg:left-64 lg:top-0 lg:z-10 lg:h-screen lg:w-80 lg:border-y-0 lg:border-l-0 max-lg:rounded max-lg:shadow-[var(--shadow-soft)]">
-            <div className="flex items-start justify-between gap-4 border-b border-[var(--border-subtle)] p-4">
-              <div className="min-w-0">
-                <p className="text-[10px] font-mono uppercase tracking-wider text-[var(--nvidia-green)]">
-                  Inventory
-                </p>
-                <h3 className="mt-1 text-sm font-semibold text-[var(--foreground)] uppercase tracking-wider">
-                  {isDestroyMode ? 'Select To Destroy' : 'Sandboxes'}
-                </h3>
-                <p className="mt-1 text-[11px] text-[var(--foreground-dim)]">
-                  {sandboxes.length} total / {sandboxes.filter((sandbox) => sandbox.ready).length} ready
-                </p>
-              </div>
-              <span className="status-chip shrink-0 border border-[var(--border-subtle)] bg-[var(--background-tertiary)] px-2.5 py-1 text-[var(--foreground-dim)]">
-                10s
-              </span>
+          <div className="flex items-end justify-between gap-4 max-sm:flex-col max-sm:items-start">
+            <div>
+              <p className="text-[10px] font-mono uppercase tracking-wider text-[var(--nvidia-green)]">
+                Inventory
+              </p>
+              <h3 className="mt-1 text-sm font-semibold text-[var(--foreground)] uppercase tracking-wider">
+                {isDestroyMode ? 'SELECT SANDBOX TO DESTROY' : 'ACTIVE SANDBOXES'}
+              </h3>
             </div>
+            <span className="status-chip border border-[var(--border-subtle)] bg-[var(--background-tertiary)] px-2.5 py-1 text-[var(--foreground-dim)]">
+              REFRESH 10s
+            </span>
+          </div>
 
-            <div className="max-h-[calc(100vh-5.5rem)] space-y-2 overflow-y-auto p-3 max-lg:max-h-[22rem]">
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
             {sandboxes.map((sandbox) => (
               <div
                 key={sandbox.id}
@@ -387,16 +373,16 @@ export default function SandboxList({
                     ? 'border-[var(--status-stopped)] bg-[var(--status-stopped-bg)] hover:shadow-[0_18px_60px_rgba(220,38,38,0.16)]'
                     : selectedSandboxId === sandbox.id
                       ? 'border-[var(--nvidia-green)] bg-[var(--surface-hover)] shadow-[var(--shadow-glow)]'
-                      : 'border-[var(--border-subtle)] bg-[var(--surface-raised)] shadow-[var(--shadow-soft)] hover:border-[var(--nvidia-green)] hover:bg-[var(--surface-hover)]'
+                      : 'border-[var(--border-subtle)] bg-[var(--surface-raised)] shadow-[var(--shadow-soft)] hover:-translate-y-0.5 hover:border-[var(--nvidia-green)] hover:bg-[var(--surface-hover)]'
                 }`}
               >
                 <button
                   type="button"
                   onClick={() => onSandboxSelect(sandbox.id)}
-                  className="w-full p-3 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--nvidia-green)]"
+                  className="w-full p-4 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--nvidia-green)]"
                   aria-pressed={selectedSandboxId === sandbox.id}
                 >
-                  <div className="mb-2 flex items-start justify-between gap-3">
+                  <div className="mb-3 flex items-start justify-between gap-3">
                     <div className="flex items-center gap-2 min-w-0">
                       {(() => {
                         const feed = permissionFeeds[sandbox.id]
@@ -453,19 +439,21 @@ export default function SandboxList({
                     </div>
                   </div>
 
-                  <div className="space-y-1">
+                  <div className="space-y-1.5">
                     {([
                       ['Attach Target', sandbox.ip, '180px'],
+                      ['Namespace', sandbox.namespace, '120px'],
+                      ['Host Alias', sandbox.sshHostAlias || 'N/A', '140px'],
                       ['Sandbox ID', sandbox.id, '140px'],
                     ] as Array<[string, string, string]>).map(([label, value, width]) => (
-                      <div key={label} className="grid grid-cols-[5.75rem_minmax(0,1fr)] items-center gap-2">
+                      <div key={label} className="grid grid-cols-[6.5rem_minmax(0,1fr)] items-center gap-3">
                         <span className="text-[10px] uppercase tracking-wider text-[var(--foreground-dim)]">{label}</span>
                         <span className="text-xs font-mono truncate text-[var(--foreground)]" style={{ maxWidth: width }} title={value}>{value}</span>
                       </div>
                     ))}
                   </div>
                 </button>
-                <div className="border-t border-[var(--border-subtle)] p-2">
+                <div className="border-t border-[var(--border-subtle)] p-3">
                   <select
                     value=""
                     disabled={grantingSandboxId === sandbox.id}
@@ -475,7 +463,7 @@ export default function SandboxList({
                       event.currentTarget.value = ''
                       resolvePermissionRequest(sandbox, 'approve', value)
                     }}
-                    className="field-control w-full px-2 py-2 font-mono text-[11px] uppercase tracking-wider"
+                    className="field-control w-full px-3 py-2 font-mono text-xs uppercase tracking-wider"
                   >
                     <option value="">
                       {grantingSandboxId === sandbox.id
@@ -493,8 +481,7 @@ export default function SandboxList({
                 </div>
               </div>
             ))}
-            </div>
-          </aside>
+          </div>
 
           {permissionMessage && (
             <div className="rounded-sm border border-[var(--border-subtle)] bg-[var(--background-tertiary)] p-3 text-xs text-[var(--foreground-dim)]">
@@ -537,11 +524,11 @@ export default function SandboxList({
                       Start OpenClaw Gateway Dashboard
                     </button>
                     <button
-                      onClick={restartSandboxRuntime}
+                      onClick={restartSandbox}
                       disabled={restartInProgress}
                       className="action-button px-3 py-2"
                     >
-                      {restartInProgress ? 'Restarting Runtime...' : 'Restart OpenClaw Runtime'}
+                      {restartInProgress ? 'Restarting Sandbox...' : 'Restart Sandbox'}
                     </button>
                     <button
                       onClick={async () => {
@@ -612,16 +599,16 @@ export default function SandboxList({
                     <div>
                       <h4 className="text-xs font-semibold uppercase tracking-wider text-[var(--foreground)]">Sandbox Manifest</h4>
                       <p className="mt-1 text-xs text-[var(--foreground-dim)]">
-                        Writes <span className="font-mono text-[var(--foreground)]">/sandbox/openshell_control_mcp.md</span> and configures OpenClaw to use the broker MCP endpoint.
+                        Writes <span className="font-mono text-[var(--foreground)]">/sandbox/openshell_control_mcp.md</span> with broker URL and sandbox token only.
                       </p>
                     </div>
                     <button
                       type="button"
                       disabled={mcpSyncing}
-                      onClick={() => syncMcpManifest(selectedSandbox, allowedMcpServersForSandbox(selectedSandbox).length > 0 ? 'sync' : 'revoke')}
+                      onClick={() => syncMcpManifest(selectedSandbox)}
                       className="action-button px-3 py-2 max-sm:w-full"
                     >
-                      {mcpSyncing ? 'Updating...' : 'Sync Broker Config'}
+                      {mcpSyncing ? 'Issuing...' : 'Issue Broker Config'}
                     </button>
                   </div>
                   {mcpMessage && (
@@ -690,123 +677,58 @@ export default function SandboxList({
                 onToggle={() => toggleDrawer('policy')}
               >
                 <div className="space-y-4">
-                  <div className="flex items-center justify-between gap-4 rounded-sm border border-[var(--border-subtle)] bg-[var(--background-tertiary)] p-4 max-sm:flex-col max-sm:items-start">
-                    <div>
-                      <h4 className="text-xs font-semibold uppercase tracking-wider text-[var(--foreground)]">Network Permission Feed</h4>
-                      <p className="mt-1 text-xs text-[var(--foreground-dim)]">Loaded on demand for the selected sandbox to avoid background permission polling.</p>
-                    </div>
-                    <button
-                      type="button"
-                      disabled={grantingSandboxId === selectedSandbox.id}
-                      onClick={() => loadPermissionFeed(selectedSandbox)}
-                      className="action-button px-3 py-2 max-sm:w-full"
-                    >
-                      Refresh Requests
-                    </button>
-                  </div>
-	                  {(() => {
-	                    const feed = permissionFeeds[selectedSandbox.id]
-	                    const pending = feed?.pending || []
-	                    const recent = feed?.recent || []
-	                    const recentRules = recent.filter((request) => !pending.some((pendingRequest) => pendingRequest.chunkId === request.chunkId))
-	                    const renderRecentRules = () => recentRules.length > 0 && (
-	                      <div className="space-y-3">
-	                        <h4 className="text-[10px] font-semibold uppercase tracking-wider text-[var(--foreground-dim)]">Recent Network Rules</h4>
-	                        <div className="max-h-[26rem] space-y-3 overflow-y-auto pr-1">
-	                          {recentRules.map((request) => {
-	                            const approved = /approved/i.test(request.status)
-	                            const rejected = /rejected/i.test(request.status)
-	                            return (
-	                              <div key={`${request.status}-${request.chunkId}`} className="rounded-sm border border-[var(--border-subtle)] bg-[var(--background-tertiary)] p-4">
-	                                <div className="flex items-start justify-between gap-4 max-md:flex-col">
-	                                  <div className="min-w-0 space-y-2">
-	                                    <div className="flex flex-wrap items-center gap-2">
-	                                      <span className="break-all text-xs font-mono font-semibold text-[var(--foreground)]">
-	                                        {request.endpoints.join(', ') || request.rule}
-	                                      </span>
-	                                      <span className={`status-chip px-2 py-1 ${approved ? 'bg-[var(--status-running-bg)] text-[var(--status-running)]' : rejected ? 'bg-[var(--status-stopped)] text-white' : 'bg-[var(--status-pending-bg)] text-[var(--status-pending)]'}`}>
-	                                        {request.status || 'unknown'}
-	                                      </span>
-	                                    </div>
-	                                    <p className="text-xs text-[var(--foreground-dim)]">{request.rationale || 'Sandbox network rule.'}</p>
-	                                    <p className="text-[10px] font-mono text-[var(--foreground-dim)]">
-	                                      {request.binary || request.binaries.join(', ') || 'unknown binary'} / {request.chunkId}
-	                                    </p>
-	                                  </div>
-	                                  {(approved || rejected) && (
-	                                    <button
-	                                      type="button"
-	                                      disabled={grantingSandboxId === selectedSandbox.id}
-	                                      onClick={() => resolvePermissionRequest(selectedSandbox, approved ? 'reject' : 'approve', request.chunkId)}
-	                                      className={`${rejected ? 'rounded-sm border border-[var(--nvidia-green)] bg-[var(--nvidia-green)] text-black' : 'rounded-sm border border-[var(--border-subtle)] bg-[var(--background)] text-[var(--foreground)]'} px-3 py-2 text-xs font-mono uppercase tracking-wider disabled:opacity-50 max-md:w-full`}
-	                                    >
-	                                      {approved ? 'Revoke' : 'Approve'}
-	                                    </button>
-	                                  )}
-	                                </div>
-	                              </div>
-	                            )
-	                          })}
-	                        </div>
-	                      </div>
-	                    )
-	                    if (pending.length === 0) {
-	                      return (
-	                        <>
-	                          <div className="rounded-sm border border-[var(--border-subtle)] bg-[var(--background-tertiary)] p-4 text-xs text-[var(--foreground-dim)]">
-	                            No pending network permission requests for this sandbox.
-	                          </div>
-	                          {renderRecentRules()}
-	                        </>
-	                      )
-	                    }
+                  {(() => {
+                    const feed = permissionFeeds[selectedSandbox.id]
+                    const pending = feed?.pending || []
+                    if (pending.length === 0) {
+                      return (
+                        <div className="rounded-sm border border-[var(--border-subtle)] bg-[var(--background-tertiary)] p-4 text-xs text-[var(--foreground-dim)]">
+                          No pending network permission requests for this sandbox.
+                        </div>
+                      )
+                    }
 
-                    return (
-                      <div className="space-y-3">
-                        {pending.map((request) => (
-                          <div key={request.chunkId} className="rounded-sm border border-amber-400/60 bg-amber-400/10 p-4">
-                            <div className="flex items-start justify-between gap-4 max-md:flex-col">
-                              <div className="min-w-0 space-y-2">
-                                <div className="flex items-center gap-2 flex-wrap">
-                                  <span className="text-xs font-mono font-semibold text-[var(--foreground)]">
-                                    {request.endpoints.join(', ') || request.rule}
-                                  </span>
-                                  {request.confidence ? (
-                                    <span className="rounded-sm border border-[var(--border-subtle)] px-1.5 py-0.5 text-[10px] text-[var(--foreground-dim)]">
-                                      {request.confidence}
-                                    </span>
-                                  ) : null}
-                                </div>
-                                <p className="text-xs text-[var(--foreground-dim)]">{request.rationale || 'Sandbox requested a network policy rule.'}</p>
-                                <p className="text-[10px] font-mono text-[var(--foreground-dim)]">
-                                  {request.binary || request.binaries.join(', ') || 'unknown binary'} / {request.chunkId}
-                                </p>
-                              </div>
-                              <div className="flex shrink-0 items-center gap-2 max-md:w-full max-md:[&>button]:flex-1">
-                                <button
-                                  type="button"
-                                  disabled={grantingSandboxId === selectedSandbox.id}
-                                  onClick={() => resolvePermissionRequest(selectedSandbox, 'approve', request.chunkId)}
-                                  className="rounded-sm border border-[var(--nvidia-green)] bg-[var(--nvidia-green)] px-3 py-2 text-xs font-mono uppercase tracking-wider text-black disabled:opacity-50"
-                                >
-                                  Grant
-                                </button>
-                                <button
-                                  type="button"
-                                  disabled={grantingSandboxId === selectedSandbox.id}
-                                  onClick={() => resolvePermissionRequest(selectedSandbox, 'reject', request.chunkId)}
-                                  className="rounded-sm border border-[var(--border-subtle)] bg-[var(--background-tertiary)] px-3 py-2 text-xs font-mono uppercase tracking-wider text-[var(--foreground)] disabled:opacity-50"
-                                >
-                                  Reject
-                                </button>
-                              </div>
+                    return pending.map((request) => (
+                      <div key={request.chunkId} className="rounded-sm border border-amber-400/60 bg-amber-400/10 p-4">
+                        <div className="flex items-start justify-between gap-4 max-md:flex-col">
+                          <div className="min-w-0 space-y-2">
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <span className="text-xs font-mono font-semibold text-[var(--foreground)]">
+                                {request.endpoints.join(', ') || request.rule}
+                              </span>
+                              {request.confidence ? (
+                                <span className="rounded-sm border border-[var(--border-subtle)] px-1.5 py-0.5 text-[10px] text-[var(--foreground-dim)]">
+                                  {request.confidence}
+                                </span>
+                              ) : null}
                             </div>
+                            <p className="text-xs text-[var(--foreground-dim)]">{request.rationale || 'Sandbox requested a network policy rule.'}</p>
+                            <p className="text-[10px] font-mono text-[var(--foreground-dim)]">
+                              {request.binary || request.binaries.join(', ') || 'unknown binary'} / {request.chunkId}
+                            </p>
                           </div>
-                        ))}
-	                        {renderRecentRules()}
-	                      </div>
-	                    )
-	                  })()}
+                          <div className="flex shrink-0 items-center gap-2 max-md:w-full max-md:[&>button]:flex-1">
+                            <button
+                              type="button"
+                              disabled={grantingSandboxId === selectedSandbox.id}
+                              onClick={() => resolvePermissionRequest(selectedSandbox, 'approve', request.chunkId)}
+                              className="rounded-sm border border-[var(--nvidia-green)] bg-[var(--nvidia-green)] px-3 py-2 text-xs font-mono uppercase tracking-wider text-black disabled:opacity-50"
+                            >
+                              Grant
+                            </button>
+                            <button
+                              type="button"
+                              disabled={grantingSandboxId === selectedSandbox.id}
+                              onClick={() => resolvePermissionRequest(selectedSandbox, 'reject', request.chunkId)}
+                              className="rounded-sm border border-[var(--border-subtle)] bg-[var(--background-tertiary)] px-3 py-2 text-xs font-mono uppercase tracking-wider text-[var(--foreground)] disabled:opacity-50"
+                            >
+                              Reject
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    ))
+                  })()}
                   <ConfigurationPanel sandboxId={selectedSandbox.id} mode="existing" embedded showHeader={false} />
                 </div>
               </DrawerSection>

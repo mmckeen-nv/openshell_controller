@@ -2,7 +2,6 @@ import { NextResponse } from "next/server"
 import { execFile, spawn } from "node:child_process"
 import { promisify } from "node:util"
 import { inspectSandbox } from "@/app/lib/openshellHost"
-import { repairOpenClawWorkspacePermissions, stabilizeOpenClawGatewayConfig } from "@/app/lib/sandboxPrivilegedFiles"
 import {
   commandExists,
   HOST_PATH,
@@ -56,60 +55,6 @@ type NemoClawCreateCommand = {
   file: string
   args: string[]
   mode: "cli-onboard" | "legacy-setup"
-}
-
-type CreateInferenceMode = "auto" | "vllm" | "nim"
-
-type CreateInferenceSettings = {
-  mode: CreateInferenceMode
-  model: string
-  hasApiKey: boolean
-  envSummary: string[]
-}
-
-function parseCreateInferenceSettings(body: any): CreateInferenceSettings {
-  const raw = body?.createInference && typeof body.createInference === "object" ? body.createInference : {}
-  const requestedMode = typeof raw.mode === "string" ? raw.mode : "auto"
-  const mode: CreateInferenceMode = requestedMode === "vllm" || requestedMode === "nim" ? requestedMode : "auto"
-  const model = typeof raw.model === "string" ? raw.model.trim() : ""
-  const apiKey = typeof raw.apiKey === "string" ? raw.apiKey.trim() : ""
-
-  return {
-    mode,
-    model,
-    hasApiKey: Boolean(apiKey),
-    envSummary: [],
-  }
-}
-
-function applyCreateInferenceEnv(env: NodeJS.ProcessEnv, settings: CreateInferenceSettings, body: any) {
-  if (settings.mode === "auto") return settings
-
-  env.NEMOCLAW_EXPERIMENTAL = "1"
-  settings.envSummary.push("NEMOCLAW_EXPERIMENTAL=1")
-
-  if (settings.mode === "vllm") {
-    env.NEMOCLAW_PROVIDER = "vllm"
-    settings.envSummary.push("NEMOCLAW_PROVIDER=vllm")
-  }
-
-  if (settings.mode === "nim") {
-    env.NEMOCLAW_PROVIDER = "nim-local"
-    settings.envSummary.push("NEMOCLAW_PROVIDER=nim-local")
-    const apiKey = typeof body?.createInference?.apiKey === "string" ? body.createInference.apiKey.trim() : ""
-    if (apiKey) {
-      env.NVIDIA_API_KEY = apiKey
-      env.NEMOCLAW_PROVIDER_KEY = apiKey
-      settings.envSummary.push("NVIDIA_API_KEY=<provided>", "NEMOCLAW_PROVIDER_KEY=<provided>")
-    }
-  }
-
-  if (settings.model) {
-    env.NEMOCLAW_MODEL = settings.model
-    settings.envSummary.push(`NEMOCLAW_MODEL=${settings.model}`)
-  }
-
-  return settings
 }
 
 function buildNemoClawCreateCommand(): NemoClawCreateCommand {
@@ -386,8 +331,7 @@ export async function POST(request: Request) {
     const sandboxName = validateSandboxName(typeof body?.sandboxName === "string" ? body.sandboxName.trim() : "")
     const policy = body?.policy && typeof body.policy === "object" ? body.policy : null
     const enableTailscale = Boolean(body?.enableTailscale)
-    const createInference = parseCreateInferenceSettings(body)
-    console.log(`[sandbox/create] request:parsed sandbox=${sandboxName} blueprint=${blueprint} enableTailscale=${enableTailscale} inferenceMode=${createInference.mode} elapsedMs=${elapsedMs(requestStartedAt)}`)
+    console.log(`[sandbox/create] request:parsed sandbox=${sandboxName} blueprint=${blueprint} enableTailscale=${enableTailscale} elapsedMs=${elapsedMs(requestStartedAt)}`)
 
     if (!blueprint) {
       return NextResponse.json({ ok: false, error: "blueprint is required" }, { status: 400 })
@@ -409,8 +353,6 @@ export async function POST(request: Request) {
         env.NVIDIA_API_KEY = env.NVIDIA_API_KEY || "optional-local-mode"
       }
 
-      applyCreateInferenceEnv(env, createInference, body)
-
       const result = await runCommand(
         createCommand.file,
         createCommand.mode === "legacy-setup" ? [...createCommand.args, sandboxName] : createCommand.args,
@@ -427,7 +369,6 @@ export async function POST(request: Request) {
           blueprint,
           sandboxName,
           enableTailscale,
-          createInference,
         }, { status: 500 })
       }
 
@@ -438,16 +379,6 @@ export async function POST(request: Request) {
         error: "Sandbox readiness polling produced no verification result.",
       }
       const created = readiness.verified
-      const gatewayConfigRepair = created ? await stabilizeOpenClawGatewayConfig(sandboxName).catch((error) => ({
-        sandboxName,
-        path: "/sandbox/.openclaw/openclaw.json",
-        error: error instanceof Error ? error.message : "Failed to stabilize OpenClaw gateway config",
-      })) : null
-      const workspaceRepair = created ? await repairOpenClawWorkspacePermissions(sandboxName).catch((error) => ({
-        sandboxName,
-        path: "/sandbox/.openclaw/workspace",
-        error: error instanceof Error ? error.message : "Failed to repair OpenClaw workspace permissions",
-      })) : null
       const deviceApproval = created ? await approveOpenClawDeviceRequests(sandboxName) : null
       console.log(
         `[sandbox/create] request:complete sandbox=${sandboxName} created=${created} readinessAttempts=${readiness.attempts} deviceApproval=${deviceApproval?.approved ?? false} elapsedMs=${elapsedMs(requestStartedAt)}`,
@@ -462,15 +393,12 @@ export async function POST(request: Request) {
         verification,
         mode: "nemoclaw-blueprint",
         enableTailscale,
-        createInference,
         createCommand,
         hostPath: HOST_PATH,
         readiness: {
           attempts: readiness.attempts,
           elapsedMs: readiness.elapsedMs,
         },
-        workspaceRepair,
-        gatewayConfigRepair,
         deviceApproval,
         stdout: result.stdout,
         stderr: result.stderr,
@@ -479,10 +407,6 @@ export async function POST(request: Request) {
               enableTailscale
                 ? "NemoClaw blueprint workflow completed with Tailscale-enabled prerequisites. Existing healthy OpenShell gateways are reused before any new gateway start is attempted."
                 : "NemoClaw blueprint workflow completed in local/default mode. Existing healthy OpenShell gateways are reused before any new gateway start is attempted.",
-              workspaceRepair && "note" in workspaceRepair ? workspaceRepair.note : false,
-              workspaceRepair && "error" in workspaceRepair ? `OpenClaw workspace permission repair failed: ${workspaceRepair.error}` : false,
-              gatewayConfigRepair && "note" in gatewayConfigRepair ? gatewayConfigRepair.note : false,
-              gatewayConfigRepair && "error" in gatewayConfigRepair ? `OpenClaw gateway config repair failed: ${gatewayConfigRepair.error}` : false,
               deviceApproval?.note,
             )
           : "Blueprint command reported success, but the sandbox never reached a ready verification state afterward.",
@@ -517,16 +441,6 @@ export async function POST(request: Request) {
         error: "Sandbox readiness polling produced no verification result.",
       }
       const created = readiness.verified
-      const gatewayConfigRepair = created ? await stabilizeOpenClawGatewayConfig(sandboxName).catch((error) => ({
-        sandboxName,
-        path: "/sandbox/.openclaw/openclaw.json",
-        error: error instanceof Error ? error.message : "Failed to stabilize OpenClaw gateway config",
-      })) : null
-      const workspaceRepair = created ? await repairOpenClawWorkspacePermissions(sandboxName).catch((error) => ({
-        sandboxName,
-        path: "/sandbox/.openclaw/workspace",
-        error: error instanceof Error ? error.message : "Failed to repair OpenClaw workspace permissions",
-      })) : null
       const deviceApproval = created ? await approveOpenClawDeviceRequests(sandboxName) : null
       const policyPrepared = Boolean(policy)
       console.log(
@@ -553,8 +467,6 @@ export async function POST(request: Request) {
           attempts: readiness.attempts,
           elapsedMs: readiness.elapsedMs,
         },
-        workspaceRepair,
-        gatewayConfigRepair,
         deviceApproval,
         policyPrepared,
         note: created
@@ -564,10 +476,6 @@ export async function POST(request: Request) {
                 : (policyPrepared
                     ? "Custom sandbox created. Policy draft is prepared, but applying it live should be a follow-up action."
                     : "Custom sandbox created."),
-              workspaceRepair && "note" in workspaceRepair ? workspaceRepair.note : false,
-              workspaceRepair && "error" in workspaceRepair ? `OpenClaw workspace permission repair failed: ${workspaceRepair.error}` : false,
-              gatewayConfigRepair && "note" in gatewayConfigRepair ? gatewayConfigRepair.note : false,
-              gatewayConfigRepair && "error" in gatewayConfigRepair ? `OpenClaw gateway config repair failed: ${gatewayConfigRepair.error}` : false,
               deviceApproval?.note,
             )
           : "Create command started, but the sandbox never reached a ready verification state afterward.",

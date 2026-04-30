@@ -1,6 +1,6 @@
 import { execFile, spawn } from "node:child_process"
 import { promisify } from "node:util"
-import { HOST_PATH, OPENCLAW_BIN, OPENSHELL_BIN, hostCommandEnv } from "./hostCommands"
+import { HOST_PATH, OPENCLAW_BIN, OPENSHELL_BIN } from "./hostCommands"
 import { getDefaultOpenClawInstance, getOpenClawDashboardPortForSandbox, resolveOpenClawInstance } from "./openclawInstances"
 
 const execFileAsync = promisify(execFile)
@@ -44,7 +44,13 @@ export type DashboardProbe = {
 
 export async function execOpenShell(args: string[]) {
   const { stdout, stderr } = await execFileAsync(OPENSHELL_BIN, args, {
-    env: hostCommandEnv(),
+    env: {
+      ...process.env,
+      PATH: HOST_PATH,
+      NO_COLOR: "1",
+      CLICOLOR: "0",
+      CLICOLOR_FORCE: "0",
+    },
   })
   return { stdout, stderr }
 }
@@ -263,37 +269,6 @@ function rewriteDashboardBootstrapOrigin(bootstrapUrl: string, dashboardUrl: str
   return bootstrap.toString()
 }
 
-function normalizeDashboardToken(value: string | null | undefined) {
-  const token = value?.trim() || ''
-  if (!token || /\s/.test(token)) return null
-  return token
-}
-
-function withDashboardToken(bootstrapUrl: string, token: string | null) {
-  if (!token || hasDashboardToken(bootstrapUrl)) return bootstrapUrl
-  try {
-    const parsed = new URL(bootstrapUrl)
-    const hashParams = new URLSearchParams(parsed.hash.startsWith('#') ? parsed.hash.slice(1) : parsed.hash)
-    hashParams.set('token', token)
-    parsed.hash = hashParams.toString()
-    return parsed.toString()
-  } catch {
-    const separator = bootstrapUrl.includes('#') ? '&' : '#'
-    return `${bootstrapUrl}${separator}token=${encodeURIComponent(token)}`
-  }
-}
-
-async function readSandboxOpenClawDashboardToken(sandboxName: string) {
-  const script = [
-    'const fs=require("fs")',
-    'const cfg=JSON.parse(fs.readFileSync("/sandbox/.openclaw/openclaw.json","utf8"))',
-    'const token=cfg?.gateway?.auth?.token||cfg?.gateway?.token||""',
-    'if(token) process.stdout.write(String(token))',
-  ].join(';')
-  const { stdout } = await execSandboxSsh(sandboxName, `node -e '${script}'`, 5000)
-  return normalizeDashboardToken(stdout)
-}
-
 export async function resolveOpenClawDashboardBootstrap(instanceId?: string | null) {
   const instance = resolveOpenClawInstance(instanceId)
   const defaultInstance = getDefaultOpenClawInstance()
@@ -308,19 +283,11 @@ export async function resolveOpenClawDashboardBootstrap(instanceId?: string | nu
       const bootstrapUrl = rawBootstrapUrl
         ? rewriteDashboardBootstrapOrigin(rawBootstrapUrl, instance.dashboardUrl)
         : null
-      let tokenizedBootstrapUrl = bootstrapUrl
-      let bootstrapTokenPresent = hasDashboardToken(tokenizedBootstrapUrl)
+      const bootstrapTokenPresent = hasDashboardToken(bootstrapUrl)
 
-      if (tokenizedBootstrapUrl && !bootstrapTokenPresent) {
-        await execSandboxSsh(sandboxInstance.sandboxId, 'openclaw dashboard', 15000).catch(() => null)
-        const token = await readSandboxOpenClawDashboardToken(sandboxInstance.sandboxId).catch(() => null)
-        tokenizedBootstrapUrl = withDashboardToken(tokenizedBootstrapUrl, token)
-        bootstrapTokenPresent = hasDashboardToken(tokenizedBootstrapUrl)
-      }
-
-      if (tokenizedBootstrapUrl) {
+      if (bootstrapUrl) {
         return {
-          bootstrapUrl: tokenizedBootstrapUrl,
+          bootstrapUrl,
           bootstrapTokenPresent,
           bootstrapSource: 'openclaw-cli' as const,
           bootstrapAuthority: bootstrapTokenPresent ? ('tokenized-cli' as const) : ('static-fallback' as const),

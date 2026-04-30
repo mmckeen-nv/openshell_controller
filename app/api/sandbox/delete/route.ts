@@ -1,10 +1,8 @@
 import { NextResponse } from "next/server"
 import { execFile } from "node:child_process"
-import { mkdir, readFile, writeFile } from "node:fs/promises"
-import path from "node:path"
 import { promisify } from "node:util"
 import { resolveSandboxRef } from "@/app/lib/openshellHost"
-import { OPENSHELL_BIN, hostCommandEnv } from "@/app/lib/hostCommands"
+import { HOST_PATH, NEMOCLAW_BIN, NEMOCLAW_CWD, OPENSHELL_BIN } from "@/app/lib/hostCommands"
 
 const execFileAsync = promisify(execFile)
 
@@ -56,9 +54,14 @@ async function deleteSandbox(sandboxName: string) {
   console.log(`[sandbox/delete] command:start sandbox=${sandboxName}`)
   try {
     const { stdout, stderr } = await execFileAsync(OPENSHELL_BIN, ["sandbox", "delete", sandboxName], {
-      env: hostCommandEnv({
+      env: {
+        ...process.env,
+        PATH: HOST_PATH,
         OPENSHELL_GATEWAY: process.env.OPENSHELL_GATEWAY || "nemoclaw",
-      }),
+        NO_COLOR: "1",
+        CLICOLOR: "0",
+        CLICOLOR_FORCE: "0",
+      },
       timeout: 60000,
       maxBuffer: 20 * 1024 * 1024,
     })
@@ -80,50 +83,48 @@ function isSandboxNotFound(output: string) {
   return /sandbox not found|status:\s*NotFound|not present in the live OpenShell gateway/i.test(output)
 }
 
-function isGatewayRecoverable(output: string) {
-  return /Unknown gateway|Deploy it first|transport error|tcp connect error|Connection refused|invalid peer certificate|BadSignature/i.test(output)
+function isNemoClawSandboxNotRegistered(output: string, sandboxName: string) {
+  return new RegExp(`Unknown command:\\s*${sandboxName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`, "i").test(output)
 }
 
-const NEMOCLAW_REGISTRY_PATH = path.join(process.env.HOME || "/tmp", ".nemoclaw", "sandboxes.json")
-
 async function cleanupNemoClawSandbox(sandboxName: string) {
+  const startedAt = Date.now()
+  console.log(`[sandbox/delete] nemoclaw-cleanup:start sandbox=${sandboxName}`)
   try {
-    const raw = await readFile(NEMOCLAW_REGISTRY_PATH, "utf8")
-    const registry = JSON.parse(raw)
-    const sandboxes = registry && typeof registry === "object" && registry.sandboxes && typeof registry.sandboxes === "object"
-      ? registry.sandboxes
-      : {}
-    const existed = Object.prototype.hasOwnProperty.call(sandboxes, sandboxName)
-    if (existed) delete sandboxes[sandboxName]
-    const remaining = Object.keys(sandboxes)
-    const defaultSandbox = registry.defaultSandbox === sandboxName
-      ? remaining[0] || null
-      : (registry.defaultSandbox && sandboxes[registry.defaultSandbox] ? registry.defaultSandbox : remaining[0] || null)
-    const next = { ...registry, sandboxes, defaultSandbox }
-    await mkdir(path.dirname(NEMOCLAW_REGISTRY_PATH), { recursive: true, mode: 0o700 })
-    await writeFile(NEMOCLAW_REGISTRY_PATH, `${JSON.stringify(next, null, 2)}\n`, { mode: 0o600 })
-    return {
-      ok: true as const,
-      stdout: "",
-      stderr: "",
-      note: existed
-        ? "Pruned NemoClaw registry entry without destroying the shared OpenShell gateway."
-        : "NemoClaw registry already had no matching sandbox entry.",
-    }
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error ?? "NemoClaw registry cleanup failed")
-    if (/ENOENT/.test(message)) {
+    const { stdout, stderr } = await execFileAsync(NEMOCLAW_BIN, [sandboxName, "destroy", "--yes"], {
+      cwd: NEMOCLAW_CWD,
+      env: {
+        ...process.env,
+        PATH: HOST_PATH,
+        OPENSHELL_GATEWAY: process.env.OPENSHELL_GATEWAY || "nemoclaw",
+        NO_COLOR: "1",
+        CLICOLOR: "0",
+        CLICOLOR_FORCE: "0",
+      },
+      timeout: 90000,
+      maxBuffer: 20 * 1024 * 1024,
+    })
+    console.log(`[sandbox/delete] nemoclaw-cleanup:done sandbox=${sandboxName} elapsedMs=${elapsedMs(startedAt)}`)
+    return { ok: true as const, stdout: String(stdout).trim(), stderr: String(stderr).trim() }
+  } catch (error: any) {
+    const message = error instanceof Error ? error.message : String(error ?? "NemoClaw cleanup failed")
+    const stdout = String(error?.stdout || "").trim()
+    const stderr = String(error?.stderr || "").trim()
+    const output = [message, stdout, stderr].filter(Boolean).join("\n")
+    if (isNemoClawSandboxNotRegistered(output, sandboxName)) {
+      console.log(`[sandbox/delete] nemoclaw-cleanup:already-gone sandbox=${sandboxName} elapsedMs=${elapsedMs(startedAt)}`)
       return {
         ok: true as const,
-        stdout: "",
-        stderr: "",
-        note: "NemoClaw registry file does not exist; skipped registry cleanup.",
+        stdout,
+        stderr,
+        note: "NemoClaw registry already had no matching sandbox.",
       }
     }
+    console.log(`[sandbox/delete] nemoclaw-cleanup:error sandbox=${sandboxName} elapsedMs=${elapsedMs(startedAt)} message=${message}`)
     return {
       ok: false as const,
-      stdout: "",
-      stderr: "",
+      stdout,
+      stderr,
       error: message,
     }
   }
@@ -178,6 +179,7 @@ export async function POST(request: Request) {
     const result = await deleteSandbox(target.sandboxName)
     const deleteOutput = [result.error, result.stdout, result.stderr].filter(Boolean).join("\n")
     const openShellAlreadyGone = !result.ok && isSandboxNotFound(deleteOutput)
+    const cleanup = await cleanupNemoClawSandbox(target.sandboxName)
 
     if (!result.ok && !openShellAlreadyGone) {
       return NextResponse.json({
@@ -191,14 +193,9 @@ export async function POST(request: Request) {
         error: result.error,
         stdout: result.stdout,
         stderr: result.stderr,
-        recoverableGateway: isGatewayRecoverable(deleteOutput),
-        note: isGatewayRecoverable(deleteOutput)
-          ? "OpenShell gateway is unavailable or its trust state is broken. Repair gateway trust, then retry delete."
-          : "OpenShell delete failed before NemoClaw cleanup ran.",
-      }, { status: isGatewayRecoverable(deleteOutput) ? 503 : 500 })
+        nemoclaw: cleanup,
+      }, { status: 500 })
     }
-
-    const cleanup = await cleanupNemoClawSandbox(target.sandboxName)
 
     if (!cleanup.ok) {
       return NextResponse.json({

@@ -7,7 +7,6 @@ type EndpointProtocol = "" | "rest"
 type EndpointTls = "" | "terminate" | "passthrough"
 type EndpointEnforcement = "" | "enforce" | "audit"
 type EndpointAccess = "" | "read-only" | "read-write" | "full"
-type CreateInferenceMode = "auto" | "vllm" | "nim"
 
 interface NetworkRule { method: string; path: string }
 interface NetworkEndpoint { host: string; port: string; protocol: EndpointProtocol; tls: EndpointTls; enforcement: EndpointEnforcement; access: EndpointAccess; rules: NetworkRule[] }
@@ -88,9 +87,6 @@ export default function ConfigurationPanel({ sandboxId, mode = 'existing', onCre
   const [selectedBlueprint, setSelectedBlueprint] = useState<string>('nemoclaw-blueprint')
   const [sandboxName, setSandboxName] = useState<string>('')
   const [enableTailscale, setEnableTailscale] = useState<boolean>(false)
-  const [createInferenceMode, setCreateInferenceMode] = useState<CreateInferenceMode>("vllm")
-  const [createInferenceModel, setCreateInferenceModel] = useState<string>("")
-  const [createNvidiaApiKey, setCreateNvidiaApiKey] = useState<string>("")
   const [restoreFromBackup, setRestoreFromBackup] = useState<boolean>(false)
   const [restoreArchive, setRestoreArchive] = useState<File | null>(null)
   const [restorePath, setRestorePath] = useState<string>('/sandbox')
@@ -138,12 +134,7 @@ export default function ConfigurationPanel({ sandboxId, mode = 'existing', onCre
       if (mode === 'create') {
         if (!sandboxName.trim()) throw new Error('sandbox name is required')
         if (restoreFromBackup && !restoreArchive) throw new Error('backup archive is required when restore from backup is enabled')
-        const createInference = {
-          mode: createInferenceMode,
-          model: createInferenceModel.trim(),
-          apiKey: createInferenceMode === 'nim' ? createNvidiaApiKey.trim() : '',
-        }
-        const res = await fetch('/api/sandbox/create', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ blueprint: selectedBlueprint, sandboxName: sandboxName.trim(), enableTailscale, createInference, policy: assembledPolicy, preset: selectedPreset || null }) })
+        const res = await fetch('/api/sandbox/create', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ blueprint: selectedBlueprint, sandboxName: sandboxName.trim(), enableTailscale, policy: assembledPolicy, preset: selectedPreset || null }) })
         const data = await res.json()
         if (!res.ok) throw new Error([data.error, data.verification?.summary, data.verification?.error, data.stdout, data.stderr].filter(Boolean).join('\n\n'))
         const createdSandboxId = data.verification?.details?.id || data.verification?.details?.name || data.sandboxName
@@ -197,76 +188,7 @@ export default function ConfigurationPanel({ sandboxId, mode = 'existing', onCre
         </div>
       )}
       {loading ? <div className="text-sm text-[var(--foreground-dim)]">Loading policy…</div> : <div className="space-y-8">
-        {mode === 'create' && (
-          <section className="space-y-4 rounded-sm border border-[var(--border-subtle)] bg-[var(--background-tertiary)] p-4">
-            <div>
-              <h5 className="text-xs uppercase tracking-wider text-[var(--foreground)]">Create Sandbox</h5>
-              <p className="text-xs text-[var(--foreground-dim)] mt-1">Choose a template and enter a sandbox name.</p>
-            </div>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              {blueprints.map((bp) => (
-                <button key={bp.id} type="button" onClick={() => setSelectedBlueprint(bp.id)} className={`rounded-sm border p-4 text-left ${selectedBlueprint === bp.id ? 'border-[var(--nvidia-green)] bg-[rgba(118,185,0,0.08)]' : 'border-[var(--border-subtle)] bg-[var(--background)]'}`}>
-                  <div className="flex items-center justify-between gap-3">
-                    <span className="text-sm font-semibold text-[var(--foreground)] uppercase tracking-wider">{bp.label}</span>
-                    <Badge tone={bp.type === 'custom' ? 'static' : 'dynamic'}>{bp.type}</Badge>
-                  </div>
-                  <p className="text-xs text-[var(--foreground-dim)] mt-2">{bp.description}</p>
-                </button>
-              ))}
-            </div>
-            <div>
-              <label className="text-xs uppercase tracking-wider text-[var(--foreground-dim)]">Sandbox Name<FieldHelp text="Lowercase letters, numbers, and hyphens only." /></label>
-              <input value={sandboxName} onChange={(e) => setSandboxName(e.target.value)} placeholder={selectedBlueprint === 'nemoclaw-blueprint' ? 'my-assistant' : 'custom-sandbox'} className="mt-2 w-full rounded-sm border border-[var(--border-subtle)] bg-[var(--background)] px-3 py-2 text-xs font-mono text-[var(--foreground)]" />
-            </div>
-            {activeBlueprint?.supportsTailscale && (
-              <label className="flex items-center gap-3 text-sm text-[var(--foreground)] font-mono">
-                <input type="checkbox" checked={enableTailscale} onChange={(e) => setEnableTailscale(e.target.checked)} /> Enable Tailscale
-              </label>
-            )}
-            {enableTailscale && <div className="rounded-sm border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-300">Tailscale-enabled creation requires NVIDIA_API_KEY in the dashboard process environment.</div>}
-            <div className="rounded-sm border border-[var(--border-subtle)] bg-[var(--background)] p-4 space-y-4">
-              <div>
-                <h6 className="text-xs font-semibold uppercase tracking-wider text-[var(--foreground)]">Inference at Create</h6>
-                <p className="mt-1 text-xs text-[var(--foreground-dim)]">Choose the provider NemoClaw should use while onboarding this sandbox.</p>
-              </div>
-              <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
-                <label className={`flex items-start gap-3 rounded-sm border p-3 text-sm text-[var(--foreground)] ${createInferenceMode === 'auto' ? 'border-[var(--nvidia-green)] bg-[rgba(118,185,0,0.08)]' : 'border-[var(--border-subtle)] bg-[var(--background-tertiary)]'}`}>
-                  <input type="checkbox" checked={createInferenceMode === 'auto'} onChange={() => setCreateInferenceMode('auto')} className="mt-0.5 h-4 w-4 accent-[var(--nvidia-green)]" />
-                  <span><span className="block text-xs font-mono uppercase tracking-wider">Auto</span><span className="mt-1 block text-[11px] text-[var(--foreground-dim)]">Let NemoClaw choose.</span></span>
-                </label>
-                <label className={`flex items-start gap-3 rounded-sm border p-3 text-sm text-[var(--foreground)] ${createInferenceMode === 'vllm' ? 'border-[var(--nvidia-green)] bg-[rgba(118,185,0,0.08)]' : 'border-[var(--border-subtle)] bg-[var(--background-tertiary)]'}`}>
-                  <input type="checkbox" checked={createInferenceMode === 'vllm'} onChange={() => setCreateInferenceMode('vllm')} className="mt-0.5 h-4 w-4 accent-[var(--nvidia-green)]" />
-                  <span><span className="block text-xs font-mono uppercase tracking-wider">Use vLLM in experimental mode</span><span className="mt-1 block text-[11px] text-[var(--foreground-dim)]">Sets NEMOCLAW_EXPERIMENTAL and vLLM.</span></span>
-                </label>
-                <label className={`flex items-start gap-3 rounded-sm border p-3 text-sm text-[var(--foreground)] ${createInferenceMode === 'nim' ? 'border-[var(--nvidia-green)] bg-[rgba(118,185,0,0.08)]' : 'border-[var(--border-subtle)] bg-[var(--background-tertiary)]'}`}>
-                  <input type="checkbox" checked={createInferenceMode === 'nim'} onChange={() => setCreateInferenceMode('nim')} className="mt-0.5 h-4 w-4 accent-[var(--nvidia-green)]" />
-                  <span><span className="block text-xs font-mono uppercase tracking-wider">Use NVIDIA NIM</span><span className="mt-1 block text-[11px] text-[var(--foreground-dim)]">Uses the experimental local NIM provider.</span></span>
-                </label>
-              </div>
-              {createInferenceMode !== 'auto' && (
-                <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-                  <div className="space-y-2">
-                    <label className="text-[10px] uppercase tracking-wider text-[var(--foreground-dim)]">Model</label>
-                    <input value={createInferenceModel} onChange={(e) => setCreateInferenceModel(e.target.value)} placeholder={createInferenceMode === 'vllm' ? 'auto-detect from vLLM' : 'model name'} className="w-full rounded-sm border border-[var(--border-subtle)] bg-[var(--background-tertiary)] px-3 py-2 text-xs font-mono text-[var(--foreground)]" />
-                  </div>
-                  {createInferenceMode === 'nim' && (
-                    <div className="space-y-2">
-                      <label className="text-[10px] uppercase tracking-wider text-[var(--foreground-dim)]">NVIDIA API Key</label>
-                      <input type="password" value={createNvidiaApiKey} onChange={(e) => setCreateNvidiaApiKey(e.target.value)} placeholder="nvapi-..." className="w-full rounded-sm border border-[var(--border-subtle)] bg-[var(--background-tertiary)] px-3 py-2 text-xs font-mono text-[var(--foreground)]" />
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
-            <div className="rounded-sm border border-[var(--border-subtle)] bg-[var(--background)] p-4 space-y-4">
-              <label className="flex items-start gap-3">
-                <input type="checkbox" checked={restoreFromBackup} onChange={(e) => setRestoreFromBackup(e.target.checked)} className="mt-0.5 h-4 w-4 accent-[var(--nvidia-green)]" />
-                <span><span className="block text-xs font-semibold uppercase tracking-wider text-[var(--foreground)]">Restore from Backup</span><span className="mt-1 block text-xs text-[var(--foreground-dim)]">After the sandbox reaches Ready, restore a .tar.gz archive into it.</span></span>
-              </label>
-              {restoreFromBackup && <div className="grid grid-cols-1 gap-4 md:grid-cols-2"><div className="space-y-2"><label className="text-[10px] uppercase tracking-wider text-[var(--foreground-dim)]">Backup Archive</label><input type="file" accept=".tar.gz,.tgz,application/gzip,application/x-gzip" onChange={(e) => setRestoreArchive(e.target.files?.[0] || null)} className="block w-full text-xs text-[var(--foreground-dim)] file:mr-3 file:rounded-sm file:border file:border-[var(--border-subtle)] file:bg-[var(--background-tertiary)] file:px-3 file:py-2 file:text-xs file:font-mono file:uppercase file:text-[var(--foreground)]" /></div><div className="space-y-2"><label className="text-[10px] uppercase tracking-wider text-[var(--foreground-dim)]">Restore Target</label><input value={restorePath} onChange={(e) => setRestorePath(e.target.value)} placeholder="/sandbox" className="w-full rounded-sm border border-[var(--border-subtle)] bg-[var(--background-tertiary)] px-3 py-2 text-xs font-mono text-[var(--foreground)]" /></div><label className="md:col-span-2 flex items-start gap-3 rounded-sm border border-[var(--border-subtle)] bg-[var(--background-tertiary)] p-3"><input type="checkbox" checked={restoreReplace} onChange={(e) => setRestoreReplace(e.target.checked)} className="mt-0.5 h-4 w-4 accent-[var(--nvidia-green)]" /><span><span className="block text-xs font-mono uppercase tracking-wider text-[var(--foreground)]">Replace target contents</span><span className="mt-1 block text-[11px] text-[var(--foreground-dim)]">Recommended for cloning from a backup into a fresh sandbox.</span></span></label></div>}
-            </div>
-          </section>
-        )}
+        {mode === 'create' && <section className="space-y-4 rounded-sm border border-[var(--border-subtle)] bg-[var(--background-tertiary)] p-4"><div><h5 className="text-xs uppercase tracking-wider text-[var(--foreground)]">Create Sandbox</h5><p className="text-xs text-[var(--foreground-dim)] mt-1">Choose a template and enter a sandbox name.</p></div><div className="grid grid-cols-1 md:grid-cols-2 gap-4">{blueprints.map((bp) => <button key={bp.id} type="button" onClick={() => setSelectedBlueprint(bp.id)} className={`rounded-sm border p-4 text-left ${selectedBlueprint === bp.id ? 'border-[var(--nvidia-green)] bg-[rgba(118,185,0,0.08)]' : 'border-[var(--border-subtle)] bg-[var(--background)]'}`}><div className="flex items-center justify-between gap-3"><span className="text-sm font-semibold text-[var(--foreground)] uppercase tracking-wider">{bp.label}</span><Badge tone={bp.type === 'custom' ? 'static' : 'dynamic'}>{bp.type}</Badge></div><p className="text-xs text-[var(--foreground-dim)] mt-2">{bp.description}</p></button>)}</div><div><label className="text-xs uppercase tracking-wider text-[var(--foreground-dim)]">Sandbox Name<FieldHelp text="Lowercase letters, numbers, and hyphens only." /></label><input value={sandboxName} onChange={(e) => setSandboxName(e.target.value)} placeholder={selectedBlueprint === 'nemoclaw-blueprint' ? 'my-assistant' : 'custom-sandbox'} className="mt-2 w-full rounded-sm border border-[var(--border-subtle)] bg-[var(--background)] px-3 py-2 text-xs font-mono text-[var(--foreground)]" /></div>{activeBlueprint?.supportsTailscale && <label className="flex items-center gap-3 text-sm text-[var(--foreground)] font-mono"><input type="checkbox" checked={enableTailscale} onChange={(e) => setEnableTailscale(e.target.checked)} /> Enable Tailscale</label>}{enableTailscale && <div className="rounded-sm border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-300">Tailscale-enabled creation requires NVIDIA_API_KEY in the dashboard process environment.</div>}<div className="rounded-sm border border-[var(--border-subtle)] bg-[var(--background)] p-4 space-y-4"><label className="flex items-start gap-3"><input type="checkbox" checked={restoreFromBackup} onChange={(e) => setRestoreFromBackup(e.target.checked)} className="mt-0.5 h-4 w-4 accent-[var(--nvidia-green)]" /><span><span className="block text-xs font-semibold uppercase tracking-wider text-[var(--foreground)]">Restore from Backup</span><span className="mt-1 block text-xs text-[var(--foreground-dim)]">After the sandbox reaches Ready, restore a .tar.gz archive into it.</span></span></label>{restoreFromBackup && <div className="grid grid-cols-1 gap-4 md:grid-cols-2"><div className="space-y-2"><label className="text-[10px] uppercase tracking-wider text-[var(--foreground-dim)]">Backup Archive</label><input type="file" accept=".tar.gz,.tgz,application/gzip,application/x-gzip" onChange={(e) => setRestoreArchive(e.target.files?.[0] || null)} className="block w-full text-xs text-[var(--foreground-dim)] file:mr-3 file:rounded-sm file:border file:border-[var(--border-subtle)] file:bg-[var(--background-tertiary)] file:px-3 file:py-2 file:text-xs file:font-mono file:uppercase file:text-[var(--foreground)]" /></div><div className="space-y-2"><label className="text-[10px] uppercase tracking-wider text-[var(--foreground-dim)]">Restore Target</label><input value={restorePath} onChange={(e) => setRestorePath(e.target.value)} placeholder="/sandbox" className="w-full rounded-sm border border-[var(--border-subtle)] bg-[var(--background-tertiary)] px-3 py-2 text-xs font-mono text-[var(--foreground)]" /></div><label className="md:col-span-2 flex items-start gap-3 rounded-sm border border-[var(--border-subtle)] bg-[var(--background-tertiary)] p-3"><input type="checkbox" checked={restoreReplace} onChange={(e) => setRestoreReplace(e.target.checked)} className="mt-0.5 h-4 w-4 accent-[var(--nvidia-green)]" /><span><span className="block text-xs font-mono uppercase tracking-wider text-[var(--foreground)]">Replace target contents</span><span className="mt-1 block text-[11px] text-[var(--foreground-dim)]">Recommended for cloning from a backup into a fresh sandbox.</span></span></label></div>}</div></section>}
         <section className="space-y-4"><div className="flex items-center justify-between gap-4 flex-wrap"><div><h5 className="text-xs uppercase tracking-wider text-[var(--foreground)]">Security Presets</h5><p className="text-xs text-[var(--foreground-dim)] mt-1">Use a canned profile for new sandboxes or switch an existing sandbox policy baseline on the fly.</p></div><div className="min-w-[260px]"><select value={selectedPreset} onChange={(e) => { const value = e.target.value as SecurityPresetId | ''; setSelectedPreset(value); if (value) applyPreset(value) }} className="w-full rounded-sm border border-[var(--border-subtle)] bg-[var(--background-tertiary)] px-3 py-2 text-xs font-mono text-[var(--foreground)]"><option value="">Select preset…</option>{SECURITY_PRESETS.map((preset) => <option key={preset.id} value={preset.id}>{preset.label}</option>)}</select></div></div>{activePreset && <div className="rounded-sm border border-[var(--border-subtle)] bg-[var(--background-tertiary)] p-4 space-y-3"><div className="flex items-center gap-3 flex-wrap"><span className="text-sm font-semibold text-[var(--foreground)] uppercase tracking-wider">{activePreset.label}</span></div><p className="text-sm text-[var(--foreground-dim)]">{activePreset.summary}</p></div>}</section>
         <section className="space-y-4"><div className="flex items-center gap-3"><h5 className="text-xs uppercase tracking-wider text-[var(--foreground)]">Filesystem Policy</h5><Badge tone="static">Static</Badge></div><label className="flex items-center gap-3 text-sm text-[var(--foreground)] font-mono"><input type="checkbox" checked={policy.filesystem_policy.include_workdir} onChange={(e) => setPolicy({ ...policy, filesystem_policy: { ...policy.filesystem_policy, include_workdir: e.target.checked } })} />Include workdir<FieldHelp text="Automatically adds the agent working directory to read_write. Static: changing this requires recreating the sandbox." /></label><div className="grid grid-cols-1 md:grid-cols-2 gap-4"><TextListEditor label="Read-only paths" tooltipText="Absolute paths the sandbox can read but not modify. Paths not listed are inaccessible." value={policy.filesystem_policy.read_only} onChange={(v) => setPolicy({ ...policy, filesystem_policy: { ...policy.filesystem_policy, read_only: v } })} placeholder="/usr\n/lib\n/etc" /><TextListEditor label="Read-write paths" tooltipText="Absolute paths the sandbox can read and write. Keep this scoped; broad paths are rejected." value={policy.filesystem_policy.read_write} onChange={(v) => setPolicy({ ...policy, filesystem_policy: { ...policy.filesystem_policy, read_write: v } })} placeholder="/sandbox\n/tmp" /></div></section>
         <section className="space-y-4"><div className="flex items-center gap-3"><h5 className="text-xs uppercase tracking-wider text-[var(--foreground)]">Network Policies</h5><Badge tone="dynamic">Dynamic</Badge></div><button onClick={addBlock} className="px-3 py-2 rounded-sm bg-[var(--background-tertiary)] text-xs font-mono uppercase tracking-wider hover:bg-[var(--background-panel)]">Add policy block</button></section>
