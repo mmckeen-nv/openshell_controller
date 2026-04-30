@@ -7,6 +7,7 @@ import InferenceEndpointPanel from './components/InferenceEndpointPanel'
 import HelpPanel from './components/HelpPanel'
 import WizardPanel from './components/WizardPanel'
 import McpConfigurationPanel from './components/McpConfigurationPanel'
+import LiveTelemetryBar from './components/LiveTelemetryBar'
 import { useSandboxInventory } from './hooks/useSandboxInventory'
 import {
   createHydrationSafeDashboardSessionState,
@@ -237,6 +238,7 @@ export default function Dashboard() {
       <main className="ml-64 min-h-screen transition-all duration-300 max-lg:ml-0 max-lg:pb-28">
         <div>
           <div className="mx-auto max-w-7xl p-8 max-sm:p-4">
+            <LiveTelemetryBar />
             {activeView === 'settings' ? (
               <div className="space-y-6">
                 <div className="panel p-8">

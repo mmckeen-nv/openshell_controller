@@ -2,6 +2,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js"
 import { HOST_PATH } from "./hostCommands"
+import { recordLiveTelemetryEvent, startLiveTelemetryTask } from "./liveTelemetry"
 import type { McpServerInstall } from "./mcpServerStore"
 
 const MCP_BROKER_REQUEST_TIMEOUT_MS = Number.parseInt(process.env.MCP_BROKER_REQUEST_TIMEOUT_MS || "45000", 10)
@@ -55,16 +56,26 @@ async function withMcpClient<T>(server: McpServerInstall, fn: (client: Client) =
 }
 
 export async function listBrokerServerTools(server: McpServerInstall) {
-  return withMcpClient(server, async (client) => {
-    const result = await client.listTools({}, { timeout: MCP_BROKER_REQUEST_TIMEOUT_MS })
-    return result.tools.map((tool) => ({
-      name: tool.name,
-      title: tool.title,
-      description: tool.description,
-      inputSchema: tool.inputSchema,
-      annotations: tool.annotations,
-    }))
-  })
+  const stopTask = startLiveTelemetryTask("mcp_list", { serverId: server.id })
+  recordLiveTelemetryEvent("transaction", { serverId: server.id })
+  try {
+    return await withMcpClient(server, async (client) => {
+      const result = await client.listTools({}, { timeout: MCP_BROKER_REQUEST_TIMEOUT_MS })
+      recordLiveTelemetryEvent("mcp_list", { serverId: server.id })
+      return result.tools.map((tool) => ({
+        name: tool.name,
+        title: tool.title,
+        description: tool.description,
+        inputSchema: tool.inputSchema,
+        annotations: tool.annotations,
+      }))
+    })
+  } catch (error) {
+    recordLiveTelemetryEvent("mcp_error", { serverId: server.id })
+    throw error
+  } finally {
+    stopTask()
+  }
 }
 
 export async function callBrokerServerTool(
@@ -72,14 +83,25 @@ export async function callBrokerServerTool(
   toolName: string,
   toolArguments: Record<string, unknown>,
 ) {
-  return withMcpClient(server, async (client) => (
-    client.callTool(
-      {
-        name: toolName,
-        arguments: toolArguments,
-      },
-      undefined,
-      { timeout: MCP_BROKER_REQUEST_TIMEOUT_MS },
-    )
-  ))
+  const stopTask = startLiveTelemetryTask("mcp_call", { serverId: server.id, toolName })
+  recordLiveTelemetryEvent("transaction", { serverId: server.id, toolName })
+  try {
+    const result = await withMcpClient(server, async (client) => (
+      client.callTool(
+        {
+          name: toolName,
+          arguments: toolArguments,
+        },
+        undefined,
+        { timeout: MCP_BROKER_REQUEST_TIMEOUT_MS },
+      )
+    ))
+    recordLiveTelemetryEvent("mcp_call", { serverId: server.id, toolName })
+    return result
+  } catch (error) {
+    recordLiveTelemetryEvent("mcp_error", { serverId: server.id, toolName })
+    throw error
+  } finally {
+    stopTask()
+  }
 }

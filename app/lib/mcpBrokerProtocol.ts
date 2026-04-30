@@ -1,4 +1,5 @@
 import { callBrokerServerTool, listBrokerServerTools } from "./mcpBrokerClient"
+import { recordLiveTelemetryEvent } from "./liveTelemetry"
 import { listAllowedBrokerServers, type SandboxMcpBrokerSession } from "./mcpBrokerStore"
 import type { McpServerInstall } from "./mcpServerStore"
 
@@ -114,6 +115,8 @@ async function handleBrokerMcpJsonRpcMessage(session: SandboxMcpBrokerSession, m
   const id = hasJsonRpcId(request) ? request.id ?? null : null
   const method = typeof request.method === "string" ? request.method : ""
   const isNotification = !hasJsonRpcId(request)
+  recordLiveTelemetryEvent("transaction", { sandboxId: session.sandboxId })
+  recordLiveTelemetryEvent("mcp_request", { sandboxId: session.sandboxId })
 
   try {
     switch (method) {
