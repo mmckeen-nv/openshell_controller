@@ -2,7 +2,7 @@ import { NextResponse } from "next/server"
 import { execFile, spawn } from "node:child_process"
 import { promisify } from "node:util"
 import { inspectSandbox } from "@/app/lib/openshellHost"
-import { repairOpenClawWorkspacePermissions } from "@/app/lib/sandboxPrivilegedFiles"
+import { repairOpenClawWorkspacePermissions, stabilizeOpenClawGatewayConfig } from "@/app/lib/sandboxPrivilegedFiles"
 import {
   commandExists,
   HOST_PATH,
@@ -438,6 +438,11 @@ export async function POST(request: Request) {
         error: "Sandbox readiness polling produced no verification result.",
       }
       const created = readiness.verified
+      const gatewayConfigRepair = created ? await stabilizeOpenClawGatewayConfig(sandboxName).catch((error) => ({
+        sandboxName,
+        path: "/sandbox/.openclaw/openclaw.json",
+        error: error instanceof Error ? error.message : "Failed to stabilize OpenClaw gateway config",
+      })) : null
       const workspaceRepair = created ? await repairOpenClawWorkspacePermissions(sandboxName).catch((error) => ({
         sandboxName,
         path: "/sandbox/.openclaw/workspace",
@@ -465,6 +470,7 @@ export async function POST(request: Request) {
           elapsedMs: readiness.elapsedMs,
         },
         workspaceRepair,
+        gatewayConfigRepair,
         deviceApproval,
         stdout: result.stdout,
         stderr: result.stderr,
@@ -475,6 +481,8 @@ export async function POST(request: Request) {
                 : "NemoClaw blueprint workflow completed in local/default mode. Existing healthy OpenShell gateways are reused before any new gateway start is attempted.",
               workspaceRepair && "note" in workspaceRepair ? workspaceRepair.note : false,
               workspaceRepair && "error" in workspaceRepair ? `OpenClaw workspace permission repair failed: ${workspaceRepair.error}` : false,
+              gatewayConfigRepair && "note" in gatewayConfigRepair ? gatewayConfigRepair.note : false,
+              gatewayConfigRepair && "error" in gatewayConfigRepair ? `OpenClaw gateway config repair failed: ${gatewayConfigRepair.error}` : false,
               deviceApproval?.note,
             )
           : "Blueprint command reported success, but the sandbox never reached a ready verification state afterward.",
@@ -509,6 +517,11 @@ export async function POST(request: Request) {
         error: "Sandbox readiness polling produced no verification result.",
       }
       const created = readiness.verified
+      const gatewayConfigRepair = created ? await stabilizeOpenClawGatewayConfig(sandboxName).catch((error) => ({
+        sandboxName,
+        path: "/sandbox/.openclaw/openclaw.json",
+        error: error instanceof Error ? error.message : "Failed to stabilize OpenClaw gateway config",
+      })) : null
       const workspaceRepair = created ? await repairOpenClawWorkspacePermissions(sandboxName).catch((error) => ({
         sandboxName,
         path: "/sandbox/.openclaw/workspace",
@@ -541,6 +554,7 @@ export async function POST(request: Request) {
           elapsedMs: readiness.elapsedMs,
         },
         workspaceRepair,
+        gatewayConfigRepair,
         deviceApproval,
         policyPrepared,
         note: created
@@ -552,6 +566,8 @@ export async function POST(request: Request) {
                     : "Custom sandbox created."),
               workspaceRepair && "note" in workspaceRepair ? workspaceRepair.note : false,
               workspaceRepair && "error" in workspaceRepair ? `OpenClaw workspace permission repair failed: ${workspaceRepair.error}` : false,
+              gatewayConfigRepair && "note" in gatewayConfigRepair ? gatewayConfigRepair.note : false,
+              gatewayConfigRepair && "error" in gatewayConfigRepair ? `OpenClaw gateway config repair failed: ${gatewayConfigRepair.error}` : false,
               deviceApproval?.note,
             )
           : "Create command started, but the sandbox never reached a ready verification state afterward.",

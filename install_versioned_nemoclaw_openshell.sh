@@ -12,6 +12,8 @@ OPENSHELL_VERSION="${OPENSHELL_VERSION:-v0.0.26}"
 OPENSHELL_INSTALL_URL="${OPENSHELL_INSTALL_URL:-https://raw.githubusercontent.com/NVIDIA/OpenShell/main/install.sh}"
 NEMOCLAW_INSTALL_TAG="${NEMOCLAW_INSTALL_TAG:-v0.0.15}"
 NEMOCLAW_ZIP_URL="${NEMOCLAW_ZIP_URL:-https://github.com/NVIDIA/NemoClaw/archive/refs/tags/${NEMOCLAW_INSTALL_TAG}.zip}"
+OPENCLAW_VERSION="${OPENCLAW_VERSION:-2026.4.24}"
+NEMOCLAW_BASE_IMAGE="${NEMOCLAW_BASE_IMAGE:-ghcr.io/nvidia/nemoclaw/sandbox-base:latest}"
 NEMOCLAW_ACCEPT_THIRD_PARTY_SOFTWARE="${NEMOCLAW_ACCEPT_THIRD_PARTY_SOFTWARE:-1}"
 NEMOCLAW_NON_INTERACTIVE="${NEMOCLAW_NON_INTERACTIVE:-1}"
 
@@ -34,12 +36,16 @@ Options:
 Defaults:
   OPENSHELL_VERSION=$OPENSHELL_VERSION
   NEMOCLAW_INSTALL_TAG=$NEMOCLAW_INSTALL_TAG
+  OPENCLAW_VERSION=$OPENCLAW_VERSION
+  NEMOCLAW_BASE_IMAGE=$NEMOCLAW_BASE_IMAGE
 
 Environment overrides:
   OPENSHELL_VERSION
   OPENSHELL_INSTALL_URL
   NEMOCLAW_INSTALL_TAG
   NEMOCLAW_ZIP_URL
+  OPENCLAW_VERSION
+  NEMOCLAW_BASE_IMAGE
   NEMOCLAW_ACCEPT_THIRD_PARTY_SOFTWARE
   NEMOCLAW_NON_INTERACTIVE
   NVIDIA_API_KEY
@@ -117,6 +123,7 @@ install_openshell() {
 install_nemoclaw() {
   require_command curl
   require_command sh
+  require_command docker
 
   local work_dir zip_path source_dir
   work_dir="$(mktemp -d)"
@@ -143,11 +150,20 @@ install_nemoclaw() {
       NVIDIA_API_KEY="${NVIDIA_API_KEY:-}" \
       ./install.sh
   )
+
+  log "Building NemoClaw stock base image with OpenClaw $OPENCLAW_VERSION"
+  docker build \
+    -f "$source_dir/Dockerfile.base" \
+    -t "$NEMOCLAW_BASE_IMAGE" \
+    --build-arg "OPENCLAW_VERSION=$OPENCLAW_VERSION" \
+    "$source_dir"
 }
 
 echo -e "${GREEN}=== Versioned OpenShell/NemoClaw Installer ===${NC}"
 echo "OpenShell: $OPENSHELL_VERSION"
 echo "NemoClaw:  $NEMOCLAW_INSTALL_TAG"
+echo "OpenClaw:  $OPENCLAW_VERSION"
+echo "Base image: $NEMOCLAW_BASE_IMAGE"
 echo ""
 
 if [[ "$SKIP_OPENSHELL" -eq 0 ]]; then
