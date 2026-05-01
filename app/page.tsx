@@ -17,12 +17,15 @@ import {
   updateDashboardSessionSelection,
 } from './lib/dashboardSession'
 
+const TELEMETRY_BAR_ENABLED_KEY = 'openshell-control.telemetry-bar-enabled'
+
 export default function Dashboard() {
   const [theme, setTheme] = useState<'light' | 'dark'>('dark')
   const [dashboardSession, setDashboardSession] = useState(() => createHydrationSafeDashboardSessionState())
   const [isCreateMode, setIsCreateMode] = useState(false)
   const [isDestroyMode, setIsDestroyMode] = useState(false)
   const [activeView, setActiveView] = useState<'settings' | 'sandboxes' | 'help' | 'wizards' | 'mcp'>('sandboxes')
+  const [telemetryBarEnabled, setTelemetryBarEnabled] = useState(false)
   const [deletingSandboxId, setDeletingSandboxId] = useState<string | null>(null)
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
   const [lifecycleMessage, setLifecycleMessage] = useState<string | null>(null)
@@ -34,6 +37,7 @@ export default function Dashboard() {
 
   useEffect(() => {
     setDashboardSession(loadDashboardSessionState())
+    setTelemetryBarEnabled(window.localStorage.getItem(TELEMETRY_BAR_ENABLED_KEY) === 'true')
   }, [])
 
   useEffect(() => {
@@ -55,6 +59,11 @@ export default function Dashboard() {
 
   const toggleTheme = () => {
     setTheme(theme === 'light' ? 'dark' : 'light')
+  }
+
+  const handleTelemetryBarEnabledChange = (enabled: boolean) => {
+    setTelemetryBarEnabled(enabled)
+    window.localStorage.setItem(TELEMETRY_BAR_ENABLED_KEY, enabled ? 'true' : 'false')
   }
 
   useEffect(() => {
@@ -238,7 +247,7 @@ export default function Dashboard() {
       <main className="ml-64 min-h-screen transition-all duration-300 max-lg:ml-0 max-lg:pb-28">
         <div>
           <div className="mx-auto max-w-7xl p-8 max-sm:p-4">
-            <LiveTelemetryBar />
+            {telemetryBarEnabled && <LiveTelemetryBar />}
             {activeView === 'settings' ? (
               <div className="space-y-6">
                 <div className="panel p-8">
@@ -263,7 +272,11 @@ export default function Dashboard() {
                 <InferenceEndpointPanel />
               </div>
             ) : activeView === 'help' ? (
-              <HelpPanel sandboxes={sandboxes} />
+              <HelpPanel
+                sandboxes={sandboxes}
+                telemetryBarEnabled={telemetryBarEnabled}
+                onTelemetryBarEnabledChange={handleTelemetryBarEnabledChange}
+              />
             ) : activeView === 'mcp' ? (
               <McpConfigurationPanel sandboxes={sandboxes} />
             ) : activeView === 'wizards' ? (

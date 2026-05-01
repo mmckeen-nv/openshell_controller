@@ -256,7 +256,17 @@ function McpHealthAccordion() {
   )
 }
 
-export default function HelpPanel({ sandboxes }: { sandboxes: SandboxInventoryItem[] }) {
+type HelpPanelProps = {
+  sandboxes: SandboxInventoryItem[]
+  telemetryBarEnabled: boolean
+  onTelemetryBarEnabledChange: (enabled: boolean) => void
+}
+
+export default function HelpPanel({
+  sandboxes,
+  telemetryBarEnabled,
+  onTelemetryBarEnabledChange,
+}: HelpPanelProps) {
   return (
     <div className="space-y-6">
       <HealthAccordion sandboxes={sandboxes} />
@@ -329,6 +339,25 @@ export default function HelpPanel({ sandboxes }: { sandboxes: SandboxInventoryIt
       </section>
 
       <ActivityPanel />
+
+      <section className="panel p-5">
+        <label className="flex items-start gap-3">
+          <input
+            type="checkbox"
+            checked={telemetryBarEnabled}
+            onChange={(event) => onTelemetryBarEnabledChange(event.target.checked)}
+            className="mt-0.5 h-4 w-4 accent-[var(--nvidia-green)]"
+          />
+          <span>
+            <span className="block text-xs font-mono uppercase tracking-wider text-[var(--foreground)]">
+              Enable Telemetry Bar - EXPERIMENTAL
+            </span>
+            <span className="mt-1 block text-xs leading-5 text-[var(--foreground-dim)]">
+              The telemetry bar is setup for vLLM tokens per second and does not currently work with other endpoints.
+            </span>
+          </span>
+        </label>
+      </section>
     </div>
   )
 }
