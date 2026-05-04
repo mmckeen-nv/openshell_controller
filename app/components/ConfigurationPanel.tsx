@@ -19,7 +19,7 @@ type BlueprintOption = {
   id: string
   label: string
   description: string
-  type: "blueprint" | "custom"
+  type: "blueprint" | "custom" | "image"
   source: string
   supportsTailscale?: boolean
 }
@@ -85,7 +85,7 @@ export default function ConfigurationPanel({ sandboxId, mode = 'existing', onCre
   const [message, setMessage] = useState("")
   const [selectedPreset, setSelectedPreset] = useState<SecurityPresetId | ''>('')
   const [blueprints, setBlueprints] = useState<BlueprintOption[]>([])
-  const [selectedBlueprint, setSelectedBlueprint] = useState<string>('nemoclaw-blueprint')
+  const [selectedBlueprint, setSelectedBlueprint] = useState<string>('redeploy-image')
   const [sandboxName, setSandboxName] = useState<string>('')
   const [enableTailscale, setEnableTailscale] = useState<boolean>(false)
   const [createInferenceMode, setCreateInferenceMode] = useState<CreateInferenceMode>("vllm")
@@ -208,7 +208,7 @@ export default function ConfigurationPanel({ sandboxId, mode = 'existing', onCre
                 <button key={bp.id} type="button" onClick={() => setSelectedBlueprint(bp.id)} className={`rounded-sm border p-4 text-left ${selectedBlueprint === bp.id ? 'border-[var(--nvidia-green)] bg-[rgba(118,185,0,0.08)]' : 'border-[var(--border-subtle)] bg-[var(--background)]'}`}>
                   <div className="flex items-center justify-between gap-3">
                     <span className="text-sm font-semibold text-[var(--foreground)] uppercase tracking-wider">{bp.label}</span>
-                    <Badge tone={bp.type === 'custom' ? 'static' : 'dynamic'}>{bp.type}</Badge>
+                    <Badge tone={bp.type === 'blueprint' ? 'dynamic' : 'static'}>{bp.type}</Badge>
                   </div>
                   <p className="text-xs text-[var(--foreground-dim)] mt-2">{bp.description}</p>
                 </button>
@@ -216,15 +216,20 @@ export default function ConfigurationPanel({ sandboxId, mode = 'existing', onCre
             </div>
             <div>
               <label className="text-xs uppercase tracking-wider text-[var(--foreground-dim)]">Sandbox Name<FieldHelp text="Lowercase letters, numbers, and hyphens only." /></label>
-              <input value={sandboxName} onChange={(e) => setSandboxName(e.target.value)} placeholder={selectedBlueprint === 'nemoclaw-blueprint' ? 'my-assistant' : 'custom-sandbox'} className="mt-2 w-full rounded-sm border border-[var(--border-subtle)] bg-[var(--background)] px-3 py-2 text-xs font-mono text-[var(--foreground)]" />
+              <input value={sandboxName} onChange={(e) => setSandboxName(e.target.value)} placeholder={selectedBlueprint === 'nemoclaw-blueprint' ? 'my-assistant' : selectedBlueprint === 'redeploy-image' ? 'my-assistant-copy' : 'custom-sandbox'} className="mt-2 w-full rounded-sm border border-[var(--border-subtle)] bg-[var(--background)] px-3 py-2 text-xs font-mono text-[var(--foreground)]" />
             </div>
+            {selectedBlueprint === 'redeploy-image' && (
+              <div className="rounded-sm border border-[var(--border-subtle)] bg-[var(--background)] p-4">
+                <p className="text-xs text-[var(--foreground-dim)]">Quick Deploy uses the default running NemoClaw image and skips the Docker rebuild. Use Fresh NemoClaw Image when you need to rebuild the image layers.</p>
+              </div>
+            )}
             {activeBlueprint?.supportsTailscale && (
               <label className="flex items-center gap-3 text-sm text-[var(--foreground)] font-mono">
                 <input type="checkbox" checked={enableTailscale} onChange={(e) => setEnableTailscale(e.target.checked)} /> Enable Tailscale
               </label>
             )}
             {enableTailscale && <div className="rounded-sm border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-300">Tailscale-enabled creation requires NVIDIA_API_KEY in the dashboard process environment.</div>}
-            <div className="rounded-sm border border-[var(--border-subtle)] bg-[var(--background)] p-4 space-y-4">
+            {selectedBlueprint === 'nemoclaw-blueprint' && <div className="rounded-sm border border-[var(--border-subtle)] bg-[var(--background)] p-4 space-y-4">
               <div>
                 <h6 className="text-xs font-semibold uppercase tracking-wider text-[var(--foreground)]">Inference at Create</h6>
                 <p className="mt-1 text-xs text-[var(--foreground-dim)]">Choose the provider NemoClaw should use while onboarding this sandbox.</p>
@@ -257,7 +262,7 @@ export default function ConfigurationPanel({ sandboxId, mode = 'existing', onCre
                   )}
                 </div>
               )}
-            </div>
+            </div>}
             <div className="rounded-sm border border-[var(--border-subtle)] bg-[var(--background)] p-4 space-y-4">
               <label className="flex items-start gap-3">
                 <input type="checkbox" checked={restoreFromBackup} onChange={(e) => setRestoreFromBackup(e.target.checked)} className="mt-0.5 h-4 w-4 accent-[var(--nvidia-green)]" />

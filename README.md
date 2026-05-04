@@ -307,12 +307,24 @@ NEXT_PUBLIC_API_BASE=/api
 NEXT_PUBLIC_ENABLE_SANDBOX_OPERATIONS=true
 OPEN_SHELL_CONTAINER=openshell-cluster-nemoclaw
 OPENSHELL_GATEWAY=nemoclaw
+# For containerized CLI runs, when supported by the installed OpenShell/NemoClaw versions:
+# OPENSHELL_GATEWAY_HOST=host.docker.internal
+# OPENSHELL_GATEWAY_PORT=8080
+# OPENSHELL_GATEWAY_URL=http://host.docker.internal:8080
 OPENSHELL_CONTROL_PASSWORD=change-this-password
 OPENSHELL_CONTROL_AUTH_SECRET=change-this-random-secret
 OPENSHELL_CONTROL_RECOVERY_TOKEN=change-this-recovery-token
 MCP_BROKER_TOKEN_TTL_HOURS=168
 MCP_BROKER_REQUEST_TIMEOUT_MS=45000
 ```
+
+The controller also accepts an OpenShell config-file form at `~/.config/openshell/gateway.json` or `~/.config/openshell/config.json`:
+
+```json
+{ "gateway": { "host": "host.docker.internal", "port": 8080 } }
+```
+
+Those values are translated into `OPENSHELL_GATEWAY_HOST`, `OPENSHELL_GATEWAY_PORT`, and `OPENSHELL_GATEWAY_URL` for controller-launched OpenShell/NemoClaw child processes.
 
 ## Security Limitations
 

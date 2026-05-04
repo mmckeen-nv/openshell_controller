@@ -3,7 +3,7 @@ import { promisify } from "node:util"
 import { NextResponse } from "next/server"
 import { listActivity } from "@/app/lib/activityLog"
 import { listBackupCatalog } from "@/app/lib/backupCatalog"
-import { HOST_PATH, OPENSHELL_BIN } from "@/app/lib/hostCommands"
+import { HOST_PATH, OPENSHELL_BIN, hostCommandEnv } from "@/app/lib/hostCommands"
 
 const execFileAsync = promisify(execFile)
 
@@ -11,9 +11,12 @@ export const dynamic = "force-dynamic"
 
 async function run(command: string, args: string[]) {
   try {
+    const env = command === OPENSHELL_BIN
+      ? hostCommandEnv({ OPENSHELL_GATEWAY: process.env.OPENSHELL_GATEWAY || "nemoclaw" })
+      : { ...process.env, PATH: HOST_PATH, NO_COLOR: "1", CLICOLOR: "0", CLICOLOR_FORCE: "0" }
     const { stdout, stderr } = await execFileAsync(command, args, {
       timeout: 10000,
-      env: { ...process.env, PATH: HOST_PATH, NO_COLOR: "1", CLICOLOR: "0", CLICOLOR_FORCE: "0" },
+      env,
     })
     return { ok: true, stdout: stdout.trim(), stderr: stderr.trim() }
   } catch (error) {

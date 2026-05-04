@@ -160,20 +160,49 @@ function bootstrapScriptResponse(proxyPrefix: string) {
 
   try {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const gatewayHost = wsProxyPort ? window.location.hostname + ':' + wsProxyPort : window.location.host;
-    const gatewayUrl = protocol + '//' + gatewayHost + proxyPrefix;
+    const pageGatewayUrl = protocol + '//' + window.location.host + proxyPrefix;
+    const sidecarHost = wsProxyPort ? window.location.hostname + ':' + wsProxyPort : window.location.host;
+    const sidecarGatewayUrl = protocol + '//' + sidecarHost + proxyPrefix;
     const settingsKey = 'openclaw.control.settings.v1';
+    const settingsPrefix = 'openclaw.control.settings.v1:';
+    const tokenKey = 'openclaw.control.token.v1';
     const tokenPrefix = 'openclaw.control.token.v1:';
-    const tokenScope = gatewayUrl;
     const hashParams = new URLSearchParams(window.location.hash.startsWith('#') ? window.location.hash.slice(1) : window.location.hash);
+    const gatewayUrl = (hashParams.get('gatewayUrl') || '').trim() || sidecarGatewayUrl;
     const token = (hashParams.get('token') || '').trim();
-    const rawSettings = window.localStorage.getItem(settingsKey);
-    const settings = rawSettings ? JSON.parse(rawSettings) : {};
+    const storageScope = (value) => {
+      try {
+        const parsed = new URL(value, window.location.href);
+        const path = parsed.pathname === '/' ? '' : parsed.pathname.replace(/\\/+$/, '') || parsed.pathname;
+        return parsed.protocol + '//' + parsed.host + path;
+      } catch {
+        return value;
+      }
+    };
+    const uniqueScopes = (values) => Array.from(new Set(values.map(storageScope).filter(Boolean)));
+    const gatewayScopes = uniqueScopes([gatewayUrl, sidecarGatewayUrl, pageGatewayUrl]);
+    const settingsKeys = gatewayScopes.map((scope) => settingsPrefix + scope);
+    const readSettings = () => {
+      for (const key of [...settingsKeys, settingsPrefix + 'default', settingsKey]) {
+        try {
+          const raw = window.localStorage.getItem(key);
+          if (!raw) continue;
+          const parsed = JSON.parse(raw);
+          if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed;
+        } catch {}
+      }
+      return {};
+    };
+    const settings = readSettings();
 
     settings.gatewayUrl = gatewayUrl;
-    window.localStorage.setItem(settingsKey, JSON.stringify(settings));
-    window.sessionStorage.removeItem('openclaw.control.token.v1');
-    if (token) window.sessionStorage.setItem(tokenPrefix + tokenScope, token);
+    const serializedSettings = JSON.stringify(settings);
+    window.localStorage.setItem(settingsKey, serializedSettings);
+    for (const key of settingsKeys) window.localStorage.setItem(key, serializedSettings);
+    window.sessionStorage.removeItem(tokenKey);
+    if (token) {
+      for (const scope of gatewayScopes) window.sessionStorage.setItem(tokenPrefix + scope, token);
+    }
   } catch {
     // Best-effort compatibility bridge for OpenClaw's persisted UI settings.
   }

@@ -7,6 +7,7 @@ type BlueprintOption = {
   id: string
   label: string
   description: string
+  type?: "blueprint" | "custom" | "image"
   supportsTailscale?: boolean
 }
 
@@ -64,7 +65,7 @@ export default function WizardPanel({
   const [sourceSandboxId, setSourceSandboxId] = useState("")
   const [targetName, setTargetName] = useState("")
   const [blueprints, setBlueprints] = useState<BlueprintOption[]>([])
-  const [selectedBlueprint, setSelectedBlueprint] = useState("custom-sandbox")
+  const [selectedBlueprint, setSelectedBlueprint] = useState("redeploy-image")
   const [enableTailscale, setEnableTailscale] = useState(false)
   const [backupPath, setBackupPath] = useState("/sandbox")
   const [restorePath, setRestorePath] = useState("/sandbox")
@@ -161,13 +162,14 @@ export default function WizardPanel({
       setRunLog([])
       setActiveStep("run")
 
-      appendLog(`Creating target sandbox ${targetName}...`)
+      appendLog(selectedBlueprint === "redeploy-image" ? `Redeploying ${sourceSandbox.name}'s image as ${targetName}...` : `Creating target sandbox ${targetName}...`)
       const createResponse = await fetch("/api/sandbox/create", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           blueprint: selectedBlueprint,
           sandboxName: targetName.trim(),
+          sourceSandboxName: sourceSandbox.name,
           enableTailscale,
           policy: null,
           preset: null,
@@ -533,11 +535,11 @@ export default function WizardPanel({
             </svg>
             <div>
               <h2 className="text-sm font-semibold uppercase tracking-wider text-[var(--foreground)]">Clone Sandbox</h2>
-              <p className="mt-1 text-xs text-[var(--foreground-dim)]">Create a fresh sandbox, back up the source, then restore into the target.</p>
+              <p className="mt-1 text-xs text-[var(--foreground-dim)]">Start a fresh sandbox from the source image, then restore source files into the target.</p>
             </div>
           </div>
           <span className="status-chip shrink-0 border border-[var(--border-subtle)] bg-[var(--background-tertiary)] px-2.5 py-1 text-[var(--foreground-dim)]">
-            backup + restore
+            image + restore
           </span>
         </button>
 
@@ -604,7 +606,7 @@ export default function WizardPanel({
             <div className="space-y-4">
               <div>
                 <h3 className="text-xs font-semibold uppercase tracking-wider text-[var(--foreground)]">Configure Target Sandbox</h3>
-                <p className="mt-1 text-xs text-[var(--foreground-dim)]">Choose the sandbox blueprint and target name.</p>
+                <p className="mt-1 text-xs text-[var(--foreground-dim)]">Choose how the target is created and set its sandbox name.</p>
               </div>
               <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
                 {blueprints.map((blueprint) => (
@@ -673,7 +675,7 @@ export default function WizardPanel({
                 {[
                   ["Source", sourceSandbox?.name || "-"],
                   ["Target", targetName || "-"],
-                  ["Blueprint", activeBlueprint?.label || selectedBlueprint],
+                  ["Create Path", activeBlueprint?.label || selectedBlueprint],
                   ["Backup Path", backupPath],
                   ["Restore Path", restorePath],
                   ["Restore Mode", replaceTarget ? "replace" : "merge"],

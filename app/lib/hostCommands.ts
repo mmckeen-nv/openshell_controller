@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, statSync } from "node:fs"
+import { existsSync, readFileSync, readdirSync, statSync } from "node:fs"
 import path from "node:path"
 
 const HOME = process.env.HOME || ""
@@ -107,11 +107,72 @@ function pathEntries() {
 
 export const HOST_PATH = unique(pathEntries()).join(":")
 
+function nonEmptyEnv(name: string) {
+  const value = process.env[name]?.trim()
+  return value || undefined
+}
+
+function gatewayUrlFromHost(host: string, port: string) {
+  if (/^https?:\/\//i.test(host)) return host
+  if (host.includes(":")) return `http://${host}`
+  return `http://${host}:${port}`
+}
+
+function stringConfigValue(value: unknown) {
+  if (typeof value === "string") return value.trim() || undefined
+  if (typeof value === "number" && Number.isFinite(value)) return String(value)
+  return undefined
+}
+
+function readOpenShellGatewayAddressConfig() {
+  const configDir = OPENSHELL_XDG_CONFIG_HOME ? path.join(OPENSHELL_XDG_CONFIG_HOME, "openshell") : ""
+  const candidates = unique([
+    process.env.OPENSHELL_GATEWAY_CONFIG,
+    configDir ? path.join(configDir, "gateway.json") : undefined,
+    configDir ? path.join(configDir, "config.json") : undefined,
+  ])
+
+  for (const candidate of candidates) {
+    if (!existsSync(candidate)) continue
+    try {
+      const parsed = JSON.parse(readFileSync(candidate, "utf8"))
+      const gateway = parsed?.gateway && typeof parsed.gateway === "object" ? parsed.gateway : {}
+      const host = stringConfigValue(parsed?.gatewayHost) || stringConfigValue(gateway.host)
+      const port = stringConfigValue(parsed?.gatewayPort) || stringConfigValue(gateway.port)
+      const url = stringConfigValue(parsed?.gatewayUrl) || stringConfigValue(gateway.url)
+      if (host || port || url) return { host, port, url }
+    } catch {
+      // Ignore malformed optional config; explicit env vars remain authoritative.
+    }
+  }
+
+  return {}
+}
+
+export function openshellGatewayAddressEnv() {
+  const config = readOpenShellGatewayAddressConfig()
+  const host = nonEmptyEnv("OPENSHELL_GATEWAY_HOST") || config.host
+  const configuredPort = nonEmptyEnv("OPENSHELL_GATEWAY_PORT") || config.port
+  const port = configuredPort || "8080"
+  const explicitUrl = nonEmptyEnv("OPENSHELL_GATEWAY_URL") || config.url
+
+  return {
+    ...(host ? { OPENSHELL_GATEWAY_HOST: host } : {}),
+    ...(configuredPort || host || explicitUrl ? { OPENSHELL_GATEWAY_PORT: port } : {}),
+    ...(explicitUrl
+      ? { OPENSHELL_GATEWAY_URL: explicitUrl }
+      : host
+        ? { OPENSHELL_GATEWAY_URL: gatewayUrlFromHost(host, port) }
+        : {}),
+  }
+}
+
 export function hostCommandEnv(extra: Record<string, string | undefined> = {}) {
   return {
     ...process.env,
     ...(OPENSHELL_HOME ? { HOME: OPENSHELL_HOME } : {}),
     ...(OPENSHELL_XDG_CONFIG_HOME ? { XDG_CONFIG_HOME: OPENSHELL_XDG_CONFIG_HOME } : {}),
+    ...openshellGatewayAddressEnv(),
     PATH: HOST_PATH,
     NO_COLOR: "1",
     CLICOLOR: "0",
