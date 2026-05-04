@@ -95,7 +95,8 @@ assert.match(createRouteSource, /mode: "legacy-setup"/, 'NemoClaw blueprint crea
 assert.match(createRouteSource, /NemoClaw CLI was not found/, 'missing current CLI must produce an actionable error')
 assert.match(createRouteSource, /NEMOCLAW_BIN_CANDIDATES\.join/, 'missing current CLI error must list searched candidates')
 assert.match(createRouteSource, /from "@\/app\/lib\/hostCommands"/, 'create route must use shared command resolution')
-assert.match(deleteRouteSource, /NEMOCLAW_CWD/, 'delete route must use resolved NemoClaw working directory')
+assert.match(deleteRouteSource, /hostCommandEnv/, 'delete route must use shared host command environment')
+assert.doesNotMatch(deleteRouteSource, /NEMOCLAW_CWD|NEMOCLAW_BIN/, 'delete route must not launch NemoClaw cleanup after OpenShell deletion')
 
 for (const [label, source] of [
   ['telemetry', telemetrySource],

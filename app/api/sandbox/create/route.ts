@@ -1,7 +1,9 @@
 import { NextResponse } from "next/server"
 import { execFile, spawn } from "node:child_process"
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs"
+import path from "node:path"
 import { promisify } from "node:util"
-import { inspectSandbox } from "@/app/lib/openshellHost"
+import { inspectSandbox, resolveSandboxRef } from "@/app/lib/openshellHost"
 import { repairOpenClawExecApprovalsFile } from "@/app/lib/sandboxPrivilegedFiles"
 import {
   commandExists,
@@ -13,9 +15,14 @@ import {
   NEMOCLAW_SETUP_CANDIDATES,
   NODE_BIN,
   OPENSHELL_BIN,
+  hostCommandEnv,
 } from "@/app/lib/hostCommands"
 
 const execFileAsync = promisify(execFile)
+const DOCKER_BIN = process.env.DOCKER_BIN || "docker"
+const OPENSHELL_CLUSTER_CONTAINER = process.env.OPENSHELL_CLUSTER_CONTAINER || "openshell-cluster-nemoclaw"
+const OPENSHELL_NAMESPACE = process.env.OPENSHELL_SANDBOX_NAMESPACE || "openshell"
+const NEMOCLAW_REGISTRY_FILE = path.join(process.env.HOME || "/tmp", ".nemoclaw", "sandboxes.json")
 
 function validateSandboxName(name: string) {
   if (!name || typeof name !== "string") throw new Error("sandbox name is required")
@@ -65,6 +72,11 @@ type CreateInferenceSettings = {
   model: string
   hasApiKey: boolean
   envSummary: string[]
+}
+
+type NemoClawRegistryData = {
+  sandboxes?: Record<string, { name?: string; createdAt?: string }>
+  defaultSandbox?: string | null
 }
 
 function parseCreateInferenceSettings(body: any): CreateInferenceSettings {
@@ -125,6 +137,178 @@ function buildNemoClawCreateCommand(): NemoClawCreateCommand {
   throw new Error(
     `NemoClaw CLI was not found. Install the current NemoClaw CLI under your Linux home directory, or set NEMOCLAW_BIN in .env.local. Searched CLI: ${NEMOCLAW_BIN_CANDIDATES.join(", ") || "no candidates"}. Legacy setup candidates: ${NEMOCLAW_SETUP_CANDIDATES.join(", ") || "none"}.`,
   )
+}
+
+function resolveNemoClawBasePolicyPath() {
+  const home = process.env.HOME || ""
+  const candidates = [
+    process.env.NEMOCLAW_BASE_POLICY_PATH,
+    path.join(NEMOCLAW_CWD, "nemoclaw-blueprint", "policies", "openclaw-sandbox.yaml"),
+    home ? path.join(home, ".nemoclaw", "source", "nemoclaw-blueprint", "policies", "openclaw-sandbox.yaml") : undefined,
+  ].filter((candidate): candidate is string => Boolean(candidate))
+
+  const found = candidates.find((candidate) => existsSync(candidate))
+  if (!found) {
+    throw new Error(`NemoClaw base policy was not found. Searched: ${candidates.join(", ")}`)
+  }
+  return found
+}
+
+async function readPodImage(sandboxName: string, jsonpath: string) {
+  const { stdout } = await execFileAsync(DOCKER_BIN, [
+    "exec",
+    OPENSHELL_CLUSTER_CONTAINER,
+    "kubectl",
+    "get",
+    "pod",
+    sandboxName,
+    "-n",
+    OPENSHELL_NAMESPACE,
+    "-o",
+    `jsonpath=${jsonpath}`,
+  ], {
+    env: hostCommandEnv(),
+    timeout: 10000,
+    maxBuffer: 1024 * 1024,
+  })
+
+  return String(stdout).trim().split(/\s+/)[0] || null
+}
+
+function stripAnsi(value: string) {
+  return value.replace(/\u001b\[[0-9;]*m/g, "")
+}
+
+function parseOpenShellSandboxNames(output: string) {
+  return output
+    .split(/\r?\n/)
+    .map((entry) => stripAnsi(entry).trim())
+    .filter(
+      (entry) =>
+        entry &&
+        !/^name\s+/i.test(entry) &&
+        !/^[\s\-=]+$/.test(entry) &&
+        !/^no sandboxes found\.?$/i.test(entry)
+    )
+    .map((entry) => entry.split(/\s{2,}/)[0]?.trim())
+    .filter((entry): entry is string => Boolean(entry))
+}
+
+function readNemoClawRegistry(): NemoClawRegistryData {
+  try {
+    return existsSync(NEMOCLAW_REGISTRY_FILE)
+      ? JSON.parse(readFileSync(NEMOCLAW_REGISTRY_FILE, "utf8"))
+      : {}
+  } catch {
+    return {}
+  }
+}
+
+async function listOpenShellSandboxNames() {
+  try {
+    const { stdout } = await execFileAsync(OPENSHELL_BIN, ["sandbox", "list"], {
+      env: hostCommandEnv({
+        OPENSHELL_GATEWAY: process.env.OPENSHELL_GATEWAY || "nemoclaw",
+      }),
+      timeout: 10000,
+      maxBuffer: 1024 * 1024,
+    })
+    return parseOpenShellSandboxNames(String(stdout))
+  } catch {
+    return []
+  }
+}
+
+async function resolveSourcePodImageFromRef(sourceSandboxRef: string) {
+  const requested = sourceSandboxRef.trim()
+  const source = await resolveSandboxRef(requested)
+  const sourceName = validateSandboxName(source.name)
+  const sourceImage = await readPodImage(sourceName, '{.spec.containers[?(@.name=="agent")].image}')
+    .catch(() => null)
+    || await readPodImage(sourceName, "{.spec.containers[0].image}").catch(() => null)
+
+  if (!sourceImage) {
+    throw new Error(`Could not resolve the running image for source sandbox '${sourceName}'.`)
+  }
+
+  return {
+    requested,
+    name: sourceName,
+    id: source.id,
+    image: sourceImage,
+  }
+}
+
+async function resolveSourcePodImage(sourceSandboxRef: string | null | undefined, targetSandboxName: string) {
+  if (sourceSandboxRef && typeof sourceSandboxRef === "string" && sourceSandboxRef.trim()) {
+    return await resolveSourcePodImageFromRef(sourceSandboxRef)
+  }
+
+  const registry = readNemoClawRegistry()
+  const registeredEntries = Object.entries(registry.sandboxes ?? {})
+  const newestRegisteredNames = registeredEntries
+    .sort(([, a], [, b]) => String(b?.createdAt ?? "").localeCompare(String(a?.createdAt ?? "")))
+    .map(([key, value]) => value?.name || key)
+  const liveNames = await listOpenShellSandboxNames()
+  const candidates = Array.from(new Set([
+    registry.defaultSandbox || undefined,
+    ...newestRegisteredNames,
+    ...liveNames,
+  ].filter((candidate): candidate is string => Boolean(candidate && candidate !== targetSandboxName))))
+
+  for (const candidate of candidates) {
+    try {
+      return await resolveSourcePodImageFromRef(candidate)
+    } catch {
+      // Try the next candidate; stale registry entries are common after manual cleanup.
+    }
+  }
+
+  throw new Error("No running NemoClaw sandbox image was found for quick deploy. Create one Fresh NemoClaw Image first, or pass sourceSandboxName explicitly.")
+}
+
+function registerNemoClawImageRedeploy(sourceName: string, sandboxName: string) {
+  try {
+    const current = existsSync(NEMOCLAW_REGISTRY_FILE)
+      ? JSON.parse(readFileSync(NEMOCLAW_REGISTRY_FILE, "utf8"))
+      : {}
+    const sandboxes = current && typeof current.sandboxes === "object" && current.sandboxes !== null
+      ? current.sandboxes
+      : {}
+    const sourceEntry = sandboxes[sourceName] && typeof sandboxes[sourceName] === "object"
+      ? sandboxes[sourceName]
+      : { name: sourceName }
+
+    sandboxes[sandboxName] = {
+      ...sourceEntry,
+      name: sandboxName,
+      createdAt: new Date().toISOString(),
+      nimContainer: null,
+      policies: [],
+      imageTag: null,
+    }
+
+    const next = {
+      ...current,
+      sandboxes,
+      defaultSandbox: current.defaultSandbox || sandboxName,
+    }
+    mkdirSync(path.dirname(NEMOCLAW_REGISTRY_FILE), { recursive: true })
+    const tempPath = `${NEMOCLAW_REGISTRY_FILE}.tmp.${process.pid}.${Date.now()}`
+    writeFileSync(tempPath, `${JSON.stringify(next, null, 2)}\n`, { mode: 0o600 })
+    renameSync(tempPath, NEMOCLAW_REGISTRY_FILE)
+    return {
+      ok: true as const,
+      registryFile: NEMOCLAW_REGISTRY_FILE,
+      note: "Registered the image-redeployed sandbox in the local NemoClaw registry without assigning a host Docker image tag.",
+    }
+  } catch (error) {
+    return {
+      ok: false as const,
+      registryFile: NEMOCLAW_REGISTRY_FILE,
+      error: error instanceof Error ? error.message : "Failed to update the local NemoClaw registry",
+    }
+  }
 }
 
 async function verifySandboxCreation(sandboxName: string): Promise<SandboxVerification> {
@@ -285,6 +469,131 @@ async function runCreateCommandBounded(file: string, args: string[], env: NodeJS
   })
 }
 
+async function runCreateCommandUntilReady(file: string, args: string[], env: NodeJS.ProcessEnv, sandboxName: string, timeoutMs: number, intervalMs: number) {
+  const startedAt = Date.now()
+  console.log(`[sandbox/create] ready-command:start file=${file} args=${JSON.stringify(args)} timeoutMs=${timeoutMs}`)
+
+  return await new Promise<{
+    completed: boolean
+    timedOut: boolean
+    forcedReady: boolean
+    exitCode: number | null
+    signal: NodeJS.Signals | null
+    stdout: string
+    stderr: string
+    error?: string
+  }>((resolve) => {
+    const child = spawn(file, args, {
+      env,
+      stdio: ["ignore", "pipe", "pipe"],
+    })
+
+    let stdout = ""
+    let stderr = ""
+    let settled = false
+    let checkingReady = false
+
+    const finish = (result: {
+      completed: boolean
+      timedOut: boolean
+      forcedReady: boolean
+      exitCode: number | null
+      signal: NodeJS.Signals | null
+      stdout: string
+      stderr: string
+      error?: string
+    }) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      clearInterval(readinessTimer)
+      resolve(result)
+    }
+
+    child.stdout?.on("data", (chunk) => {
+      stdout += String(chunk)
+    })
+
+    child.stderr?.on("data", (chunk) => {
+      stderr += String(chunk)
+    })
+
+    child.on("error", (error) => {
+      const message = error instanceof Error ? error.message : String(error ?? "Command failed")
+      console.log(`[sandbox/create] ready-command:error file=${file} elapsedMs=${elapsedMs(startedAt)} message=${message}`)
+      finish({
+        completed: false,
+        timedOut: false,
+        forcedReady: false,
+        exitCode: null,
+        signal: null,
+        stdout: stdout.trim(),
+        stderr: stderr.trim(),
+        error: message,
+      })
+    })
+
+    child.on("close", (code, signal) => {
+      console.log(`[sandbox/create] ready-command:close file=${file} elapsedMs=${elapsedMs(startedAt)} code=${code} signal=${signal} stdoutBytes=${stdout.length} stderrBytes=${stderr.length}`)
+      finish({
+        completed: true,
+        timedOut: false,
+        forcedReady: false,
+        exitCode: code,
+        signal,
+        stdout: stdout.trim(),
+        stderr: stderr.trim(),
+        ...(code === 0 ? {} : { error: `Command exited with code ${code}${signal ? ` signal ${signal}` : ""}` }),
+      })
+    })
+
+    const readinessTimer = setInterval(() => {
+      if (settled || checkingReady) return
+      checkingReady = true
+      verifySandboxCreation(sandboxName)
+        .then((verification) => {
+          if (!settled && verification.verified) {
+            console.log(`[sandbox/create] ready-command:ready sandbox=${sandboxName} elapsedMs=${elapsedMs(startedAt)} sending=SIGTERM`)
+            child.kill("SIGTERM")
+            finish({
+              completed: false,
+              timedOut: false,
+              forcedReady: true,
+              exitCode: null,
+              signal: "SIGTERM",
+              stdout: stdout.trim(),
+              stderr: stderr.trim(),
+            })
+          }
+        })
+        .finally(() => {
+          checkingReady = false
+        })
+    }, intervalMs)
+
+    const timer = setTimeout(() => {
+      console.log(`[sandbox/create] ready-command:timeout file=${file} elapsedMs=${elapsedMs(startedAt)} sending=SIGTERM`)
+      child.kill("SIGTERM")
+      setTimeout(() => {
+        if (!settled) {
+          console.log(`[sandbox/create] ready-command:timeout-escalate file=${file} elapsedMs=${elapsedMs(startedAt)} sending=SIGKILL`)
+          child.kill("SIGKILL")
+        }
+      }, 2000)
+      finish({
+        completed: false,
+        timedOut: true,
+        forcedReady: false,
+        exitCode: null,
+        signal: "SIGTERM",
+        stdout: stdout.trim(),
+        stderr: stderr.trim(),
+        error: `Command exceeded timeout of ${timeoutMs}ms`,
+      })
+    }, timeoutMs)
+  })
+}
+
 async function approveOpenClawDeviceRequests(sandboxName: string) {
   const result = await runCreateCommandBounded(OPENSHELL_BIN, [
     "sandbox",
@@ -295,14 +604,9 @@ async function approveOpenClawDeviceRequests(sandboxName: string) {
     "sh",
     "-lc",
     "openclaw devices approve --latest --json --timeout 10000",
-  ], {
-    ...process.env,
-    PATH: HOST_PATH,
+  ], hostCommandEnv({
     OPENSHELL_GATEWAY: process.env.OPENSHELL_GATEWAY || "nemoclaw",
-    NO_COLOR: "1",
-    CLICOLOR: "0",
-    CLICOLOR_FORCE: "0",
-  }, 15000)
+  }), 15000)
 
   const combinedOutput = `${result.stdout}\n${result.stderr}`.trim()
   const noPending = NO_PENDING_DEVICE_REQUESTS.test(combinedOutput)
@@ -359,7 +663,7 @@ export async function GET() {
     blueprints: [
       {
         id: "nemoclaw-blueprint",
-        label: "New NemoClaw Sandbox",
+        label: "Fresh NemoClaw Image",
         description: "Bootstraps a full NemoClaw sandbox using the nemoclaw-blueprint workflow.",
         type: "blueprint",
         source: "~/NemoClaw/nemoclaw-blueprint/blueprint.yaml",
@@ -371,6 +675,14 @@ export async function GET() {
         description: "Create a generic OpenShell sandbox with a custom policy path.",
         type: "custom",
         source: "dashboard-custom",
+        supportsTailscale: false,
+      },
+      {
+        id: "redeploy-image",
+        label: "Quick Deploy New NemoClaw Sandbox",
+        description: "Create a default NemoClaw sandbox from the latest available running image without rebuilding it.",
+        type: "image",
+        source: "default-running-image",
         supportsTailscale: false,
       },
     ],
@@ -395,15 +707,13 @@ export async function POST(request: Request) {
 
     if (blueprint === "nemoclaw-blueprint") {
       const createCommand = buildNemoClawCreateCommand()
-      const env: NodeJS.ProcessEnv = {
-        ...process.env,
-        PATH: HOST_PATH,
+      const env: NodeJS.ProcessEnv = hostCommandEnv({
         NEMOCLAW_SANDBOX_NAME: sandboxName,
         NEMOCLAW_NON_INTERACTIVE: "1",
         NEMOCLAW_RECREATE_SANDBOX: "1",
         NEMOCLAW_ACCEPT_THIRD_PARTY_SOFTWARE: "1",
         OPENSHELL_GATEWAY: process.env.OPENSHELL_GATEWAY || "nemoclaw",
-      }
+      })
 
       if (!enableTailscale) {
         env.NVIDIA_API_KEY = env.NVIDIA_API_KEY || "optional-local-mode"
@@ -482,13 +792,12 @@ export async function POST(request: Request) {
     }
 
     if (blueprint === "custom-sandbox") {
-      const env: NodeJS.ProcessEnv = {
-        ...process.env,
-        PATH: HOST_PATH,
+      const env: NodeJS.ProcessEnv = hostCommandEnv({
+        OPENSHELL_GATEWAY: process.env.OPENSHELL_GATEWAY || "nemoclaw",
         NO_COLOR: "1",
         CLICOLOR: "0",
         CLICOLOR_FORCE: "0",
-      }
+      })
       const createAttempt = await runCreateCommandBounded(OPENSHELL_BIN, ["sandbox", "create", "--name", sandboxName], env, 15000)
 
       if (createAttempt.completed && createAttempt.exitCode !== 0) {
@@ -556,6 +865,97 @@ export async function POST(request: Request) {
             )
           : "Create command started, but the sandbox never reached a ready verification state afterward.",
       }, { status: created ? 200 : 502 })
+    }
+
+    if (blueprint === "redeploy-image") {
+      const sourceSandboxName = typeof body?.sourceSandboxName === "string" ? body.sourceSandboxName.trim() : ""
+      const source = await resolveSourcePodImage(sourceSandboxName, sandboxName)
+      const sourceImage = source.image
+      const basePolicyPath = resolveNemoClawBasePolicyPath()
+      const env: NodeJS.ProcessEnv = hostCommandEnv({
+        OPENSHELL_GATEWAY: process.env.OPENSHELL_GATEWAY || "nemoclaw",
+      })
+
+      const createAttempt = await runCreateCommandUntilReady(OPENSHELL_BIN, [
+        "sandbox",
+        "create",
+        "--name",
+        sandboxName,
+        "--from",
+        sourceImage,
+        "--policy",
+        basePolicyPath,
+        "--auto-providers",
+        "--",
+        "nemoclaw-start",
+      ], env, sandboxName, 120000, 2000)
+
+      const readiness = await waitForSandboxReady(sandboxName, 90000, 2000)
+      const verification = readiness.verification ?? {
+        verified: false,
+        summary: "Sandbox readiness polling produced no verification result.",
+        error: "Sandbox readiness polling produced no verification result.",
+      }
+      const created = readiness.verified
+      const registry = created ? registerNemoClawImageRedeploy(source.name, sandboxName) : null
+      const execApprovalsRepair = created ? await repairOpenClawExecApprovalsFile(sandboxName).catch((error) => ({
+        sandboxName,
+        path: "/sandbox/.openclaw/exec-approvals.json",
+        error: error instanceof Error ? error.message : "Failed to repair OpenClaw exec approvals file",
+      })) : null
+      const deviceApproval = created ? await approveOpenClawDeviceRequests(sandboxName) : null
+      console.log(
+        `[sandbox/create] request:complete sandbox=${sandboxName} created=${created} mode=redeploy-image createTimedOut=${createAttempt.timedOut} readinessAttempts=${readiness.attempts} deviceApproval=${deviceApproval?.approved ?? false} elapsedMs=${elapsedMs(requestStartedAt)}`,
+      )
+
+      const createFailed = createAttempt.completed && createAttempt.exitCode !== 0 && !created
+      return NextResponse.json({
+        ok: created,
+        blueprint,
+        sandboxName,
+        sourceSandboxName: source.name,
+        sourceSandboxId: source.id,
+        sourceImage,
+        basePolicyPath,
+        created,
+        verified: verification.verified,
+        verification,
+        mode: "redeploy-image",
+        stdout: createAttempt.stdout,
+        stderr: createAttempt.stderr,
+        createCommand: {
+          completed: createAttempt.completed,
+          timedOut: createAttempt.timedOut,
+          forcedReady: createAttempt.forcedReady,
+          exitCode: createAttempt.exitCode,
+          signal: createAttempt.signal,
+          error: createAttempt.error,
+        },
+        readiness: {
+          attempts: readiness.attempts,
+          elapsedMs: readiness.elapsedMs,
+        },
+        registry,
+        execApprovalsRepair,
+        deviceApproval,
+        note: created
+          ? appendNote(
+              `Sandbox created by redeploying the running image from '${source.name}' instead of rebuilding it.`,
+              createAttempt.forcedReady
+                ? "The dashboard returned as soon as OpenShell reported the redeployed sandbox Ready."
+                : false,
+              createAttempt.timedOut
+                ? "The OpenShell create command stayed attached after the sandbox reached Ready, so the dashboard stopped waiting for the local command."
+                : false,
+              registry && !registry.ok ? `NemoClaw registry update failed: ${registry.error}` : false,
+              execApprovalsRepair && "note" in execApprovalsRepair ? execApprovalsRepair.note : false,
+              execApprovalsRepair && "error" in execApprovalsRepair ? `OpenClaw exec approvals repair failed: ${execApprovalsRepair.error}` : false,
+              deviceApproval?.note,
+            )
+          : createFailed
+            ? "Image redeploy command failed and the sandbox never reached a ready verification state afterward."
+            : "Image redeploy started, but the sandbox never reached a ready verification state afterward.",
+      }, { status: created ? 200 : createFailed ? 500 : 502 })
     }
 
     return NextResponse.json({ ok: false, error: `unknown blueprint: ${blueprint}` }, { status: 400 })

@@ -2,7 +2,7 @@ import { NextResponse } from "next/server"
 import { execFile } from "node:child_process"
 import { hostname, networkInterfaces } from "node:os"
 import { promisify } from "node:util"
-import { HOST_PATH, NEMOCLAW_BIN, NODE_BIN, OPENSHELL_BIN, hostCommandEnv } from "@/app/lib/hostCommands"
+import { NEMOCLAW_BIN, NODE_BIN, OPENSHELL_BIN, hostCommandEnv } from "@/app/lib/hostCommands"
 import { resolveRuntimeAuthority } from "@/app/lib/runtimeAuthority"
 
 const execFileAsync = promisify(execFile)
@@ -146,13 +146,9 @@ function buildNemoClawSummary(output: string | null, defaultSandboxNames: Set<st
 }
 
 async function execNemoclaw(args: string[]) {
-  const env = {
-    ...process.env,
-    PATH: HOST_PATH,
-    NO_COLOR: "1",
-    CLICOLOR: "0",
-    CLICOLOR_FORCE: "0",
-  }
+  const env = hostCommandEnv({
+    OPENSHELL_GATEWAY: process.env.OPENSHELL_GATEWAY || "nemoclaw",
+  })
 
   const command = /\.(?:c?m?js|ts)$/i.test(NEMOCLAW_BIN)
     ? execFileAsync(NODE_BIN, [NEMOCLAW_BIN, ...args], { env })

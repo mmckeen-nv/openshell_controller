@@ -8,6 +8,10 @@ const execFileAsync = promisify(execFile)
 const LOCAL_HOSTNAMES = new Set(["localhost", "127.0.0.1", "0.0.0.0", "host.docker.internal", "host.openshell.internal"])
 const FALLBACK_SANDBOX_PROXY_ORIGIN = "http://10.200.0.1:3128"
 
+function shouldUseProxyWrappedBrokerUrl() {
+  return /^(1|true|yes|on)$/i.test(process.env.OPENSHELL_CONTROL_MCP_BROKER_PROXY_URL || "")
+}
+
 async function discoverOpenShellDockerGateway() {
   const container = process.env.OPEN_SHELL_CONTAINER || "openshell-cluster-nemoclaw"
   const { stdout } = await execFileAsync("docker", ["inspect", container], {
@@ -67,10 +71,11 @@ export async function brokerBaseUrlForSandbox(
   }
 
   const hostBrokerUrl = `${publicOrigin.toString().replace(/\/+$/, "")}/api/mcp/broker`
+  if (!shouldUseProxyWrappedBrokerUrl()) return hostBrokerUrl
+
   const proxyOrigin = sandbox
     ? await discoverSandboxProxyOrigin(sandbox.id, sandbox.name).catch(() => null)
     : null
-
   if (proxyOrigin) return `${proxyOrigin}/${hostBrokerUrl}`
   if (LOCAL_HOSTNAMES.has(new URL(origin).hostname)) return `${FALLBACK_SANDBOX_PROXY_ORIGIN}/${hostBrokerUrl}`
   return hostBrokerUrl

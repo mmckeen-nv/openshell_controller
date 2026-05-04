@@ -75,12 +75,40 @@ function parseNetworkRules(output: string): SandboxNetworkRule[] {
     .filter((rule) => rule.chunkId)
 }
 
+function hostPortForUrl(parsed: URL) {
+  const port = parsed.port || (parsed.protocol === "https:" ? "443" : "80")
+  return `${parsed.hostname}:${port}`
+}
+
+function addEndpointCandidate(candidates: Set<string>, parsed: URL) {
+  const hostPort = hostPortForUrl(parsed)
+  candidates.add(hostPort)
+  if (parsed.hostname === "host.docker.internal") {
+    const port = parsed.port || (parsed.protocol === "https:" ? "443" : "80")
+    candidates.add(`0.0.0.0:${port}`)
+  }
+}
+
+function extractProxiedTargetUrl(brokerBaseUrl: string) {
+  try {
+    const parsed = new URL(brokerBaseUrl)
+    const rawPath = parsed.pathname.replace(/^\/+/, "")
+    const decodedPath = decodeURIComponent(rawPath)
+    if (!/^https?:\/\//i.test(decodedPath)) return null
+    return new URL(decodedPath)
+  } catch {
+    return null
+  }
+}
+
 function brokerEndpointCandidates(brokerBaseUrl: string) {
   const parsed = new URL(brokerBaseUrl)
-  const port = parsed.port || (parsed.protocol === "https:" ? "443" : "80")
-  const hostPort = `${parsed.hostname}:${port}`
-  const candidates = new Set([hostPort])
-  if (parsed.hostname === "host.docker.internal") candidates.add(`0.0.0.0:${port}`)
+  const candidates = new Set<string>()
+  addEndpointCandidate(candidates, parsed)
+
+  const proxiedTarget = extractProxiedTargetUrl(brokerBaseUrl)
+  if (proxiedTarget) addEndpointCandidate(candidates, proxiedTarget)
+
   return candidates
 }
 
@@ -153,13 +181,23 @@ async function probeBrokerEndpoint(sandboxName: string, brokerBaseUrl: string) {
   }
   const script = [
     "node",
+    "--input-type=module",
     "-e",
     `
-      fetch(${JSON.stringify(mcpUrl)}, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: ${JSON.stringify(JSON.stringify(payload))},
-      }).catch(() => {});
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 8000);
+      try {
+        await fetch(${JSON.stringify(mcpUrl)}, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: ${JSON.stringify(JSON.stringify(payload))},
+          signal: controller.signal,
+        });
+      } catch {
+        // The probe only exists to let OpenShell create a policy chunk.
+      } finally {
+        clearTimeout(timeout);
+      }
     `,
   ]
   await runOpenShell(["sandbox", "exec", "-n", sandboxName, "--", ...script], 15000).catch(() => null)
