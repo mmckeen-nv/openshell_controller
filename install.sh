@@ -368,7 +368,6 @@ else
 fi
 
 check_port 3000 "dashboard HTTP"
-check_port 3001 "OpenClaw dashboard websocket sidecar"
 check_port 3011 "operator terminal upstream"
 
 if docker ps --format '{{.Names}}' | grep -Eq '^openshell-cluster-'; then
@@ -398,6 +397,7 @@ if [[ ! -f "$ENV_FILE" ]]; then
   log "Creating $ENV_FILE"
   cat > "$ENV_FILE" <<EOF
 # OpenShell Control local configuration
+PORT=3000
 NEXT_PUBLIC_DASHBOARD_PORT=3000
 NEXT_PUBLIC_API_BASE=/api
 NEXT_PUBLIC_ENABLE_SANDBOX_OPERATIONS=true
@@ -407,11 +407,16 @@ OPENSHELL_GATEWAY=nemoclaw
 # OPENSHELL_GATEWAY_HOST=host.docker.internal
 # OPENSHELL_GATEWAY_PORT=8080
 # OPENSHELL_GATEWAY_URL=http://host.docker.internal:8080
+# For reverse proxies, OpenClaw dashboard websockets use the same-origin proxy path by default.
+# OPENCLAW_DASHBOARD_BASE_WS_URL=wss://control.example.com
+# BASE_WS_URL=wss://control.example.com
+# OPENCLAW_DASHBOARD_WS_PROXY_PORT=3001
 EOF
 else
   log "Keeping existing $ENV_FILE"
 fi
 
+upsert_env "PORT" "3000"
 upsert_env "NEXT_PUBLIC_DASHBOARD_PORT" "3000"
 upsert_env "NEXT_PUBLIC_API_BASE" "/api"
 upsert_env "NEXT_PUBLIC_ENABLE_SANDBOX_OPERATIONS" "true"
@@ -461,8 +466,8 @@ echo "  http://localhost:3000"
 echo ""
 echo "Ports used by default:"
 echo "  3000  dashboard HTTP"
-echo "  3001  OpenClaw dashboard websocket sidecar"
 echo "  3011  operator terminal upstream"
+echo "Optional legacy OpenClaw dashboard websocket sidecar: set OPENCLAW_DASHBOARD_WS_PROXY_PORT."
 echo ""
 
 if [[ "$DO_START" -eq 1 ]]; then

@@ -13,13 +13,23 @@ assert.match(
 )
 assert.match(
   proxySource,
-  /const sidecarGatewayUrl = protocol \+ '\/\/' \+ sidecarHost \+ proxyPrefix/,
-  'dashboard bootstrap should know the dedicated websocket sidecar gateway scope'
+  /const baseWsUrl = process\.env\.OPENCLAW_DASHBOARD_BASE_WS_URL\?\.trim\(\) \|\| process\.env\.BASE_WS_URL\?\.trim\(\) \|\| ''/,
+  'dashboard bootstrap should accept a fully qualified websocket base URL override'
 )
 assert.match(
   proxySource,
-  /const gatewayUrl = \(hashParams\.get\('gatewayUrl'\) \|\| ''\)\.trim\(\) \|\| sidecarGatewayUrl/,
-  'dashboard bootstrap should honor the tokenized launch gateway URL'
+  /const portGatewayUrl = wsProxyPort \? protocol \+ '\/\/' \+ window\.location\.hostname \+ ':' \+ wsProxyPort \+ proxyPrefix : ''/,
+  'dashboard bootstrap should keep the dedicated websocket sidecar as an explicit opt-in scope'
+)
+assert.match(
+  proxySource,
+  /const defaultGatewayUrl = configuredGatewayUrl \|\| portGatewayUrl \|\| pageGatewayUrl/,
+  'dashboard bootstrap should prefer configured, explicit sidecar, then same-origin websocket gateways'
+)
+assert.match(
+  proxySource,
+  /const gatewayUrl = normalizeGatewayUrl\(hashParams\.get\('gatewayUrl'\)\) \|\| defaultGatewayUrl/,
+  'dashboard bootstrap should honor and normalize the tokenized launch gateway URL'
 )
 assert.match(
   proxySource,
@@ -28,8 +38,13 @@ assert.match(
 )
 assert.match(
   proxySource,
-  /const gatewayScopes = uniqueScopes\(\[gatewayUrl, sidecarGatewayUrl, pageGatewayUrl\]\)/,
-  'dashboard bootstrap should seed token scopes for launch, sidecar, and page gateways'
+  /const gatewayScopes = uniqueScopes\(\[gatewayUrl, configuredGatewayUrl, portGatewayUrl, pageGatewayUrl\]\)/,
+  'dashboard bootstrap should seed token scopes for launch, configured, sidecar, and page gateways'
+)
+assert.doesNotMatch(
+  proxySource,
+  /\|\| '3001'/,
+  'dashboard bootstrap must not hardcode the dedicated websocket sidecar port'
 )
 assert.match(
   proxySource,

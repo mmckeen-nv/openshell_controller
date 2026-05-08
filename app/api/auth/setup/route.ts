@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server"
 import {
   createSessionCookieValue,
   getAuthSettings,
-  sessionCookieOptions,
+  sessionCookieOptionsForRequest,
   verifyPassword,
   verifyRecoveryToken,
   verifySessionCookieValue,
@@ -54,6 +54,6 @@ export async function POST(request: NextRequest) {
     recoveryToken: result.recoveryToken,
     note: "Password updated. Save the new recovery token from .env.local.",
   })
-  response.cookies.set(settings.cookieName, await createSessionCookieValue(), sessionCookieOptions)
+  response.cookies.set(settings.cookieName, await createSessionCookieValue(), sessionCookieOptionsForRequest(request))
   return response
 }

@@ -40,6 +40,9 @@ const providerTypeOptions = [
   { value: "generic", label: "Generic" },
 ]
 
+const OLLAMA_PROVIDER_NAME = "ollama-local"
+const OLLAMA_BASE_URL = "http://host.docker.internal:11434/v1"
+
 function emptyRoute(): InferenceRoute {
   return { configured: false, provider: null, model: null, version: null, timeout: null }
 }
@@ -111,7 +114,7 @@ export default function InferenceEndpointPanel() {
       }
       const models = Array.isArray(data.models) ? data.models : []
       setOllamaModels(models)
-      setOllamaMessage(models.length > 0 ? `${models.length} Ollama model${models.length === 1 ? "" : "s"} available.` : "Ollama is reachable but has no models installed.")
+      setOllamaMessage(models.length > 0 ? `${models.length} Ollama model${models.length === 1 ? "" : "s"} available. Click one to load the Ollama endpoint preset.` : "Ollama is reachable but has no models installed.")
       if (models[0]?.name) setModel((current) => current || models[0].name)
     } catch (error) {
       setOllamaModels([])
@@ -122,11 +125,22 @@ export default function InferenceEndpointPanel() {
   }, [])
 
   useEffect(() => {
-    if (!isOllamaEndpoint) return
     loadOllamaModels({ silent: true })
     const interval = window.setInterval(() => loadOllamaModels({ silent: true }), 10000)
     return () => window.clearInterval(interval)
-  }, [isOllamaEndpoint, loadOllamaModels])
+  }, [loadOllamaModels])
+
+  function applyOllamaModelPreset(modelName: string) {
+    setName(OLLAMA_PROVIDER_NAME)
+    setType("openai")
+    setModel(modelName)
+    setBaseUrl(OLLAMA_BASE_URL)
+    setCredentialKey("OPENAI_API_KEY")
+    setApiKey("")
+    setRoute("gateway")
+    setNoVerify(true)
+    setMessage(`Ollama preset loaded for ${modelName}. Save to route sandbox inference through local Ollama.`)
+  }
 
   function selectProvider(provider: ProviderSummary) {
     if (!provider.name) return
@@ -134,7 +148,7 @@ export default function InferenceEndpointPanel() {
     setType(provider.type || "openai")
     setCredentialKey(provider.credentialKeys[0] || "OPENAI_API_KEY")
     if (provider.name.toLowerCase().includes("ollama")) {
-      setBaseUrl("http://host.docker.internal:11434/v1")
+      setBaseUrl(OLLAMA_BASE_URL)
       setApiKey("")
     }
     setMessage(`Loaded ${provider.name}. Enter a model and save to make it active.`)
@@ -252,6 +266,32 @@ export default function InferenceEndpointPanel() {
 
           <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_360px] gap-6">
             <section className="space-y-4">
+              <div className="rounded-sm border border-[var(--border-subtle)] bg-[var(--background-tertiary)] p-4">
+                <div className="flex items-center justify-between gap-4">
+                  <div>
+                    <h3 className="text-xs uppercase tracking-wider text-[var(--foreground)]">Ollama Models</h3>
+                    <p className="mt-1 text-xs text-[var(--foreground-dim)]">{ollamaMessage || "Polling local Ollama every 10 seconds."}</p>
+                  </div>
+                  <button type="button" onClick={() => loadOllamaModels()} disabled={ollamaLoading} className="px-3 py-2 rounded-sm bg-[var(--background)] text-[var(--foreground)] text-xs font-mono uppercase tracking-wider hover:bg-[var(--background-panel)] disabled:opacity-50">
+                    {ollamaLoading ? "Polling..." : "Poll"}
+                  </button>
+                </div>
+                {ollamaModels.length > 0 ? (
+                  <div className="mt-3 grid grid-cols-1 md:grid-cols-2 gap-2">
+                    {ollamaModels.map((item) => (
+                      <button key={item.name} type="button" onClick={() => applyOllamaModelPreset(item.name)} className={`rounded-sm border p-3 text-left ${isOllamaEndpoint && model === item.name ? "border-[var(--nvidia-green)] bg-[rgba(118,185,0,0.08)]" : "border-[var(--border-subtle)] bg-[var(--background)] hover:border-[var(--nvidia-green)]"}`}>
+                        <div className="text-xs font-mono text-[var(--foreground)]">{item.name}</div>
+                        <div className="mt-1 text-[11px] text-[var(--foreground-dim)]">
+                          {[item.parameterSize, item.quantization, item.sizeLabel].filter(Boolean).join(" · ") || item.family || "local model"}
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="mt-3 text-xs text-[var(--foreground-dim)]">No local Ollama models reported.</p>
+                )}
+              </div>
+
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div className="space-y-2">
                   <FieldLabel>Provider Name</FieldLabel>
@@ -302,32 +342,6 @@ export default function InferenceEndpointPanel() {
                 <input type="checkbox" checked={noVerify} onChange={(event) => setNoVerify(event.target.checked)} />
                 Skip provider verification while saving
               </label>
-
-              {isOllamaEndpoint && (
-                <div className="rounded-sm border border-[var(--border-subtle)] bg-[var(--background-tertiary)] p-4">
-                  <div className="flex items-center justify-between gap-4">
-                    <div>
-                      <h3 className="text-xs uppercase tracking-wider text-[var(--foreground)]">Ollama Models</h3>
-                      <p className="mt-1 text-xs text-[var(--foreground-dim)]">{ollamaMessage || "Polling local Ollama every 10 seconds."}</p>
-                    </div>
-                    <button type="button" onClick={() => loadOllamaModels()} disabled={ollamaLoading} className="px-3 py-2 rounded-sm bg-[var(--background)] text-[var(--foreground)] text-xs font-mono uppercase tracking-wider hover:bg-[var(--background-panel)] disabled:opacity-50">
-                      {ollamaLoading ? "Polling..." : "Poll"}
-                    </button>
-                  </div>
-                  {ollamaModels.length > 0 && (
-                    <div className="mt-3 grid grid-cols-1 md:grid-cols-2 gap-2">
-                      {ollamaModels.map((item) => (
-                        <button key={item.name} type="button" onClick={() => setModel(item.name)} className={`rounded-sm border p-3 text-left ${model === item.name ? "border-[var(--nvidia-green)] bg-[rgba(118,185,0,0.08)]" : "border-[var(--border-subtle)] bg-[var(--background)]"}`}>
-                          <div className="text-xs font-mono text-[var(--foreground)]">{item.name}</div>
-                          <div className="mt-1 text-[11px] text-[var(--foreground-dim)]">
-                            {[item.parameterSize, item.quantization, item.sizeLabel].filter(Boolean).join(" · ") || item.family || "local model"}
-                          </div>
-                        </button>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              )}
 
               <div className="flex items-center gap-3">
                 <button onClick={saveEndpoint} disabled={saving} className="px-4 py-2 rounded-sm bg-[var(--nvidia-green)] text-white text-xs font-mono uppercase tracking-wider disabled:opacity-50">
