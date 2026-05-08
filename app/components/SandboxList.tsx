@@ -5,6 +5,7 @@ import ConfigurationPanel from './ConfigurationPanel'
 import SandboxArchivePanel from './SandboxArchivePanel'
 import SandboxFilesPanel from './SandboxFilesPanel'
 import SandboxInferencePanel from './SandboxInferencePanel'
+import { buildOperatorTerminalRoute } from '../lib/dashboardSession'
 import type { NemoClawSummary, SandboxInventoryItem } from '../hooks/useSandboxInventory'
 
 interface TelemetryData {
@@ -25,6 +26,7 @@ interface SandboxListProps {
   onSandboxSelect: (id: string | null) => void
   isDestroyMode: boolean
   onInventoryRefresh: () => Promise<SandboxInventoryItem[]>
+  dashboardSessionId: string
 }
 
 type DrawerKey = 'operations' | 'files' | 'inference' | 'policy' | 'archive' | 'mcp'
@@ -55,6 +57,13 @@ type PermissionFeed = {
   rejectedCount?: number
 }
 
+type DismissedPermissionAlerts = Record<string, string[]>
+
+const DISMISSED_PERMISSION_ALERTS_STORAGE_KEY = 'openshell-control-dismissed-permission-alerts'
+const DISMISS_PERMISSION_VALUE = '__dismiss_permission_alerts__'
+const OPENCLAW_SANDBOX_LOGO = '/sandbox-logos/openclaw.svg'
+const HERMES_SANDBOX_LOGO = '/sandbox-logos/hermes.png'
+
 function renderDashboardTruthMessage(data: any) {
   if (data.reachable) return 'OpenClaw dashboard opened in a new tab.'
   return 'OpenClaw dashboard is not reachable from this host right now.'
@@ -66,6 +75,74 @@ function openDashboardUrl(url: string, openInNewTab: boolean) {
   } else {
     window.location.href = url
   }
+}
+
+function displaySandboxAgent(agent?: string) {
+  if (agent === 'hermes') return 'Hermes'
+  return 'OpenClaw'
+}
+
+function SandboxTypeLogo({ agent }: { agent?: string }) {
+  const isHermes = agent === 'hermes'
+  const label = isHermes ? 'Hermes sandbox' : 'OpenClaw sandbox'
+  const logoSrc = isHermes ? HERMES_SANDBOX_LOGO : OPENCLAW_SANDBOX_LOGO
+  return (
+    <span
+      aria-label={label}
+      title={label}
+      className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-md border shadow-inner ${
+        isHermes
+          ? 'border-sky-300/60 bg-sky-500/15'
+          : 'border-rose-300/60 bg-rose-500/15'
+      }`}
+    >
+      <span aria-hidden="true" className="h-6 w-6 bg-contain bg-center bg-no-repeat" style={{ backgroundImage: `url(${logoSrc})` }} />
+    </span>
+  )
+}
+
+function normalizeDismissedPermissionAlerts(value: unknown): DismissedPermissionAlerts {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {}
+  return Object.entries(value as Record<string, unknown>).reduce<DismissedPermissionAlerts>((normalized, [sandboxId, chunks]) => {
+    if (Array.isArray(chunks)) {
+      const ids = chunks.filter((chunk): chunk is string => typeof chunk === 'string' && chunk.length > 0)
+      if (ids.length > 0) normalized[sandboxId] = Array.from(new Set(ids))
+    }
+    return normalized
+  }, {})
+}
+
+function loadDismissedPermissionAlerts(): DismissedPermissionAlerts {
+  if (typeof window === 'undefined') return {}
+  try {
+    return normalizeDismissedPermissionAlerts(JSON.parse(window.localStorage.getItem(DISMISSED_PERMISSION_ALERTS_STORAGE_KEY) || '{}'))
+  } catch {
+    return {}
+  }
+}
+
+function saveDismissedPermissionAlerts(alerts: DismissedPermissionAlerts) {
+  if (typeof window === 'undefined') return
+  window.localStorage.setItem(DISMISSED_PERMISSION_ALERTS_STORAGE_KEY, JSON.stringify(alerts))
+}
+
+function dismissedPermissionSet(alerts: DismissedPermissionAlerts, sandbox: SandboxInventoryItem) {
+  return new Set([...(alerts[sandbox.id] || []), ...(alerts[sandbox.name] || [])])
+}
+
+function visiblePendingRequests(feed: PermissionFeed | undefined, sandbox: SandboxInventoryItem, alerts: DismissedPermissionAlerts) {
+  const dismissed = dismissedPermissionSet(alerts, sandbox)
+  return (feed?.pending || []).filter((request) => !request.chunkId || !dismissed.has(request.chunkId))
+}
+
+function permissionFeedNeedsAttention(feed: PermissionFeed | undefined, sandbox: SandboxInventoryItem, alerts: DismissedPermissionAlerts) {
+  const latestStatus = feed?.latest?.status || ''
+  const latestChunkId = feed?.latest?.chunkId || ''
+  const dismissed = dismissedPermissionSet(alerts, sandbox)
+  return Boolean(
+    visiblePendingRequests(feed, sandbox, alerts).length > 0 ||
+      (/pending|fail|error|unavailable/i.test(latestStatus) && (!latestChunkId || !dismissed.has(latestChunkId))),
+  )
 }
 
 function DrawerSection({
@@ -120,11 +197,13 @@ export default function SandboxList({
   onSandboxSelect,
   isDestroyMode,
   onInventoryRefresh,
+  dashboardSessionId,
 }: SandboxListProps) {
   const [dashboardMessage, setDashboardMessage] = useState<string>('')
   const [restartInProgress, setRestartInProgress] = useState(false)
   const [permissionMessage, setPermissionMessage] = useState('')
   const [permissionFeeds, setPermissionFeeds] = useState<Record<string, PermissionFeed>>({})
+  const [dismissedPermissionAlerts, setDismissedPermissionAlerts] = useState<DismissedPermissionAlerts>(() => loadDismissedPermissionAlerts())
   const [grantingSandboxId, setGrantingSandboxId] = useState<string | null>(null)
   const [mcpServers, setMcpServers] = useState<McpServerAccess[]>([])
   const [mcpMessage, setMcpMessage] = useState('')
@@ -244,6 +323,16 @@ export default function SandboxList({
   const allowedMcpServersForSandbox = (sandbox: SandboxInventoryItem) => (
     mcpServers.filter((server) => sandboxCanAccessMcpServer(sandbox, server))
   )
+  const selectedSandboxIsHermes = selectedSandbox?.agent === 'hermes'
+
+  const connectToHermes = (sandbox: SandboxInventoryItem) => {
+    const route = buildOperatorTerminalRoute({
+      sandboxId: sandbox.name,
+      dashboardSessionId,
+      launch: 'hermes',
+    })
+    window.open(route, '_blank', 'noopener,noreferrer')
+  }
 
   const updateMcpServerAccess = async (
     server: McpServerAccess,
@@ -313,6 +402,41 @@ export default function SandboxList({
     }, `${server.name} revoked from ${sandbox.name}.`).then(() => syncMcpManifest(sandbox))
   }
 
+  const dismissPermissionAlerts = (sandbox: SandboxInventoryItem, chunkId?: string) => {
+    const feed = permissionFeeds[sandbox.id]
+    const visibleIds = visiblePendingRequests(feed, sandbox, dismissedPermissionAlerts)
+      .map((request) => request.chunkId)
+      .filter(Boolean)
+    const idsToDismiss = chunkId ? [chunkId] : visibleIds
+
+    if (idsToDismiss.length === 0) {
+      setPermissionMessage(`No permission alerts to hide for ${sandbox.name}.`)
+      return
+    }
+
+    setDismissedPermissionAlerts((current) => {
+      const existing = new Set(current[sandbox.id] || [])
+      for (const id of idsToDismiss) existing.add(id)
+      const next = { ...current, [sandbox.id]: Array.from(existing) }
+      saveDismissedPermissionAlerts(next)
+      return next
+    })
+    setPermissionMessage(idsToDismiss.length === 1 ? `Permission alert hidden for ${sandbox.name}.` : `Permission alerts hidden for ${sandbox.name}.`)
+  }
+
+  const clearDismissedPermissionAlert = (sandbox: SandboxInventoryItem, chunkId: string) => {
+    setDismissedPermissionAlerts((current) => {
+      const existing = current[sandbox.id]
+      if (!existing?.includes(chunkId)) return current
+      const remaining = existing.filter((id) => id !== chunkId)
+      const next = { ...current }
+      if (remaining.length > 0) next[sandbox.id] = remaining
+      else delete next[sandbox.id]
+      saveDismissedPermissionAlerts(next)
+      return next
+    })
+  }
+
   const resolvePermissionRequest = async (sandbox: SandboxInventoryItem, action: 'approve' | 'reject', chunkId: string) => {
     if (!chunkId) return
     try {
@@ -328,6 +452,7 @@ export default function SandboxList({
       if (data.result?.feed) {
         setPermissionFeeds((current) => ({ ...current, [sandbox.id]: data.result.feed }))
       }
+      clearDismissedPermissionAlert(sandbox, chunkId)
       setPermissionMessage(data.note || `Network request ${action === 'approve' ? 'approved' : 'rejected'} for ${sandbox.name}.`)
     } catch (error) {
       setPermissionMessage(error instanceof Error ? error.message : 'Failed to resolve permission request')
@@ -384,11 +509,13 @@ export default function SandboxList({
                 >
                   <div className="mb-3 flex items-start justify-between gap-3">
                     <div className="flex items-center gap-2 min-w-0">
+                      <SandboxTypeLogo agent={sandbox.agent} />
                       {(() => {
                         const feed = permissionFeeds[sandbox.id]
-                        const needsAttention = Boolean((feed?.pendingCount || 0) > 0 || /pending|fail|error|unavailable/i.test(feed?.latest?.status || ''))
+                        const visiblePending = visiblePendingRequests(feed, sandbox, dismissedPermissionAlerts)
+                        const needsAttention = permissionFeedNeedsAttention(feed, sandbox, dismissedPermissionAlerts)
                         return needsAttention ? (
-                          <span className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-amber-400 text-black animate-pulse" title={`Network permission: ${feed?.pendingCount || 0} pending`}>
+                          <span className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-amber-400 text-black animate-pulse" title={`Network permission: ${visiblePending.length} pending`}>
                             <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                               <path strokeLinecap="square" strokeLinejoin="miter" strokeWidth={2} d="M12 8v5m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
                             </svg>
@@ -441,6 +568,7 @@ export default function SandboxList({
 
                   <div className="space-y-1.5">
                     {([
+                      ['Agent', displaySandboxAgent(sandbox.agent), '120px'],
                       ['Attach Target', sandbox.ip, '180px'],
                       ['Namespace', sandbox.namespace, '120px'],
                       ['Host Alias', sandbox.sshHostAlias || 'N/A', '140px'],
@@ -454,30 +582,43 @@ export default function SandboxList({
                   </div>
                 </button>
                 <div className="border-t border-[var(--border-subtle)] p-3">
-                  <select
-                    value=""
-                    disabled={grantingSandboxId === sandbox.id}
-                    onClick={(event) => event.stopPropagation()}
-                    onChange={(event) => {
-                      const value = event.target.value
-                      event.currentTarget.value = ''
-                      resolvePermissionRequest(sandbox, 'approve', value)
-                    }}
-                    className="field-control w-full px-3 py-2 font-mono text-xs uppercase tracking-wider"
-                  >
-                    <option value="">
-                      {grantingSandboxId === sandbox.id
-                        ? 'Granting...'
-                        : (permissionFeeds[sandbox.id]?.pendingCount || 0) > 0
-                          ? 'Grant Permission'
-                          : 'No Permission Requests'}
-                    </option>
-                    {(permissionFeeds[sandbox.id]?.pending || []).map((request) => (
-                      <option key={request.chunkId} value={request.chunkId}>
-                        {(request.endpoints[0] || request.rule || request.chunkId).slice(0, 46)}
-                      </option>
-                    ))}
-                  </select>
+                  {(() => {
+                    const feed = permissionFeeds[sandbox.id]
+                    const visiblePending = visiblePendingRequests(feed, sandbox, dismissedPermissionAlerts)
+                    return (
+                      <select
+                        value=""
+                        disabled={grantingSandboxId === sandbox.id}
+                        onClick={(event) => event.stopPropagation()}
+                        onChange={(event) => {
+                          const value = event.target.value
+                          event.currentTarget.value = ''
+                          if (value === DISMISS_PERMISSION_VALUE) {
+                            dismissPermissionAlerts(sandbox)
+                            return
+                          }
+                          resolvePermissionRequest(sandbox, 'approve', value)
+                        }}
+                        className="field-control w-full px-3 py-2 font-mono text-xs uppercase tracking-wider"
+                      >
+                        <option value="">
+                          {grantingSandboxId === sandbox.id
+                            ? 'Granting...'
+                            : visiblePending.length > 0
+                              ? 'Grant Permission'
+                              : 'No Permission Requests'}
+                        </option>
+                        {visiblePending.length > 0 ? (
+                          <option value={DISMISS_PERMISSION_VALUE}>Do Nothing</option>
+                        ) : null}
+                        {visiblePending.map((request) => (
+                          <option key={request.chunkId} value={request.chunkId}>
+                            {(request.endpoints[0] || request.rule || request.chunkId).slice(0, 46)}
+                          </option>
+                        ))}
+                      </select>
+                    )
+                  })()}
                 </div>
               </div>
             ))}
@@ -493,36 +634,45 @@ export default function SandboxList({
             <>
               <DrawerSection
                 title={`${selectedSandbox.name} - Operations`}
-                summary="Dashboard, terminal, restart, refresh, and live telemetry."
+                summary={selectedSandboxIsHermes ? "Terminal, restart, refresh, and live telemetry." : "Dashboard, terminal, restart, refresh, and live telemetry."}
                 open={openDrawers.operations}
                 onToggle={() => toggleDrawer('operations')}
               >
                 <div className="space-y-6">
                   <div className="flex flex-wrap items-center gap-3 max-sm:[&>button]:w-full">
-                    <button
-                      onClick={async () => {
-                        try {
-                          const searchParams = new URLSearchParams()
-                          searchParams.set('sandboxId', selectedSandbox.name)
-                          searchParams.set('inventoryCount', String(sandboxes.length))
-                          const res = await fetch(`/api/openshell/dashboard/open?${searchParams.toString()}`)
-                          const data = await res.json()
-                          setDashboardMessage(renderDashboardTruthMessage(data))
-                          if (data.reachable && data.launchUrl) {
-                            openDashboardUrl(data.launchUrl, data.openInNewTab)
-                          } else if (data.reachable && data.proxiedUrl) {
-                            openDashboardUrl(data.proxiedUrl, data.openInNewTab)
-                          } else if (data.reachable && data.dashboardUrl && !data.loopbackOnly) {
-                            openDashboardUrl(data.dashboardUrl, data.openInNewTab)
+                    {!selectedSandboxIsHermes ? (
+                      <button
+                        onClick={async () => {
+                          try {
+                            const searchParams = new URLSearchParams()
+                            searchParams.set('sandboxId', selectedSandbox.name)
+                            searchParams.set('inventoryCount', String(sandboxes.length))
+                            const res = await fetch(`/api/openshell/dashboard/open?${searchParams.toString()}`)
+                            const data = await res.json()
+                            setDashboardMessage(renderDashboardTruthMessage(data))
+                            if (data.reachable && data.launchUrl) {
+                              openDashboardUrl(data.launchUrl, data.openInNewTab)
+                            } else if (data.reachable && data.proxiedUrl) {
+                              openDashboardUrl(data.proxiedUrl, data.openInNewTab)
+                            } else if (data.reachable && data.dashboardUrl && !data.loopbackOnly) {
+                              openDashboardUrl(data.dashboardUrl, data.openInNewTab)
+                            }
+                          } catch (error) {
+                            setDashboardMessage('Failed to resolve OpenClaw Dashboard endpoint.')
                           }
-                        } catch (error) {
-                          setDashboardMessage('Failed to resolve OpenClaw Dashboard endpoint.')
-                        }
-                      }}
-                      className="action-button px-3 py-2"
-                    >
-                      Start OpenClaw Gateway Dashboard
-                    </button>
+                        }}
+                        className="action-button px-3 py-2"
+                      >
+                        Start OpenClaw Gateway Dashboard
+                      </button>
+                    ) : (
+                      <button
+                        onClick={() => connectToHermes(selectedSandbox)}
+                        className="action-button px-3 py-2"
+                      >
+                        Connect to Hermes
+                      </button>
+                    )}
                     <button
                       onClick={restartSandbox}
                       disabled={restartInProgress}
@@ -679,7 +829,7 @@ export default function SandboxList({
                 <div className="space-y-4">
                   {(() => {
                     const feed = permissionFeeds[selectedSandbox.id]
-                    const pending = feed?.pending || []
+                    const pending = visiblePendingRequests(feed, selectedSandbox, dismissedPermissionAlerts)
                     if (pending.length === 0) {
                       return (
                         <div className="rounded-sm border border-[var(--border-subtle)] bg-[var(--background-tertiary)] p-4 text-xs text-[var(--foreground-dim)]">
@@ -723,6 +873,14 @@ export default function SandboxList({
                               className="rounded-sm border border-[var(--border-subtle)] bg-[var(--background-tertiary)] px-3 py-2 text-xs font-mono uppercase tracking-wider text-[var(--foreground)] disabled:opacity-50"
                             >
                               Reject
+                            </button>
+                            <button
+                              type="button"
+                              disabled={grantingSandboxId === selectedSandbox.id}
+                              onClick={() => dismissPermissionAlerts(selectedSandbox, request.chunkId)}
+                              className="rounded-sm border border-[var(--border-subtle)] bg-[var(--background-tertiary)] px-3 py-2 text-xs font-mono uppercase tracking-wider text-[var(--foreground-dim)] disabled:opacity-50"
+                            >
+                              Do Nothing
                             </button>
                           </div>
                         </div>

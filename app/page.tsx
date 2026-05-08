@@ -341,6 +341,7 @@ export default function Dashboard() {
                     onSandboxSelect={handleSandboxSelect}
                     isDestroyMode={isDestroyMode}
                     onInventoryRefresh={refresh}
+                    dashboardSessionId={dashboardSession.dashboardSessionId}
                   />
                 )}
               </div>
@@ -429,6 +430,7 @@ export default function Dashboard() {
                     onSandboxSelect={handleSandboxSelect}
                     isDestroyMode={isDestroyMode}
                     onInventoryRefresh={refresh}
+                    dashboardSessionId={dashboardSession.dashboardSessionId}
                   />
                 )}
               </>

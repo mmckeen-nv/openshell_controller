@@ -66,6 +66,8 @@ type NemoClawCreateCommand = {
 }
 
 type CreateInferenceMode = "auto" | "vllm" | "nim"
+type CreateGpuMode = "none" | "auto" | "required"
+type NemoClawAgent = "openclaw" | "hermes"
 
 type CreateInferenceSettings = {
   mode: CreateInferenceMode
@@ -77,6 +79,13 @@ type CreateInferenceSettings = {
 type NemoClawRegistryData = {
   sandboxes?: Record<string, { name?: string; createdAt?: string }>
   defaultSandbox?: string | null
+}
+
+function parseCreateGpuMode(body: any): CreateGpuMode {
+  const raw = typeof body?.gpuMode === "string"
+    ? body.gpuMode
+    : process.env.OPENSHELL_CONTROL_CREATE_GPU_MODE || "none"
+  return raw === "auto" || raw === "required" ? raw : "none"
 }
 
 function parseCreateInferenceSettings(body: any): CreateInferenceSettings {
@@ -124,12 +133,44 @@ function applyCreateInferenceEnv(env: NodeJS.ProcessEnv, settings: CreateInferen
   return settings
 }
 
-function buildNemoClawCreateCommand(): NemoClawCreateCommand {
+function nemoClawGpuArgs(mode: CreateGpuMode) {
+  if (mode === "required") return ["--gpu"]
+  if (mode === "none") return ["--no-gpu"]
+  return []
+}
+
+function nemoClawAgentArgs(agent: NemoClawAgent) {
+  return agent === "hermes" ? ["--agent", "hermes"] : []
+}
+
+function isNemoClawOnboardBlueprint(blueprint: string) {
+  return blueprint === "nemoclaw-blueprint" || blueprint === "nemoclaw-hermes"
+}
+
+function nemoClawAgentForBlueprint(blueprint: string): NemoClawAgent {
+  return blueprint === "nemoclaw-hermes" ? "hermes" : "openclaw"
+}
+
+function openShellGpuArgs(mode: CreateGpuMode) {
+  return mode === "required" ? ["--gpu"] : []
+}
+
+function buildNemoClawCreateCommand(gpuMode: CreateGpuMode, agent: NemoClawAgent): NemoClawCreateCommand {
   if (NEMOCLAW_BIN && commandExists(NEMOCLAW_BIN)) {
-    const args = ["onboard", "--non-interactive", "--recreate-sandbox", "--yes-i-accept-third-party-software"]
+    const args = [
+      "onboard",
+      "--non-interactive",
+      "--recreate-sandbox",
+      "--yes-i-accept-third-party-software",
+      ...nemoClawAgentArgs(agent),
+      ...nemoClawGpuArgs(gpuMode),
+    ]
     return /\.(?:c?m?js|ts)$/i.test(NEMOCLAW_BIN)
       ? { file: NODE_BIN, args: [NEMOCLAW_BIN, ...args], mode: "cli-onboard" }
       : { file: NEMOCLAW_BIN, args, mode: "cli-onboard" }
+  }
+  if (agent === "hermes") {
+    throw new Error("Hermes sandbox creation requires the current NemoClaw CLI with --agent hermes support. Set NEMOCLAW_BIN in .env.local.")
   }
   if (NEMOCLAW_SETUP && commandExists(NEMOCLAW_SETUP)) {
     return { file: "/bin/bash", args: [NEMOCLAW_SETUP], mode: "legacy-setup" }
@@ -670,6 +711,14 @@ export async function GET() {
         supportsTailscale: true,
       },
       {
+        id: "nemoclaw-hermes",
+        label: "Fresh Hermes Sandbox",
+        description: "Bootstraps a Hermes Agent sandbox using NemoClaw's Hermes workflow.",
+        type: "blueprint",
+        source: "~/NemoClaw/agents/hermes/Dockerfile",
+        supportsTailscale: false,
+      },
+      {
         id: "custom-sandbox",
         label: "New Custom Sandbox",
         description: "Create a generic OpenShell sandbox with a custom policy path.",
@@ -698,17 +747,21 @@ export async function POST(request: Request) {
     const sandboxName = validateSandboxName(typeof body?.sandboxName === "string" ? body.sandboxName.trim() : "")
     const policy = body?.policy && typeof body.policy === "object" ? body.policy : null
     const enableTailscale = Boolean(body?.enableTailscale)
+    const gpuMode = parseCreateGpuMode(body)
     const createInference = parseCreateInferenceSettings(body)
-    console.log(`[sandbox/create] request:parsed sandbox=${sandboxName} blueprint=${blueprint} enableTailscale=${enableTailscale} inferenceMode=${createInference.mode} elapsedMs=${elapsedMs(requestStartedAt)}`)
+    console.log(`[sandbox/create] request:parsed sandbox=${sandboxName} blueprint=${blueprint} enableTailscale=${enableTailscale} gpuMode=${gpuMode} inferenceMode=${createInference.mode} elapsedMs=${elapsedMs(requestStartedAt)}`)
 
     if (!blueprint) {
       return NextResponse.json({ ok: false, error: "blueprint is required" }, { status: 400 })
     }
 
-    if (blueprint === "nemoclaw-blueprint") {
-      const createCommand = buildNemoClawCreateCommand()
+    if (isNemoClawOnboardBlueprint(blueprint)) {
+      const agent = nemoClawAgentForBlueprint(blueprint)
+      const isOpenClawAgent = agent === "openclaw"
+      const createCommand = buildNemoClawCreateCommand(gpuMode, agent)
       const env: NodeJS.ProcessEnv = hostCommandEnv({
         NEMOCLAW_SANDBOX_NAME: sandboxName,
+        NEMOCLAW_AGENT: agent,
         NEMOCLAW_NON_INTERACTIVE: "1",
         NEMOCLAW_RECREATE_SANDBOX: "1",
         NEMOCLAW_ACCEPT_THIRD_PARTY_SOFTWARE: "1",
@@ -735,8 +788,10 @@ export async function POST(request: Request) {
           stdout: result.stdout,
           stderr: result.stderr,
           blueprint,
+          agent,
           sandboxName,
           enableTailscale,
+          gpuMode,
           createInference,
         }, { status: 500 })
       }
@@ -748,25 +803,27 @@ export async function POST(request: Request) {
         error: "Sandbox readiness polling produced no verification result.",
       }
       const created = readiness.verified
-      const execApprovalsRepair = created ? await repairOpenClawExecApprovalsFile(sandboxName).catch((error) => ({
+      const execApprovalsRepair = created && isOpenClawAgent ? await repairOpenClawExecApprovalsFile(sandboxName).catch((error) => ({
         sandboxName,
         path: "/sandbox/.openclaw/exec-approvals.json",
         error: error instanceof Error ? error.message : "Failed to repair OpenClaw exec approvals file",
       })) : null
-      const deviceApproval = created ? await approveOpenClawDeviceRequests(sandboxName) : null
+      const deviceApproval = created && isOpenClawAgent ? await approveOpenClawDeviceRequests(sandboxName) : null
       console.log(
-        `[sandbox/create] request:complete sandbox=${sandboxName} created=${created} readinessAttempts=${readiness.attempts} deviceApproval=${deviceApproval?.approved ?? false} elapsedMs=${elapsedMs(requestStartedAt)}`,
+        `[sandbox/create] request:complete sandbox=${sandboxName} created=${created} agent=${agent} readinessAttempts=${readiness.attempts} deviceApproval=${deviceApproval?.approved ?? false} elapsedMs=${elapsedMs(requestStartedAt)}`,
       )
 
       return NextResponse.json({
         ok: created,
         blueprint,
+        agent,
         sandboxName,
         created,
         verified: verification.verified,
         verification,
-        mode: "nemoclaw-blueprint",
+        mode: blueprint,
         enableTailscale,
+        gpuMode,
         createInference,
         createCommand,
         hostPath: HOST_PATH,
@@ -780,9 +837,16 @@ export async function POST(request: Request) {
         stderr: result.stderr,
         note: created
           ? appendNote(
-              enableTailscale
-                ? "NemoClaw blueprint workflow completed with Tailscale-enabled prerequisites. Existing healthy OpenShell gateways are reused before any new gateway start is attempted."
-                : "NemoClaw blueprint workflow completed in local/default mode. Existing healthy OpenShell gateways are reused before any new gateway start is attempted.",
+              agent === "hermes"
+                ? "NemoClaw Hermes workflow completed. Hermes exposes an API endpoint from the sandbox rather than an OpenClaw browser dashboard."
+                : enableTailscale
+                  ? "NemoClaw blueprint workflow completed with Tailscale-enabled prerequisites. Existing healthy OpenShell gateways are reused before any new gateway start is attempted."
+                  : "NemoClaw blueprint workflow completed in local/default mode. Existing healthy OpenShell gateways are reused before any new gateway start is attempted.",
+              gpuMode === "none"
+                ? "GPU passthrough was disabled for this create run."
+                : gpuMode === "required"
+                  ? "GPU passthrough was required for this create run."
+                  : "NemoClaw chose GPU passthrough automatically for this create run.",
               execApprovalsRepair && "note" in execApprovalsRepair ? execApprovalsRepair.note : false,
               execApprovalsRepair && "error" in execApprovalsRepair ? `OpenClaw exec approvals repair failed: ${execApprovalsRepair.error}` : false,
               deviceApproval?.note,
@@ -798,7 +862,7 @@ export async function POST(request: Request) {
         CLICOLOR: "0",
         CLICOLOR_FORCE: "0",
       })
-      const createAttempt = await runCreateCommandBounded(OPENSHELL_BIN, ["sandbox", "create", "--name", sandboxName], env, 15000)
+      const createAttempt = await runCreateCommandBounded(OPENSHELL_BIN, ["sandbox", "create", "--name", sandboxName, ...openShellGpuArgs(gpuMode)], env, 15000)
 
       if (createAttempt.completed && createAttempt.exitCode !== 0) {
         return NextResponse.json({
@@ -808,6 +872,7 @@ export async function POST(request: Request) {
           stderr: createAttempt.stderr,
           blueprint,
           sandboxName,
+          gpuMode,
         }, { status: 500 })
       }
 
@@ -836,6 +901,7 @@ export async function POST(request: Request) {
         verified: verification.verified,
         verification,
         mode: "custom-sandbox",
+        gpuMode,
         stdout: createAttempt.stdout,
         stderr: createAttempt.stderr,
         createCommand: {
@@ -859,6 +925,9 @@ export async function POST(request: Request) {
                 : (policyPrepared
                     ? "Custom sandbox created. Policy draft is prepared, but applying it live should be a follow-up action."
                     : "Custom sandbox created."),
+              gpuMode === "required"
+                ? "GPU passthrough was requested for this create run."
+                : false,
               execApprovalsRepair && "note" in execApprovalsRepair ? execApprovalsRepair.note : false,
               execApprovalsRepair && "error" in execApprovalsRepair ? `OpenClaw exec approvals repair failed: ${execApprovalsRepair.error}` : false,
               deviceApproval?.note,
@@ -881,6 +950,7 @@ export async function POST(request: Request) {
         "create",
         "--name",
         sandboxName,
+        ...openShellGpuArgs(gpuMode),
         "--from",
         sourceImage,
         "--policy",
@@ -921,6 +991,7 @@ export async function POST(request: Request) {
         verified: verification.verified,
         verification,
         mode: "redeploy-image",
+        gpuMode,
         stdout: createAttempt.stdout,
         stderr: createAttempt.stderr,
         createCommand: {
@@ -941,6 +1012,9 @@ export async function POST(request: Request) {
         note: created
           ? appendNote(
               `Sandbox created by redeploying the running image from '${source.name}' instead of rebuilding it.`,
+              gpuMode === "required"
+                ? "GPU passthrough was requested for this create run."
+                : false,
               createAttempt.forcedReady
                 ? "The dashboard returned as soon as OpenShell reported the redeployed sandbox Ready."
                 : false,

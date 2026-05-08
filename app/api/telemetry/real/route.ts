@@ -1,11 +1,14 @@
 import { NextResponse } from "next/server"
 import { execFile } from "node:child_process"
+import { existsSync, readFileSync } from "node:fs"
 import { hostname, networkInterfaces } from "node:os"
+import path from "node:path"
 import { promisify } from "node:util"
 import { NEMOCLAW_BIN, NODE_BIN, OPENSHELL_BIN, hostCommandEnv } from "@/app/lib/hostCommands"
 import { resolveRuntimeAuthority } from "@/app/lib/runtimeAuthority"
 
 const execFileAsync = promisify(execFile)
+const NEMOCLAW_REGISTRY_FILE = path.join(process.env.HOME || "/tmp", ".nemoclaw", "sandboxes.json")
 
 type SandboxSummary = {
   id: string
@@ -16,6 +19,7 @@ type SandboxSummary = {
   hasSshConfig: boolean
   source: "openshell"
   isDefault: boolean
+  agent: string
 }
 
 type NemoClawSummary = {
@@ -24,6 +28,10 @@ type NemoClawSummary = {
   serviceLines: string[]
   summaryLines: string[]
   source: "nemoclaw-cli" | "none"
+}
+
+type NemoClawRegistryData = {
+  sandboxes?: Record<string, { name?: string; agent?: string | null }>
 }
 
 type SandboxItem = {
@@ -145,6 +153,24 @@ function buildNemoClawSummary(output: string | null, defaultSandboxNames: Set<st
   }
 }
 
+function readNemoClawRegistry(): NemoClawRegistryData {
+  try {
+    return existsSync(NEMOCLAW_REGISTRY_FILE)
+      ? JSON.parse(readFileSync(NEMOCLAW_REGISTRY_FILE, "utf8"))
+      : {}
+  } catch {
+    return {}
+  }
+}
+
+function resolveSandboxAgent(name: string, id: string | null, registry: NemoClawRegistryData) {
+  const entries = registry.sandboxes ?? {}
+  const directEntry = entries[name] || (id ? entries[id] : undefined)
+  const namedEntry = Object.values(entries).find((entry) => entry?.name === name || Boolean(id && entry?.name === id))
+  const agent = directEntry?.agent || namedEntry?.agent
+  return typeof agent === "string" && agent.trim() ? agent.trim() : "openclaw"
+}
+
 async function execNemoclaw(args: string[]) {
   const env = hostCommandEnv({
     OPENSHELL_GATEWAY: process.env.OPENSHELL_GATEWAY || "nemoclaw",
@@ -189,7 +215,7 @@ function readHostIdentity() {
   return { hostname: hostname(), address: "127.0.0.1", interface: "lo0" }
 }
 
-async function readSandbox(name: string, defaultSandboxNames: Set<string>): Promise<{ summary: SandboxSummary; pod: SandboxItem }> {
+async function readSandbox(name: string, defaultSandboxNames: Set<string>, registry: NemoClawRegistryData): Promise<{ summary: SandboxSummary; pod: SandboxItem }> {
   try {
     const [{ stdout: detailsStdout }, { stdout: sshStdout }] = await Promise.all([
       execOpenShell(["sandbox", "get", name]),
@@ -203,6 +229,7 @@ async function readSandbox(name: string, defaultSandboxNames: Set<string>): Prom
     const sshConfig = sshStdout.trim()
     const sshHostAlias = parseSshHostAlias(sshConfig, sandboxName)
     const isDefault = defaultSandboxNames.has(sandboxName)
+    const agent = resolveSandboxAgent(sandboxName, sandboxId, registry)
 
     return {
       summary: {
@@ -214,6 +241,7 @@ async function readSandbox(name: string, defaultSandboxNames: Set<string>): Prom
         hasSshConfig: Boolean(sshConfig),
         source: "openshell",
         isDefault,
+        agent,
       },
       pod: {
         metadata: {
@@ -223,6 +251,7 @@ async function readSandbox(name: string, defaultSandboxNames: Set<string>): Prom
             "nemoclaw.ai/sandbox-name": sandboxName,
             ...(sandboxId ? { "nemoclaw.ai/sandbox-id": sandboxId } : {}),
             ...(isDefault ? { "nemoclaw.ai/default": "true" } : {}),
+            "nemoclaw.ai/agent": agent,
           },
         },
         spec: {
@@ -245,6 +274,7 @@ async function readSandbox(name: string, defaultSandboxNames: Set<string>): Prom
   } catch (error) {
     const sandboxName = name
     const isDefault = defaultSandboxNames.has(sandboxName)
+    const agent = resolveSandboxAgent(sandboxName, sandboxName, registry)
     return {
       summary: {
         id: sandboxName,
@@ -255,6 +285,7 @@ async function readSandbox(name: string, defaultSandboxNames: Set<string>): Prom
         hasSshConfig: false,
         source: "openshell",
         isDefault,
+        agent,
       },
       pod: {
         metadata: {
@@ -264,6 +295,7 @@ async function readSandbox(name: string, defaultSandboxNames: Set<string>): Prom
             "nemoclaw.ai/sandbox-name": sandboxName,
             "nemoclaw.ai/sandbox-id": sandboxName,
             ...(isDefault ? { "nemoclaw.ai/default": "true" } : {}),
+            "nemoclaw.ai/agent": agent,
           },
         },
         spec: {
@@ -297,7 +329,8 @@ export async function GET() {
         ])
       : [null, null]
     const defaultSandboxNames = parseDefaultSandboxNames(nemoclawListResult?.stdout ?? "")
-    const results = await Promise.all(names.map((name) => readSandbox(name, defaultSandboxNames)))
+    const registry = readNemoClawRegistry()
+    const results = await Promise.all(names.map((name) => readSandbox(name, defaultSandboxNames, registry)))
     const sandboxes = results.map((result) => result.summary)
     const items = results.map((result) => result.pod)
     const nemoclaw = buildNemoClawSummary(nemoclawStatusResult?.stdout ?? null, defaultSandboxNames)

@@ -59,9 +59,39 @@ const defaultAlias = (sandboxId: string | null) => `ssh openshell-${sandboxId ||
 const defaultFallback = (sandboxId: string | null) => `ssh openshell-${sandboxId || 'my-assistant'}`
 const defaultLoginShell = (sandboxId: string | null) => `env PATH=$HOME/.local/bin:$PATH bash -l -c 'ssh openshell-${sandboxId || 'my-assistant'}'`
 const DEFAULT_SHELL_HINT = 'If your non-interactive shell misses local tooling, retry from a login shell or prepend PATH=$HOME/.local/bin:$PATH before ssh.'
+
+function shellQuote(value: string) {
+  return `'${value.replace(/'/g, `'"'"'`)}'`
+}
+
+function escapeRegExp(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+function buildHermesTerminalConnectCommand(sandboxId: string) {
+  const target = shellQuote(sandboxId)
+  const alias = shellQuote(`openshell-${sandboxId}`)
+  const message = shellQuote(`[OpenShell Control] Connecting to Hermes sandbox ${sandboxId}...`)
+  return [
+    `printf '\\n%s\\n' ${message}`,
+    `if command -v nemohermes >/dev/null 2>&1; then nemohermes ${target} connect; elif command -v nemoclaw >/dev/null 2>&1; then nemoclaw ${target} connect; else ssh ${alias}; fi`,
+  ].join('; ')
+}
+
+const HERMES_AGENT_COMMAND = "if command -v hermes >/dev/null 2>&1; then hermes; else echo 'Hermes CLI not found in this shell. Check that the terminal is attached to a Hermes sandbox.' >&2; fi"
+
+function isHermesAttachReadyOutput(output: string, sandboxId: string) {
+  const escapedSandboxId = escapeRegExp(sandboxId)
+  return (
+    new RegExp(`(?:^|\\n)sandbox@${escapedSandboxId}:[^\\n]*[$#]\\s*$`).test(output) ||
+    /(?:^|\n)sandbox@[^:\s]+:[^\n]*[$#]\s*$/.test(output)
+  )
+}
+
 function OperatorTerminalInner() {
   const searchParams = useSearchParams()
   const sandboxId = searchParams.get('sandboxId')
+  const launchMode = searchParams.get('launch')
   const requestedDashboardSessionId = searchParams.get('dashboardSessionId')
   const [dashboardSessionId, setDashboardSessionId] = useState(
     () => requestedDashboardSessionId?.trim() || HYDRATION_SAFE_DASHBOARD_SESSION_ID
@@ -84,12 +114,18 @@ function OperatorTerminalInner() {
   const liveSessionRequestRef = useRef<Promise<void> | null>(null)
   const reconnectCounterRef = useRef(0)
   const resizeObserverRef = useRef<ResizeObserver | null>(null)
+  const hermesLaunchSentRef = useRef(false)
+  const hermesAgentSentRef = useRef(false)
+  const hermesAttachBufferRef = useRef('')
 
   useEffect(() => {
     setDashboardSessionId(ensureDashboardSessionId(requestedDashboardSessionId))
   }, [requestedDashboardSessionId])
 
-  const terminalDescription = sandboxId ? 'Live operator terminal for the selected sandbox, brokered through the dashboard-owned terminal bridge.' : 'Live operator terminal for host mode, brokered through the dashboard-owned terminal bridge.'
+  const shouldLaunchHermes = launchMode === 'hermes' && Boolean(sandboxId)
+  const terminalDescription = shouldLaunchHermes
+    ? 'Live operator terminal for Hermes. The dashboard connects to the sandbox and starts the Hermes CLI.'
+    : sandboxId ? 'Live operator terminal for the selected sandbox, brokered through the dashboard-owned terminal bridge.' : 'Live operator terminal for host mode, brokered through the dashboard-owned terminal bridge.'
 
   const refreshReadiness = useCallback(async () => {
     if (!sandboxId) {
@@ -119,6 +155,9 @@ function OperatorTerminalInner() {
     if (reset) {
       reconnectCounterRef.current += 1
       liveSessionIdRef.current = ''
+      hermesLaunchSentRef.current = false
+      hermesAgentSentRef.current = false
+      hermesAttachBufferRef.current = ''
       socketRef.current?.close()
       socketRef.current = null
     }
@@ -161,6 +200,12 @@ function OperatorTerminalInner() {
       liveSessionRequestRef.current = null
     }
   }, [dashboardSessionId, sandboxId])
+
+  useEffect(() => {
+    hermesLaunchSentRef.current = false
+    hermesAgentSentRef.current = false
+    hermesAttachBufferRef.current = ''
+  }, [launchMode, sandboxId])
 
   useEffect(() => { refreshReadiness() }, [refreshReadiness])
   useEffect(() => { ensureLiveSession() }, [ensureLiveSession])
@@ -247,7 +292,9 @@ function OperatorTerminalInner() {
 
     socket.addEventListener('open', () => {
       setTerminalState('connected')
-      setTerminalStatus(`Live terminal connected for ${liveSession.sandboxId}.`)
+      setTerminalStatus(shouldLaunchHermes
+        ? `Live terminal connected for ${liveSession.sandboxId}; launching Hermes…`
+        : `Live terminal connected for ${liveSession.sandboxId}.`)
       try {
         fitAddonRef.current?.fit()
       } catch {
@@ -255,6 +302,14 @@ function OperatorTerminalInner() {
       }
       term.focus()
       socket.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }))
+      if (shouldLaunchHermes && sandboxId && !hermesLaunchSentRef.current) {
+        hermesLaunchSentRef.current = true
+        window.setTimeout(() => {
+          if (socket.readyState === WebSocket.OPEN) {
+            socket.send(JSON.stringify({ type: 'input', data: `\n\n${buildHermesTerminalConnectCommand(sandboxId)}\n` }))
+          }
+        }, 250)
+      }
     })
 
     socket.addEventListener('message', (event) => {
@@ -265,6 +320,18 @@ function OperatorTerminalInner() {
           term.write(message.replay)
         } else if (message.type === 'data' && typeof message.data === 'string') {
           term.write(message.data)
+          if (shouldLaunchHermes && sandboxId && !hermesAgentSentRef.current) {
+            hermesAttachBufferRef.current = `${hermesAttachBufferRef.current}${message.data}`.slice(-8000)
+            if (isHermesAttachReadyOutput(hermesAttachBufferRef.current, sandboxId)) {
+              hermesAgentSentRef.current = true
+              setTerminalStatus(`Hermes sandbox ${sandboxId} attached; starting Hermes CLI…`)
+              window.setTimeout(() => {
+                if (socket.readyState === WebSocket.OPEN) {
+                  socket.send(JSON.stringify({ type: 'input', data: `\n\n${HERMES_AGENT_COMMAND}\n` }))
+                }
+              }, 350)
+            }
+          }
         } else if (message.type === 'exit') {
           setTerminalState('error')
           setTerminalStatus(`Terminal exited with code ${message.exitCode ?? 'unknown'}.`)
@@ -291,7 +358,7 @@ function OperatorTerminalInner() {
       socket.close()
       if (socketRef.current === socket) socketRef.current = null
     }
-  }, [liveSession, terminalReady])
+  }, [liveSession, terminalReady, shouldLaunchHermes, sandboxId])
 
   const readiness = useMemo(() => {
     if (!sandboxId) return { tone: 'border-[var(--status-pending)] text-[var(--status-pending)]', label: 'HOST MODE', detail: 'No sandbox query was provided. The dashboard terminal stays in host mode and keeps dashboard-session diagnostics for reconnect behavior.' }

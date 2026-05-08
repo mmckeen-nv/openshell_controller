@@ -78,12 +78,16 @@ export function persistDashboardSessionState(session: DashboardSessionState) {
 export function buildOperatorTerminalRoute(params: {
   sandboxId?: string | null
   dashboardSessionId: string
+  launch?: 'hermes' | null
 }) {
   const searchParams = new URLSearchParams()
   if (params.sandboxId) {
     searchParams.set('sandboxId', params.sandboxId)
   }
   searchParams.set('dashboardSessionId', params.dashboardSessionId)
+  if (params.launch) {
+    searchParams.set('launch', params.launch)
+  }
   const query = searchParams.toString()
   return query ? `/operator-terminal?${query}` : '/operator-terminal'
 }

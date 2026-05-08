@@ -62,6 +62,41 @@ assert.match(
   /: 'Live operator terminal for host mode, brokered through the dashboard-owned terminal bridge\.'/,
   'operator terminal page must distinguish host mode from sandbox mode'
 )
+assert.match(
+  pageSource,
+  /const launchMode = searchParams\.get\('launch'\)/,
+  'operator terminal page must read explicit launch modes from the URL'
+)
+assert.match(
+  pageSource,
+  /buildHermesTerminalConnectCommand/,
+  'operator terminal page must define the Hermes connect bootstrap command'
+)
+assert.match(
+  pageSource,
+  /nemohermes \$\{target\} connect/,
+  'Hermes terminal launch must prefer the NemoHermes connect workflow'
+)
+assert.match(
+  pageSource,
+  /elif command -v nemoclaw[\s\S]*nemoclaw \$\{target\} connect/,
+  'Hermes terminal launch must fall back to the NemoClaw connect workflow before raw ssh'
+)
+assert.match(
+  pageSource,
+  /HERMES_AGENT_COMMAND/,
+  'Hermes terminal launch must run the Hermes CLI after attaching'
+)
+assert.match(
+  pageSource,
+  /isHermesAttachReadyOutput/,
+  'Hermes terminal launch must wait for the sandbox prompt before running Hermes'
+)
+assert.match(
+  pageSource,
+  /data: `\\n\\n\$\{HERMES_AGENT_COMMAND\}\\n`/,
+  'Hermes terminal launch must nudge the attached shell before running Hermes'
+)
 assert.doesNotMatch(
   pageSource,
   /Live operator terminal for the host machine\. The selected sandbox is preserved as context for helper commands and status lookups, but this shell is intentionally machine-scoped\./,

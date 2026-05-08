@@ -11,6 +11,7 @@ export interface SandboxInventoryItem {
   ready: boolean
   sshHostAlias?: string
   isDefault?: boolean
+  agent?: string
 }
 
 export interface NemoClawSummary {
@@ -48,6 +49,7 @@ function mapSandboxSummary(sandbox: any): SandboxInventoryItem {
     ready: status === 'running',
     sshHostAlias: sandbox.sshHostAlias || undefined,
     isDefault: Boolean(sandbox.isDefault),
+    agent: typeof sandbox.agent === 'string' && sandbox.agent ? sandbox.agent : 'openclaw',
   }
 }
 
@@ -62,6 +64,7 @@ function mapPodItem(pod: any): SandboxInventoryItem {
     ready: pod.status?.conditions?.find((c: any) => c.type === 'Ready')?.status === 'True',
     sshHostAlias: pod.status?.podIP || undefined,
     isDefault: pod.metadata?.labels?.['nemoclaw.ai/default'] === 'true',
+    agent: pod.metadata?.labels?.['nemoclaw.ai/agent'] || 'openclaw',
   }
 }
 

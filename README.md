@@ -17,7 +17,7 @@ It is currently built for active development and lab use. It includes a simple p
 ## Features
 
 - View live OpenShell sandbox inventory.
-- Create, destroy, and restart sandboxes.
+- Create, destroy, and restart OpenClaw and Hermes sandboxes.
 - Launch a sandbox-specific OpenClaw Gateway Dashboard through the local proxy.
 - Approve or reject pending OpenShell network permission requests.
 - Configure per-sandbox inference routes for Ollama, NIM, vLLM, and external endpoints.
@@ -218,6 +218,10 @@ The custom server in `server.mjs` also handles websocket upgrades for:
 Those upgrade paths are protected by the same auth cookie as the HTTP routes.
 Behind a reverse proxy, route WebSocket upgrades for the dashboard proxy paths to the same `server.mjs` listener as the HTTP app. Use `OPENCLAW_DASHBOARD_BASE_WS_URL` or `BASE_WS_URL` only when the browser-visible WebSocket base must be a fully qualified override such as `wss://control.example.com/api/ws-proxy`.
 
+## Hermes Notes
+
+With NemoClaw `v0.0.37`, the create flow includes a Fresh Hermes Sandbox option. It uses NemoClaw onboard with `--agent hermes`; the existing Fresh NemoClaw Image and Quick Deploy paths remain OpenClaw-oriented.
+
 ## Remote Controller Nodes
 
 The Wizards page includes **Spawn a Controller Node** for preparing a small OpenShell Control install on another VPS. This is intended for topologies where the browser-facing dashboard and the OpenShell gateway/sandbox hosts are not the same machine.
@@ -334,6 +338,8 @@ NEXT_PUBLIC_ENABLE_SANDBOX_OPERATIONS=true
 # OPENCLAW_DASHBOARD_WS_PROXY_PORT=3001
 OPEN_SHELL_CONTAINER=openshell-cluster-nemoclaw
 OPENSHELL_GATEWAY=nemoclaw
+# Sandbox create GPU mode: none, auto, or required. Default none passes --no-gpu to NemoClaw.
+OPENSHELL_CONTROL_CREATE_GPU_MODE=none
 # For containerized CLI runs, when supported by the installed OpenShell/NemoClaw versions:
 # OPENSHELL_GATEWAY_HOST=host.docker.internal
 # OPENSHELL_GATEWAY_PORT=8080
@@ -379,6 +385,13 @@ Check OpenShell:
 openshell --version
 openshell list
 docker ps | grep openshell
+```
+
+If sandbox creation fails with `unresolvable CDI devices nvidia.com/gpu=all`, either create the sandbox with GPU mode set to `none`, or generate the NVIDIA CDI spec on the host:
+
+```bash
+sudo nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml
+nvidia-ctk cdi list
 ```
 
 Check auth:

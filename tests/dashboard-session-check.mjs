@@ -17,6 +17,11 @@ assert.match(
   /searchParams\.set\('dashboardSessionId', params\.dashboardSessionId\)/,
   'operator terminal route builder must thread dashboardSessionId'
 )
+assert.match(
+  helperSource,
+  /searchParams\.set\('launch', params\.launch\)/,
+  'operator terminal route builder must thread explicit launch modes'
+)
 
 const routeSource = await readFile(routePath, 'utf8')
 assert.match(routeSource, /dashboardSessionId/, 'terminal live route must accept dashboardSessionId')
@@ -43,10 +48,11 @@ assert.match(
   'terminal server responses must expose dashboardSessionId metadata'
 )
 
-const buildOperatorTerminalRoute = ({ sandboxId, dashboardSessionId }) => {
+const buildOperatorTerminalRoute = ({ sandboxId, dashboardSessionId, launch }) => {
   const searchParams = new URLSearchParams()
   if (sandboxId) searchParams.set('sandboxId', sandboxId)
   searchParams.set('dashboardSessionId', dashboardSessionId)
+  if (launch) searchParams.set('launch', launch)
   const query = searchParams.toString()
   return query ? `/operator-terminal?${query}` : '/operator-terminal'
 }
@@ -58,6 +64,10 @@ assert.equal(
 assert.equal(
   buildOperatorTerminalRoute({ sandboxId: null, dashboardSessionId: 'dash-123' }),
   '/operator-terminal?dashboardSessionId=dash-123'
+)
+assert.equal(
+  buildOperatorTerminalRoute({ sandboxId: 'my-hermes', dashboardSessionId: 'dash-123', launch: 'hermes' }),
+  '/operator-terminal?sandboxId=my-hermes&dashboardSessionId=dash-123&launch=hermes'
 )
 
 console.log('dashboard-session-check: PASS route/session scope assertions')

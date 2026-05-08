@@ -8,6 +8,7 @@ type EndpointTls = "" | "terminate" | "passthrough"
 type EndpointEnforcement = "" | "enforce" | "audit"
 type EndpointAccess = "" | "read-only" | "read-write" | "full"
 type CreateInferenceMode = "auto" | "vllm" | "nim"
+type CreateGpuMode = "none" | "auto" | "required"
 
 interface NetworkRule { method: string; path: string }
 interface NetworkEndpoint { host: string; port: string; protocol: EndpointProtocol; tls: EndpointTls; enforcement: EndpointEnforcement; access: EndpointAccess; rules: NetworkRule[] }
@@ -88,6 +89,7 @@ export default function ConfigurationPanel({ sandboxId, mode = 'existing', onCre
   const [selectedBlueprint, setSelectedBlueprint] = useState<string>('redeploy-image')
   const [sandboxName, setSandboxName] = useState<string>('')
   const [enableTailscale, setEnableTailscale] = useState<boolean>(false)
+  const [createGpuMode, setCreateGpuMode] = useState<CreateGpuMode>("none")
   const [createInferenceMode, setCreateInferenceMode] = useState<CreateInferenceMode>("vllm")
   const [createInferenceModel, setCreateInferenceModel] = useState<string>("")
   const [createNvidiaApiKey, setCreateNvidiaApiKey] = useState<string>("")
@@ -126,6 +128,7 @@ export default function ConfigurationPanel({ sandboxId, mode = 'existing', onCre
   const assembledPolicy = useMemo(() => ({ ...policy, network_policies: blocksToPolicy(blocks) }), [policy, blocks])
   const activePreset = selectedPreset ? getSecurityPreset(selectedPreset) : null
   const activeBlueprint = blueprints.find((bp) => bp.id === selectedBlueprint)
+  const isNemoClawOnboardBlueprint = selectedBlueprint === 'nemoclaw-blueprint' || selectedBlueprint === 'nemoclaw-hermes'
 
   function applyPreset(presetId: SecurityPresetId) {
     const preset = getSecurityPreset(presetId); if (!preset) return
@@ -143,7 +146,7 @@ export default function ConfigurationPanel({ sandboxId, mode = 'existing', onCre
           model: createInferenceModel.trim(),
           apiKey: createInferenceMode === 'nim' ? createNvidiaApiKey.trim() : '',
         }
-        const res = await fetch('/api/sandbox/create', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ blueprint: selectedBlueprint, sandboxName: sandboxName.trim(), enableTailscale, createInference, policy: assembledPolicy, preset: selectedPreset || null }) })
+        const res = await fetch('/api/sandbox/create', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ blueprint: selectedBlueprint, sandboxName: sandboxName.trim(), enableTailscale, gpuMode: createGpuMode, createInference, policy: assembledPolicy, preset: selectedPreset || null }) })
         const data = await res.json()
         if (!res.ok) throw new Error([data.error, data.verification?.summary, data.verification?.error, data.stdout, data.stderr].filter(Boolean).join('\n\n'))
         const createdSandboxId = data.verification?.details?.id || data.verification?.details?.name || data.sandboxName
@@ -216,7 +219,27 @@ export default function ConfigurationPanel({ sandboxId, mode = 'existing', onCre
             </div>
             <div>
               <label className="text-xs uppercase tracking-wider text-[var(--foreground-dim)]">Sandbox Name<FieldHelp text="Lowercase letters, numbers, and hyphens only." /></label>
-              <input value={sandboxName} onChange={(e) => setSandboxName(e.target.value)} placeholder={selectedBlueprint === 'nemoclaw-blueprint' ? 'my-assistant' : selectedBlueprint === 'redeploy-image' ? 'my-assistant-copy' : 'custom-sandbox'} className="mt-2 w-full rounded-sm border border-[var(--border-subtle)] bg-[var(--background)] px-3 py-2 text-xs font-mono text-[var(--foreground)]" />
+              <input value={sandboxName} onChange={(e) => setSandboxName(e.target.value)} placeholder={selectedBlueprint === 'nemoclaw-hermes' ? 'my-hermes' : selectedBlueprint === 'nemoclaw-blueprint' ? 'my-assistant' : selectedBlueprint === 'redeploy-image' ? 'my-assistant-copy' : 'custom-sandbox'} className="mt-2 w-full rounded-sm border border-[var(--border-subtle)] bg-[var(--background)] px-3 py-2 text-xs font-mono text-[var(--foreground)]" />
+            </div>
+            <div className="rounded-sm border border-[var(--border-subtle)] bg-[var(--background)] p-4 space-y-4">
+              <div>
+                <h6 className="text-xs font-semibold uppercase tracking-wider text-[var(--foreground)]">GPU Passthrough</h6>
+                <p className="mt-1 text-xs text-[var(--foreground-dim)]">Choose whether new sandboxes should request NVIDIA GPU devices.</p>
+              </div>
+              <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+                <label className={`flex items-start gap-3 rounded-sm border p-3 text-sm text-[var(--foreground)] ${createGpuMode === 'none' ? 'border-[var(--nvidia-green)] bg-[rgba(118,185,0,0.08)]' : 'border-[var(--border-subtle)] bg-[var(--background-tertiary)]'}`}>
+                  <input type="radio" name="create-gpu-mode" checked={createGpuMode === 'none'} onChange={() => setCreateGpuMode('none')} className="mt-0.5 h-4 w-4 accent-[var(--nvidia-green)]" />
+                  <span><span className="block text-xs font-mono uppercase tracking-wider">No GPU</span><span className="mt-1 block text-[11px] text-[var(--foreground-dim)]">Passes --no-gpu to NemoClaw and avoids CDI setup.</span></span>
+                </label>
+                <label className={`flex items-start gap-3 rounded-sm border p-3 text-sm text-[var(--foreground)] ${createGpuMode === 'auto' ? 'border-[var(--nvidia-green)] bg-[rgba(118,185,0,0.08)]' : 'border-[var(--border-subtle)] bg-[var(--background-tertiary)]'}`}>
+                  <input type="radio" name="create-gpu-mode" checked={createGpuMode === 'auto'} onChange={() => setCreateGpuMode('auto')} className="mt-0.5 h-4 w-4 accent-[var(--nvidia-green)]" />
+                  <span><span className="block text-xs font-mono uppercase tracking-wider">Auto</span><span className="mt-1 block text-[11px] text-[var(--foreground-dim)]">Let NemoClaw/OpenShell infer GPU intent.</span></span>
+                </label>
+                <label className={`flex items-start gap-3 rounded-sm border p-3 text-sm text-[var(--foreground)] ${createGpuMode === 'required' ? 'border-[var(--nvidia-green)] bg-[rgba(118,185,0,0.08)]' : 'border-[var(--border-subtle)] bg-[var(--background-tertiary)]'}`}>
+                  <input type="radio" name="create-gpu-mode" checked={createGpuMode === 'required'} onChange={() => setCreateGpuMode('required')} className="mt-0.5 h-4 w-4 accent-[var(--nvidia-green)]" />
+                  <span><span className="block text-xs font-mono uppercase tracking-wider">Require GPU</span><span className="mt-1 block text-[11px] text-[var(--foreground-dim)]">Requires NVIDIA CDI devices or gateway GPU support.</span></span>
+                </label>
+              </div>
             </div>
             {selectedBlueprint === 'redeploy-image' && (
               <div className="rounded-sm border border-[var(--border-subtle)] bg-[var(--background)] p-4">
@@ -229,7 +252,7 @@ export default function ConfigurationPanel({ sandboxId, mode = 'existing', onCre
               </label>
             )}
             {enableTailscale && <div className="rounded-sm border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-300">Tailscale-enabled creation requires NVIDIA_API_KEY in the dashboard process environment.</div>}
-            {selectedBlueprint === 'nemoclaw-blueprint' && <div className="rounded-sm border border-[var(--border-subtle)] bg-[var(--background)] p-4 space-y-4">
+            {isNemoClawOnboardBlueprint && <div className="rounded-sm border border-[var(--border-subtle)] bg-[var(--background)] p-4 space-y-4">
               <div>
                 <h6 className="text-xs font-semibold uppercase tracking-wider text-[var(--foreground)]">Inference at Create</h6>
                 <p className="mt-1 text-xs text-[var(--foreground-dim)]">Choose the provider NemoClaw should use while onboarding this sandbox.</p>
