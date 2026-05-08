@@ -1,7 +1,7 @@
 
 # OpenShell Control
 
-THIS IS VERSION LOCKED TO OpenShell v0.0.36, NemoClaw v0.0.31, and OpenClaw 2026.4.27.
+THIS IS VERSION LOCKED TO OpenShell v0.0.36, NemoClaw v0.0.37, and OpenClaw 2026.4.27.
 
 OpenShell Control is a local, development-stage dashboard for operating OpenShell sandboxes and their OpenClaw gateway dashboards.
 
@@ -43,16 +43,16 @@ It is currently built for active development and lab use. It includes a simple p
 <img width="2117" height="1873" alt="Screenshot 2026-04-27 at 3 42 37 PM" src="https://github.com/user-attachments/assets/405ae79c-59e9-4c71-afb7-779eccb7ece7" />
 
 
-## Version Requirements
+## Version Lock
 
-Tested on the current development host with:
+This dashboard is validated against the following runtime/toolchain versions:
 
 - Ubuntu/Linux host
 - Node.js `v22.22.2`
 - npm `10.9.7`
 - Docker `29.1.3`
-- OpenShell CLI `0.0.36`
-- NemoClaw `v0.0.31`
+- OpenShell CLI and gateway `v0.0.36`
+- NemoClaw CLI `v0.0.37`
 - OpenClaw `2026.4.27`
 
 Minimum expected versions:
@@ -60,7 +60,10 @@ Minimum expected versions:
 - Node.js `20+`
 - npm `10+`
 - Docker `24+`
-- OpenShell CLI and gateway compatible with OpenShell `0.0.36`
+- OpenShell CLI and gateway compatible with `v0.0.36`
+- NemoClaw CLI compatible with `v0.0.37`
+
+Use `./install_versioned_nemoclaw_openshell.sh` to install or refresh the locked OpenShell/NemoClaw pair. Override the versions only when intentionally testing a newer pair.
 
 The app uses Next.js `14.2.35`, React `18.3.1`, TypeScript, Tailwind CSS, `ws`, `node-pty`, and the official MCP TypeScript SDK.
 
@@ -92,7 +95,15 @@ The installer does not create an OpenShell gateway for you. Start or connect Ope
 
 ## Installer
 
-From the repository root:
+Install or refresh the locked OpenShell/NemoClaw pair first:
+
+```bash
+./install_versioned_nemoclaw_openshell.sh
+```
+
+That helper defaults to `OPENSHELL_VERSION=v0.0.36`, `NEMOCLAW_INSTALL_TAG=v0.0.37`, and `OPENCLAW_VERSION=2026.4.27`.
+
+Then install the dashboard from the repository root:
 
 ```bash
 ./install.sh
