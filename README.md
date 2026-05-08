@@ -130,8 +130,17 @@ grep OPENSHELL_CONTROL_PASSWORD .env.local
 
 ## Run
 
+For local development with hot reload:
+
 ```bash
 npm run dev
+```
+
+For a long-running dashboard or controller node, build once and run the custom server in production mode:
+
+```bash
+npm run build
+npm run start
 ```
 
 Open:
@@ -143,8 +152,9 @@ http://localhost:3000
 Default ports:
 
 - `3000`: dashboard HTTP server
-- `3001`: OpenClaw dashboard websocket sidecar
 - `3011`: operator terminal upstream
+
+The dashboard WebSocket proxy is served on the same listener by default, using `/api/openshell/dashboard/proxy` or `/api/openshell/instances/[instanceId]/dashboard/proxy`. Set `OPENCLAW_DASHBOARD_WS_PROXY_PORT=3001` only if you intentionally want the legacy dedicated sidecar listener.
 
 ## Authentication
 
@@ -169,8 +179,8 @@ There is no email sender. Forgot-password uses `OPENSHELL_CONTROL_RECOVERY_TOKEN
 After changing `.env.local`, restart the server:
 
 ```bash
-pkill -f 'node server.mjs|npm run dev' || true
-npm run dev
+pkill -f 'node server.mjs|npm run dev|npm run start' || true
+npm run start
 ```
 
 ## OpenShell And OpenClaw Notes
@@ -195,6 +205,7 @@ The custom server in `server.mjs` also handles websocket upgrades for:
 - OpenClaw dashboard websocket traffic.
 
 Those upgrade paths are protected by the same auth cookie as the HTTP routes.
+Behind a reverse proxy, route WebSocket upgrades for the dashboard proxy paths to the same `server.mjs` listener as the HTTP app. Use `OPENCLAW_DASHBOARD_BASE_WS_URL` or `BASE_WS_URL` only when the browser-visible WebSocket base must be a fully qualified override such as `wss://control.example.com/api/ws-proxy`.
 
 ## Remote Controller Nodes
 
@@ -281,6 +292,7 @@ npm run dev
 npm run lint
 npx tsc --noEmit
 npm run build
+npm run start
 ```
 
 After running `npm run build` during development, restart cleanly:
@@ -302,9 +314,13 @@ cp .env.example .env.local
 Common keys:
 
 ```bash
+PORT=3000
 NEXT_PUBLIC_DASHBOARD_PORT=3000
 NEXT_PUBLIC_API_BASE=/api
 NEXT_PUBLIC_ENABLE_SANDBOX_OPERATIONS=true
+# OPENCLAW_DASHBOARD_BASE_WS_URL=wss://control.example.com
+# BASE_WS_URL=wss://control.example.com
+# OPENCLAW_DASHBOARD_WS_PROXY_PORT=3001
 OPEN_SHELL_CONTAINER=openshell-cluster-nemoclaw
 OPENSHELL_GATEWAY=nemoclaw
 # For containerized CLI runs, when supported by the installed OpenShell/NemoClaw versions:
@@ -372,7 +388,7 @@ npm run build
 If the UI behaves oddly after a production build:
 
 ```bash
-pkill -f 'node server.mjs|npm run dev' || true
+pkill -f 'node server.mjs|npm run dev|npm run start' || true
 rm -rf .next
 npm run dev
 ```

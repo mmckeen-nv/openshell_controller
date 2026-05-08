@@ -1,6 +1,13 @@
 const COOKIE_NAME = "openshell_control_session"
 const SESSION_TTL_SECONDS = 12 * 60 * 60
 
+type CookieSecurityRequest = {
+  headers: Pick<Headers, "get">
+  nextUrl?: {
+    protocol: string
+  }
+}
+
 type SessionPayload = {
   sub: string
   iat: number
@@ -22,6 +29,37 @@ function getSecret() {
 
 function isDisabled() {
   return /^(1|true|yes|on)$/i.test(process.env.OPENSHELL_CONTROL_AUTH_DISABLED || "")
+}
+
+function envFlag(value: string | undefined) {
+  if (!value) return null
+  if (/^(1|true|yes|on)$/i.test(value)) return true
+  if (/^(0|false|no|off)$/i.test(value)) return false
+  return null
+}
+
+function firstForwardedValue(value: string | null) {
+  return value?.split(",")[0]?.trim().toLowerCase() || ""
+}
+
+function publicBaseUsesHttps() {
+  if (!process.env.PUBLIC_BASE_URL) return false
+  try {
+    return new URL(process.env.PUBLIC_BASE_URL).protocol === "https:"
+  } catch {
+    return false
+  }
+}
+
+export function shouldUseSecureSessionCookie(request?: CookieSecurityRequest) {
+  const forced = envFlag(process.env.OPENSHELL_CONTROL_COOKIE_SECURE)
+  if (forced !== null) return forced
+
+  const forwardedProto = request ? firstForwardedValue(request.headers.get("x-forwarded-proto")) : ""
+  if (forwardedProto) return forwardedProto === "https"
+
+  if (request?.nextUrl?.protocol === "https:") return true
+  return publicBaseUsesHttps()
 }
 
 async function hmac(payload: string) {
@@ -99,7 +137,14 @@ export async function verifyRecoveryToken(token: string) {
 export const sessionCookieOptions = {
   httpOnly: true,
   sameSite: "lax" as const,
-  secure: process.env.NODE_ENV === "production",
+  secure: shouldUseSecureSessionCookie(),
   path: "/",
   maxAge: SESSION_TTL_SECONDS,
+}
+
+export function sessionCookieOptionsForRequest(request: CookieSecurityRequest) {
+  return {
+    ...sessionCookieOptions,
+    secure: shouldUseSecureSessionCookie(request),
+  }
 }

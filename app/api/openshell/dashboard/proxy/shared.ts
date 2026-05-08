@@ -1,11 +1,13 @@
 import { NextResponse } from 'next/server'
 import { getDefaultOpenClawDashboardInstanceId } from '@/app/lib/openshellHost'
+import { OPENCLAW_DASHBOARD_TOKEN_COOKIE } from '@/app/lib/openclawDashboardToken'
 import { resolveRuntimeAuthority } from '@/app/lib/runtimeAuthority'
 
 const LEGACY_PROXY_PREFIX = '/api/openshell/dashboard/proxy'
 const INSTANCES_PREFIX = '/api/openshell/instances/'
 const DASHBOARD_PROXY_SUFFIX = '/dashboard/proxy'
 const BOOTSTRAP_SCRIPT_NAME = '__nemoclaw_openclaw_bootstrap.js'
+const CONTROL_AUTH_COOKIE_NAME = 'openshell_control_session'
 const HOP_BY_HOP_HEADERS = new Set([
   'accept-encoding',
   'connection',
@@ -95,6 +97,7 @@ function buildTargetUrl(requestUrl: URL) {
 
 function copyRequestHeaders(request: Request, target: URL, controlUiOrigin: string) {
   const headers = new Headers()
+  const dashboardToken = readCookieValue(request.headers.get('cookie'), OPENCLAW_DASHBOARD_TOKEN_COOKIE)
 
   request.headers.forEach((value, key) => {
     const lowerKey = key.toLowerCase()
@@ -104,14 +107,40 @@ function copyRequestHeaders(request: Request, target: URL, controlUiOrigin: stri
       lowerKey !== 'origin' &&
       lowerKey !== 'referer'
     ) {
-      headers.set(key, value)
+      const filteredValue = lowerKey === 'cookie' ? filterCookieHeader(value) : value
+      if (filteredValue) headers.set(key, filteredValue)
     }
   })
 
   headers.set('host', target.host)
   headers.set('origin', controlUiOrigin)
   headers.set('referer', `${controlUiOrigin}/`)
+  if (dashboardToken && !headers.has('authorization')) {
+    headers.set('authorization', `Bearer ${dashboardToken}`)
+  }
   return headers
+}
+
+function readCookieValue(value: string | null, name: string) {
+  return String(value || '')
+    .split(';')
+    .map((part) => part.trim())
+    .reduce<string | null>((found, part) => {
+      if (found || !part.startsWith(`${name}=`)) return found
+      try {
+        return decodeURIComponent(part.slice(name.length + 1))
+      } catch {
+        return part.slice(name.length + 1)
+      }
+    }, null)
+}
+
+function filterCookieHeader(value: string) {
+  return value
+    .split(';')
+    .map((part) => part.trim())
+    .filter((part) => part && !part.startsWith(`${CONTROL_AUTH_COOKIE_NAME}=`) && !part.startsWith(`${OPENCLAW_DASHBOARD_TOKEN_COOKIE}=`))
+    .join('; ')
 }
 
 function copyResponseHeaders(upstream: Response) {
@@ -151,24 +180,46 @@ function isBootstrapScriptRequest(requestUrl: URL, proxyPrefix: string) {
 }
 
 function bootstrapScriptResponse(proxyPrefix: string) {
-  const wsProxyPort = process.env.OPENCLAW_DASHBOARD_WS_PROXY_PORT?.trim() || '3001'
+  const baseWsUrl = process.env.OPENCLAW_DASHBOARD_BASE_WS_URL?.trim() || process.env.BASE_WS_URL?.trim() || ''
+  const wsProxyPort = process.env.OPENCLAW_DASHBOARD_WS_PROXY_PORT?.trim() || ''
   const script = `
 (() => {
   const proxyPrefix = ${JSON.stringify(proxyPrefix)};
+  const baseWsUrl = ${JSON.stringify(baseWsUrl)};
   const wsProxyPort = ${JSON.stringify(wsProxyPort)};
   window.__OPENCLAW_CONTROL_UI_BASE_PATH__ = proxyPrefix;
 
   try {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const pageGatewayUrl = protocol + '//' + window.location.host + proxyPrefix;
-    const sidecarHost = wsProxyPort ? window.location.hostname + ':' + wsProxyPort : window.location.host;
-    const sidecarGatewayUrl = protocol + '//' + sidecarHost + proxyPrefix;
+    const portGatewayUrl = wsProxyPort ? protocol + '//' + window.location.hostname + ':' + wsProxyPort + proxyPrefix : '';
+    const normalizeGatewayUrl = (value) => {
+      const raw = (value || '').trim();
+      if (!raw) return '';
+      try {
+        const parsed = new URL(raw, window.location.href);
+        if (parsed.protocol === 'http:') parsed.protocol = 'ws:';
+        if (parsed.protocol === 'https:') parsed.protocol = 'wss:';
+        if (parsed.protocol !== 'ws:' && parsed.protocol !== 'wss:') return '';
+        parsed.hash = '';
+        if (parsed.pathname === '/' || parsed.pathname === '') {
+          parsed.pathname = proxyPrefix;
+        } else {
+          parsed.pathname = parsed.pathname.replace(/\\/+$/, '') || '/';
+        }
+        return parsed.toString();
+      } catch {
+        return '';
+      }
+    };
+    const configuredGatewayUrl = normalizeGatewayUrl(baseWsUrl);
+    const defaultGatewayUrl = configuredGatewayUrl || portGatewayUrl || pageGatewayUrl;
     const settingsKey = 'openclaw.control.settings.v1';
     const settingsPrefix = 'openclaw.control.settings.v1:';
     const tokenKey = 'openclaw.control.token.v1';
     const tokenPrefix = 'openclaw.control.token.v1:';
     const hashParams = new URLSearchParams(window.location.hash.startsWith('#') ? window.location.hash.slice(1) : window.location.hash);
-    const gatewayUrl = (hashParams.get('gatewayUrl') || '').trim() || sidecarGatewayUrl;
+    const gatewayUrl = normalizeGatewayUrl(hashParams.get('gatewayUrl')) || defaultGatewayUrl;
     const token = (hashParams.get('token') || '').trim();
     const storageScope = (value) => {
       try {
@@ -180,7 +231,7 @@ function bootstrapScriptResponse(proxyPrefix: string) {
       }
     };
     const uniqueScopes = (values) => Array.from(new Set(values.map(storageScope).filter(Boolean)));
-    const gatewayScopes = uniqueScopes([gatewayUrl, sidecarGatewayUrl, pageGatewayUrl]);
+    const gatewayScopes = uniqueScopes([gatewayUrl, configuredGatewayUrl, portGatewayUrl, pageGatewayUrl]);
     const settingsKeys = gatewayScopes.map((scope) => settingsPrefix + scope);
     const readSettings = () => {
       for (const key of [...settingsKeys, settingsPrefix + 'default', settingsKey]) {

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server"
-import { createSessionCookieValue, getAuthSettings, sessionCookieOptions, verifyPassword } from "@/app/lib/controlAuth"
+import { createSessionCookieValue, getAuthSettings, sessionCookieOptionsForRequest, verifyPassword } from "@/app/lib/controlAuth"
 import { checkRateLimit, clearRateLimit, rateLimitKey, recordRateLimitFailure } from "@/app/lib/rateLimit"
 
 const AUTH_WINDOW_MS = 5 * 60 * 1000
@@ -34,6 +34,6 @@ export async function POST(request: NextRequest) {
 
   clearRateLimit(limitKey)
   const response = NextResponse.json({ ok: true, next: nextPath })
-  response.cookies.set(settings.cookieName, await createSessionCookieValue(), sessionCookieOptions)
+  response.cookies.set(settings.cookieName, await createSessionCookieValue(), sessionCookieOptionsForRequest(request))
   return response
 }

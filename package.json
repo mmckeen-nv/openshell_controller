@@ -3,10 +3,11 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "node server.mjs",
-    "dev:proxy": "node server.mjs",
+    "dev": "NODE_ENV=development node server.mjs",
+    "dev:proxy": "NODE_ENV=development node server.mjs",
     "build": "next build",
-    "start": "node server.mjs",
+    "start": "NODE_ENV=production node server.mjs",
+    "start:prod": "npm run build && npm run start",
     "lint": "next lint",
     "terminal-server": "node terminal-server.mjs"
   },

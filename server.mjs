@@ -21,10 +21,20 @@ function loadLocalEnvFile(pathname) {
 
 loadLocalEnvFile('.env.local')
 
+function parseOptionalPort(value, name) {
+  const raw = typeof value === 'string' ? value.trim() : ''
+  if (!raw) return null
+  const parsed = Number(raw)
+  if (!Number.isInteger(parsed) || parsed < 1 || parsed > 65535) {
+    throw new Error(`${name} must be a TCP port between 1 and 65535`)
+  }
+  return parsed
+}
+
 const dev = process.env.NODE_ENV !== 'production'
 const hostname = process.env.HOSTNAME || process.env.HOST || '0.0.0.0'
-const port = Number(process.env.PORT || 3000)
-const dashboardWsProxyPort = Number(process.env.OPENCLAW_DASHBOARD_WS_PROXY_PORT || 3001)
+const port = Number(process.env.PORT || process.env.NEXT_PUBLIC_DASHBOARD_PORT || 3000)
+const dashboardWsProxyPort = parseOptionalPort(process.env.OPENCLAW_DASHBOARD_WS_PROXY_PORT, 'OPENCLAW_DASHBOARD_WS_PROXY_PORT')
 const terminalServerUrl = new URL(process.env.TERMINAL_SERVER_URL || 'http://127.0.0.1:3011')
 const terminalWsProtocol = terminalServerUrl.protocol === 'https:' ? 'wss:' : 'ws:'
 const terminalProxyPath = '/api/openshell/terminal/live/ws'
@@ -36,6 +46,7 @@ const defaultInstanceId = 'default'
 const sandboxDashboardPortBase = Number.parseInt(process.env.OPENCLAW_SANDBOX_DASHBOARD_PORT_BASE || '19000', 10)
 const sandboxDashboardPortRange = 2000
 const authCookieName = 'openshell_control_session'
+const openClawDashboardTokenCookieName = 'openclaw_dashboard_token'
 
 function now() {
   return new Date().toISOString()
@@ -70,6 +81,27 @@ function safeEqual(left, right) {
   const leftBuffer = Buffer.from(left || '')
   const rightBuffer = Buffer.from(right || '')
   return leftBuffer.length === rightBuffer.length && crypto.timingSafeEqual(leftBuffer, rightBuffer)
+}
+
+function filterCookieHeader(value) {
+  return String(value || '')
+    .split(';')
+    .map((part) => part.trim())
+    .filter((part) => part && !part.startsWith(`${authCookieName}=`) && !part.startsWith(`${openClawDashboardTokenCookieName}=`))
+    .join('; ')
+}
+
+function readCookieValue(value, name) {
+  for (const part of String(value || '').split(';')) {
+    const trimmed = part.trim()
+    if (!trimmed.startsWith(`${name}=`)) continue
+    try {
+      return decodeURIComponent(trimmed.slice(name.length + 1))
+    } catch {
+      return trimmed.slice(name.length + 1)
+    }
+  }
+  return null
 }
 
 function parseCookies(req) {
@@ -304,6 +336,26 @@ function normalizeCloseCode(code) {
     : 1000
 }
 
+function redactSensitiveUrl(value) {
+  try {
+    const url = new URL(value.toString())
+    for (const key of ['token', 'authToken', 'access_token']) {
+      if (url.searchParams.has(key)) url.searchParams.set(key, '<redacted>')
+    }
+    return url.toString()
+  } catch {
+    return String(value || '')
+  }
+}
+
+function withDashboardTokenQuery(upstreamWsUrl, token) {
+  const url = new URL(upstreamWsUrl.toString())
+  if (token && !url.searchParams.has('token') && !url.searchParams.has('authToken')) {
+    url.searchParams.set('token', token)
+  }
+  return url
+}
+
 function shouldAutoStartTerminalServer() {
   if (/^(0|false|no|off)$/i.test(process.env.TERMINAL_SERVER_AUTOSTART || '')) return false
   if (terminalServerUrl.protocol !== 'http:') return false
@@ -393,45 +445,221 @@ const handleUpgrade = typeof app.getUpgradeHandler === 'function'
   : null
 
 const server = http.createServer((req, res) => handle(req, res))
-const dashboardWsProxyServer = http.createServer((_, res) => {
-  res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' })
-  res.end('OpenClaw dashboard websocket proxy only')
-})
+const dashboardWsProxyServer = dashboardWsProxyPort
+  ? http.createServer((_, res) => {
+      res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' })
+      res.end('OpenClaw dashboard websocket proxy only')
+    })
+  : null
 const clientWss = new WebSocketServer({ noServer: true })
+const dashboardWss = new WebSocketServer({ noServer: true })
+
+function copyDashboardWebSocketHeaders(req, controlUiOrigin) {
+  const headers = copyHeaders(req)
+  const cookie = filterCookieHeader(req.headers.cookie)
+  const dashboardToken = readCookieValue(req.headers.cookie, openClawDashboardTokenCookieName)
+  if (cookie) headers.cookie = cookie
+  else delete headers.cookie
+  headers.origin = controlUiOrigin
+  headers.referer = `${controlUiOrigin}/`
+  if (dashboardToken && !headers.authorization) headers.authorization = `Bearer ${dashboardToken}`
+  return headers
+}
+
+function handleDashboardProxyUpgrade(req, socket, head, logEvent) {
+  const { upstreamWsUrl, instanceId, controlUiOrigin } = resolveDashboardUpstream(req)
+  logBridge(logEvent, {
+    path: req.url || '/',
+    upstreamUrl: upstreamWsUrl.toString(),
+    instanceId,
+    remoteAddress: req.socket.remoteAddress || 'unknown',
+  })
+  dashboardWss.handleUpgrade(req, socket, head, (ws) => {
+    dashboardWss.emit('connection', ws, req, { upstreamWsUrl, instanceId, controlUiOrigin })
+  })
+}
+
+dashboardWss.on('connection', (client, req, context) => {
+  const bridgeId = crypto.randomUUID()
+  const dashboardToken = readCookieValue(req.headers.cookie, openClawDashboardTokenCookieName)
+  const upstreamUrl = withDashboardTokenQuery(context.upstreamWsUrl, dashboardToken)
+  const redactedUpstreamUrl = redactSensitiveUrl(upstreamUrl)
+  const upstreamHeaders = copyDashboardWebSocketHeaders(req, context.controlUiOrigin)
+  const upstream = new WebSocket(upstreamUrl.toString(), {
+    headers: upstreamHeaders,
+  })
+  const pendingClientFrames = []
+  let closing = false
+  let clientFramesIn = 0
+  let upstreamFramesOut = 0
+  let upstreamFramesIn = 0
+  let clientFramesOut = 0
+
+  logBridge('dashboard-ws-client-connected', {
+    bridgeId,
+    path: req.url || '/',
+    upstreamUrl: redactedUpstreamUrl,
+    instanceId: context.instanceId,
+    remoteAddress: req.socket.remoteAddress || 'unknown',
+    upstreamHeaderKeys: Object.keys(upstreamHeaders).sort().join(','),
+    dashboardTokenPresent: Boolean(dashboardToken),
+  })
+
+  const flushPendingFrames = () => {
+    while (pendingClientFrames.length && upstream.readyState === WebSocket.OPEN) {
+      const frame = pendingClientFrames.shift()
+      upstreamFramesOut += 1
+      upstream.send(frame.data, { binary: frame.isBinary })
+    }
+    logBridge('dashboard-ws-upstream-open', {
+      bridgeId,
+      bufferedFramesFlushed: upstreamFramesOut,
+      pendingFrames: pendingClientFrames.length,
+    })
+  }
+
+  const closeClient = (code = 1000, reason) => {
+    const safeCode = normalizeCloseCode(code)
+    if (client.readyState === WebSocket.OPEN) client.close(safeCode, reason)
+    else if (client.readyState === WebSocket.CONNECTING) client.terminate()
+  }
+
+  const closeUpstream = (code = 1000, reason) => {
+    const safeCode = normalizeCloseCode(code)
+    if (upstream.readyState === WebSocket.OPEN) upstream.close(safeCode, reason)
+    else if (upstream.readyState === WebSocket.CONNECTING) upstream.terminate()
+  }
+
+  const closeBoth = (code = 1000, reason, source = 'unknown') => {
+    if (closing) return
+    closing = true
+    logBridge('dashboard-ws-closing', {
+      bridgeId,
+      source,
+      code,
+      reason,
+      clientFramesIn,
+      upstreamFramesOut,
+      upstreamFramesIn,
+      clientFramesOut,
+      pendingFrames: pendingClientFrames.length,
+    })
+    closeClient(code, reason)
+    closeUpstream(code, reason)
+  }
+
+  client.on('message', (data, isBinary) => {
+    clientFramesIn += 1
+    if (upstream.readyState === WebSocket.OPEN) {
+      upstreamFramesOut += 1
+      upstream.send(data, { binary: isBinary })
+      return
+    }
+
+    if (upstream.readyState === WebSocket.CONNECTING) {
+      pendingClientFrames.push({ data, isBinary })
+      return
+    }
+
+    closeBoth(1011, 'upstream unavailable', 'dashboard-client-message-no-upstream')
+  })
+
+  client.on('close', (code, reasonBuffer) => {
+    const reason = Buffer.isBuffer(reasonBuffer) ? reasonBuffer.toString() : String(reasonBuffer || '')
+    closeBoth(code || 1000, reason || undefined, 'dashboard-client-close')
+  })
+  client.on('error', (error) => closeBoth(1011, error instanceof Error ? error.message : 'dashboard client error', 'dashboard-client-error'))
+
+  upstream.on('open', () => {
+    logBridge('dashboard-ws-upstream-connected', {
+      bridgeId,
+      upstreamUrl: redactedUpstreamUrl,
+      instanceId: context.instanceId,
+    })
+    flushPendingFrames()
+  })
+
+  upstream.on('message', (data, isBinary) => {
+    upstreamFramesIn += 1
+    if (client.readyState === WebSocket.OPEN) {
+      clientFramesOut += 1
+      client.send(data, { binary: isBinary })
+    }
+  })
+
+  upstream.on('close', (code, reasonBuffer) => {
+    const reason = Buffer.isBuffer(reasonBuffer) ? reasonBuffer.toString() : String(reasonBuffer || '')
+    closeBoth(code || 1000, reason || undefined, 'dashboard-upstream-close')
+  })
+
+  upstream.on('error', (error) => {
+    logBridge('dashboard-ws-upstream-error', {
+      bridgeId,
+      upstreamUrl: redactedUpstreamUrl,
+      instanceId: context.instanceId,
+      reason: error instanceof Error ? error.message : 'dashboard upstream error',
+    })
+    closeBoth(1011, error instanceof Error ? error.message : 'dashboard upstream error', 'dashboard-upstream-error')
+  })
+})
 
 function buildRawDashboardUpgradeHeaders(req, upstreamWsUrl, controlUiOrigin) {
   const headers = []
-  const seen = new Set()
+  const dashboardToken = readCookieValue(req.headers.cookie, openClawDashboardTokenCookieName)
+  const rawHeaders = new Map()
 
   for (let i = 0; i < req.rawHeaders.length; i += 2) {
     const name = req.rawHeaders[i]
     const value = req.rawHeaders[i + 1]
     const lowerName = name.toLowerCase()
-    seen.add(lowerName)
-    if (lowerName === 'host') {
-      headers.push(`Host: ${upstreamWsUrl.host}`)
-    } else if (lowerName === 'origin') {
-      headers.push(`Origin: ${controlUiOrigin}`)
-    } else {
-      headers.push(`${name}: ${value}`)
+    if (!rawHeaders.has(lowerName)) rawHeaders.set(lowerName, [])
+    rawHeaders.get(lowerName).push({ name, value })
+  }
+
+  const firstValue = (name) => rawHeaders.get(name)?.[0]?.value
+  const pushRaw = (name) => {
+    for (const header of rawHeaders.get(name) || []) {
+      headers.push(`${header.name}: ${header.value}`)
     }
   }
 
-  if (!seen.has('host')) headers.push(`Host: ${upstreamWsUrl.host}`)
-  if (!seen.has('origin')) headers.push(`Origin: ${controlUiOrigin}`)
+  headers.push(`Host: ${upstreamWsUrl.host}`)
+  headers.push(`Upgrade: ${firstValue('upgrade') || 'websocket'}`)
+  headers.push(`Connection: ${firstValue('connection') || 'Upgrade'}`)
+  if (firstValue('sec-websocket-key')) pushRaw('sec-websocket-key')
+  if (firstValue('sec-websocket-version')) pushRaw('sec-websocket-version')
+  pushRaw('sec-websocket-protocol')
+  pushRaw('sec-websocket-extensions')
+  headers.push(`Origin: ${controlUiOrigin}`)
+
+  for (const header of rawHeaders.get('cookie') || []) {
+    const filteredCookie = filterCookieHeader(header.value)
+    if (filteredCookie) headers.push(`Cookie: ${filteredCookie}`)
+  }
+
+  if (rawHeaders.has('authorization')) {
+    pushRaw('authorization')
+  } else if (dashboardToken) {
+    headers.push(`Authorization: Bearer ${dashboardToken}`)
+  }
+
   return headers
 }
 
 function tunnelDashboardUpgrade(req, socket, head, upstreamWsUrl, instanceId, controlUiOrigin) {
-  const isSecure = upstreamWsUrl.protocol === 'wss:'
-  const port = Number(upstreamWsUrl.port || (isSecure ? 443 : 80))
+  socket.pause()
+  const dashboardToken = readCookieValue(req.headers.cookie, openClawDashboardTokenCookieName)
+  const upstreamUrlWithToken = withDashboardTokenQuery(upstreamWsUrl, dashboardToken)
+  const redactedUpstreamUrl = redactSensitiveUrl(upstreamUrlWithToken)
+  const isSecure = upstreamUrlWithToken.protocol === 'wss:'
+  const port = Number(upstreamUrlWithToken.port || (isSecure ? 443 : 80))
   const upstreamSocket = isSecure
-    ? tls.connect({ host: upstreamWsUrl.hostname, port, servername: upstreamWsUrl.hostname })
-    : net.connect({ host: upstreamWsUrl.hostname, port })
-  const upstreamPath = `${upstreamWsUrl.pathname || '/'}${upstreamWsUrl.search || ''}`
+    ? tls.connect({ host: upstreamUrlWithToken.hostname, port, servername: upstreamUrlWithToken.hostname })
+    : net.connect({ host: upstreamUrlWithToken.hostname, port })
+  const upstreamPath = `${upstreamUrlWithToken.pathname || '/'}${upstreamUrlWithToken.search || ''}`
   const requestHead = [
     `GET ${upstreamPath} HTTP/1.1`,
-    ...buildRawDashboardUpgradeHeaders(req, upstreamWsUrl, controlUiOrigin),
+    ...buildRawDashboardUpgradeHeaders(req, upstreamUrlWithToken, controlUiOrigin),
     '',
     '',
   ].join('\r\n')
@@ -443,30 +671,31 @@ function tunnelDashboardUpgrade(req, socket, head, upstreamWsUrl, instanceId, co
     opened = true
     upstreamSocket.write(requestHead)
     if (head?.length) upstreamSocket.write(head)
+    socket.pipe(upstreamSocket, { end: false })
+    upstreamSocket.pipe(socket, { end: false })
     upstreamSocket.resume()
     socket.resume()
     logBridge('dashboard-tunnel-open', {
       path: req.url || '/',
-      upstreamUrl: upstreamWsUrl.toString(),
+      upstreamUrl: redactedUpstreamUrl,
       instanceId,
       remoteAddress: req.socket.remoteAddress || 'unknown',
+      dashboardTokenPresent: Boolean(dashboardToken),
     })
   })
 
   upstreamSocket.on('data', (chunk) => {
     upstreamBytes += chunk.length
-    if (!socket.destroyed) socket.write(chunk)
   })
 
   socket.on('data', (chunk) => {
     clientBytes += chunk.length
-    if (!upstreamSocket.destroyed) upstreamSocket.write(chunk)
   })
 
   upstreamSocket.on('error', (error) => {
     logBridge('dashboard-tunnel-error', {
       path: req.url || '/',
-      upstreamUrl: upstreamWsUrl.toString(),
+      upstreamUrl: redactedUpstreamUrl,
       instanceId,
       reason: error instanceof Error ? error.message : 'upstream error',
     })
@@ -480,7 +709,7 @@ function tunnelDashboardUpgrade(req, socket, head, upstreamWsUrl, instanceId, co
   upstreamSocket.on('close', (hadError) => {
     logBridge('dashboard-tunnel-upstream-close', {
       path: req.url || '/',
-      upstreamUrl: upstreamWsUrl.toString(),
+      upstreamUrl: redactedUpstreamUrl,
       instanceId,
       hadError,
       upstreamBytes,
@@ -492,7 +721,7 @@ function tunnelDashboardUpgrade(req, socket, head, upstreamWsUrl, instanceId, co
   socket.on('close', (hadError) => {
     logBridge('dashboard-tunnel-client-close', {
       path: req.url || '/',
-      upstreamUrl: upstreamWsUrl.toString(),
+      upstreamUrl: redactedUpstreamUrl,
       instanceId,
       hadError,
       upstreamBytes,
@@ -631,14 +860,7 @@ server.on('upgrade', (req, socket, head) => {
       rejectUnauthorizedUpgrade(req, socket, req.url || '/')
       return
     }
-    const { upstreamWsUrl, instanceId, controlUiOrigin } = resolveDashboardUpstream(req)
-    logBridge('dashboard-upgrade-accepted', {
-      path: req.url || '/',
-      upstreamUrl: upstreamWsUrl.toString(),
-      instanceId,
-      remoteAddress: req.socket.remoteAddress || 'unknown',
-    })
-    tunnelDashboardUpgrade(req, socket, head, upstreamWsUrl, instanceId, controlUiOrigin)
+    handleDashboardProxyUpgrade(req, socket, head, 'dashboard-upgrade-accepted')
     return
   }
 
@@ -653,47 +875,42 @@ server.on('upgrade', (req, socket, head) => {
   socket.destroy()
 })
 
-dashboardWsProxyServer.on('upgrade', (req, socket, head) => {
-  if ((req.url || '').startsWith(terminalProxyPath)) {
-    if (!isAuthenticatedUpgrade(req)) {
-      rejectUnauthorizedUpgrade(req, socket, req.url || '/')
+if (dashboardWsProxyServer) {
+  dashboardWsProxyServer.on('upgrade', (req, socket, head) => {
+    if ((req.url || '').startsWith(terminalProxyPath)) {
+      if (!isAuthenticatedUpgrade(req)) {
+        rejectUnauthorizedUpgrade(req, socket, req.url || '/')
+        return
+      }
+      logBridge('terminal-sidecar-upgrade-accepted', {
+        path: req.url || '/',
+        remoteAddress: req.socket.remoteAddress || 'unknown',
+      })
+      clientWss.handleUpgrade(req, socket, head, (ws) => {
+        clientWss.emit('connection', ws, req)
+      })
       return
     }
-    logBridge('terminal-sidecar-upgrade-accepted', {
+
+    if (
+      (req.url || '').startsWith(legacyDashboardProxyPrefix) ||
+      (req.url || '').startsWith(instancesProxyPrefix)
+    ) {
+      if (!isAuthenticatedUpgrade(req)) {
+        rejectUnauthorizedUpgrade(req, socket, req.url || '/')
+        return
+      }
+      handleDashboardProxyUpgrade(req, socket, head, 'dashboard-sidecar-upgrade-accepted')
+      return
+    }
+
+    logBridge('dashboard-sidecar-upgrade-rejected', {
       path: req.url || '/',
       remoteAddress: req.socket.remoteAddress || 'unknown',
     })
-    clientWss.handleUpgrade(req, socket, head, (ws) => {
-      clientWss.emit('connection', ws, req)
-    })
-    return
-  }
-
-  if (
-    (req.url || '').startsWith(legacyDashboardProxyPrefix) ||
-    (req.url || '').startsWith(instancesProxyPrefix)
-  ) {
-    if (!isAuthenticatedUpgrade(req)) {
-      rejectUnauthorizedUpgrade(req, socket, req.url || '/')
-      return
-    }
-    const { upstreamWsUrl, instanceId, controlUiOrigin } = resolveDashboardUpstream(req)
-    logBridge('dashboard-sidecar-upgrade-accepted', {
-      path: req.url || '/',
-      upstreamUrl: upstreamWsUrl.toString(),
-      instanceId,
-      remoteAddress: req.socket.remoteAddress || 'unknown',
-    })
-    tunnelDashboardUpgrade(req, socket, head, upstreamWsUrl, instanceId, controlUiOrigin)
-    return
-  }
-
-  logBridge('dashboard-sidecar-upgrade-rejected', {
-    path: req.url || '/',
-    remoteAddress: req.socket.remoteAddress || 'unknown',
+    socket.destroy()
   })
-  socket.destroy()
-})
+}
 
 server.listen(port, hostname, () => {
   console.log(`dashboard server listening on http://${hostname}:${port}`)
@@ -702,12 +919,16 @@ server.listen(port, hostname, () => {
     port,
     terminalServerUrl: terminalServerUrl.toString(),
     soleOwnerPath: terminalProxyPath,
+    dashboardWebSocketPath: legacyDashboardProxyPrefix,
+    dashboardSidecarPort: dashboardWsProxyPort,
   })
 })
 
-dashboardWsProxyServer.listen(dashboardWsProxyPort, hostname, () => {
-  logBridge('dashboard-sidecar-listening', {
-    hostname,
-    port: dashboardWsProxyPort,
+if (dashboardWsProxyServer) {
+  dashboardWsProxyServer.listen(dashboardWsProxyPort, hostname, () => {
+    logBridge('dashboard-sidecar-listening', {
+      hostname,
+      port: dashboardWsProxyPort,
+    })
   })
-})
+}

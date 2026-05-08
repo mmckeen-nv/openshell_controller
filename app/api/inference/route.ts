@@ -106,8 +106,12 @@ function isVllmEndpoint(name: string, baseUrl: string) {
   return [name, baseUrl].some((value) => /vllm/i.test(value))
 }
 
+function isOllamaEndpoint(name: string, baseUrl: string) {
+  return [name, baseUrl].some((value) => /ollama|11434/i.test(value))
+}
+
 function normalizeProviderType(type: string, name: string, baseUrl: string) {
-  return isVllmEndpoint(name, baseUrl) ? "openai" : type
+  return isVllmEndpoint(name, baseUrl) || isOllamaEndpoint(name, baseUrl) ? "openai" : type
 }
 
 function redactSecretOutput(value: string, secrets: string[] = []) {
@@ -153,7 +157,7 @@ export async function POST(request: Request) {
     const credentialKey = optionalString(body?.credentialKey) || "OPENAI_API_KEY"
     const makeActive = body?.makeActive !== false
     const system = body?.route === "system" || body?.system === true
-    const noVerify = body?.noVerify !== false || isVllmEndpoint(name, baseUrl)
+    const noVerify = body?.noVerify !== false || isVllmEndpoint(name, baseUrl) || isOllamaEndpoint(name, baseUrl)
     const timeout = Number(body?.timeout ?? 0)
 
     if (makeActive && !model) throw new Error("model is required when making the endpoint active")

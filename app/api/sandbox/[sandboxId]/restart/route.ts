@@ -2,6 +2,7 @@ import { NextResponse } from "next/server"
 import { execFile } from "node:child_process"
 import { promisify } from "node:util"
 import { OPENSHELL_BIN, hostCommandEnv } from "@/app/lib/hostCommands"
+import { recoverSandboxWithNemoClaw } from "@/app/lib/nemoclawCli"
 import { inspectSandbox, resolveSandboxRef } from "@/app/lib/openshellHost"
 
 const execFileAsync = promisify(execFile)
@@ -100,6 +101,21 @@ export async function POST(
       }, { status: 409 })
     }
 
+    const nemoclawRecover = await recoverSandboxWithNemoClaw(sandboxName)
+    if (nemoclawRecover.attempted && nemoclawRecover.ok) {
+      return NextResponse.json({
+        ok: true,
+        restarted: true,
+        restartMode: "nemoclaw-recover",
+        sandboxId: resolved.id,
+        sandboxName,
+        readiness,
+        nemoclawRecover,
+        elapsedMs: Date.now() - startedAt,
+        note: "NemoClaw recover completed. The sandbox runtime and dashboard forward were checked without deleting the sandbox.",
+      })
+    }
+
     const runtime = await runSandboxShell(sandboxName, restartOpenClawGatewayScript(), 45000)
 
     return NextResponse.json({
@@ -109,9 +125,12 @@ export async function POST(
       sandboxId: resolved.id,
       sandboxName,
       readiness,
+      nemoclawRecover,
       runtime,
       elapsedMs: Date.now() - startedAt,
-      note: "OpenClaw runtime restarted inside the sandbox. The sandbox pod was not deleted.",
+      note: nemoclawRecover.attempted
+        ? "NemoClaw recover did not complete, so the dashboard fell back to restarting the in-sandbox OpenClaw runtime. The sandbox pod was not deleted."
+        : "OpenClaw runtime restarted inside the sandbox. The sandbox pod was not deleted.",
     })
   } catch (error) {
     const message = error instanceof Error ? error.message : "Failed to restart sandbox runtime"

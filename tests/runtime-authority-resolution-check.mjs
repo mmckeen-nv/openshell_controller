@@ -36,6 +36,8 @@ assert.match(dashboardOpenSource, /authority:\s*\{[\s\S]*sandboxAuthority:/, 'da
 assert.match(dashboardOpenSource, /bootstrapUrl: probe\.bootstrapUrl/, 'dashboard open route must surface the resolved bootstrap URL explicitly')
 assert.match(dashboardOpenSource, /bootstrapAuthority: probe\.bootstrapAuthority/, 'dashboard open route must surface tokenized bootstrap authority explicitly')
 assert.match(dashboardOpenSource, /probe\.bootstrapAuthority === 'tokenized-cli'/, 'dashboard open route truth must prefer tokenized bootstrap evidence over raw loopback fetch alone')
+assert.match(dashboardOpenSource, /process\.env\.OPENCLAW_DASHBOARD_BASE_WS_URL\?\.trim\(\) \|\| process\.env\.BASE_WS_URL\?\.trim\(\) \|\| null/, 'dashboard open route must allow a fully qualified browser websocket base URL')
+assert.match(dashboardOpenSource, /const wsProxyPort = process\.env\.OPENCLAW_DASHBOARD_WS_PROXY_PORT\?\.trim\(\) \|\| ''/, 'dashboard open route must not hardcode the dedicated websocket sidecar port')
 
 assert.match(dashboardProxySource, /resolveRuntimeAuthority\(\{[\s\S]*sandboxId: requestUrl\.searchParams\.get\('sandboxId'\)/, 'dashboard proxy must resolve target from shared authority source')
 assert.match(dashboardProxySource, /x-openclaw-dashboard-bootstrap-contract/, 'dashboard proxy must mark the tokenized bootstrap bridge contract in response headers')
@@ -54,9 +56,11 @@ assert.match(openshellHostSource, /const canMintBootstrapFromCli = instance\.id 
 assert.match(openshellHostSource, /readSandboxOpenClawDashboardToken/, 'sandbox dashboard bootstrap must fall back to the sandbox OpenClaw token when CLI output is bare')
 assert.match(openshellHostSource, /openclaw dashboard', 15000\)\.catch/, 'sandbox dashboard bootstrap should let OpenClaw initialize before reading the fallback token')
 assert.match(openshellHostSource, /withDashboardToken\(tokenizedBootstrapUrl, token\)/, 'sandbox dashboard bootstrap should synthesize a tokenized launch URL from the fallback token')
-assert.match(packageJsonSource, /"dev": "node server\.mjs"/, 'development script must run through the custom server so websocket proxy bridges are active')
-assert.match(serverSource, /const dashboardWsProxyServer = http\.createServer/, 'custom server must provision a dedicated dashboard websocket sidecar')
-assert.match(serverSource, /dashboard-sidecar-listening/, 'custom server must expose the dashboard websocket sidecar listener')
+assert.match(packageJsonSource, /"dev": "NODE_ENV=development node server\.mjs"/, 'development script must run through the custom server so websocket proxy bridges are active')
+assert.match(packageJsonSource, /"start": "NODE_ENV=production node server\.mjs"/, 'production start must run the custom server without Next dev-mode heap growth')
+assert.match(serverSource, /const dashboardWsProxyPort = parseOptionalPort\(process\.env\.OPENCLAW_DASHBOARD_WS_PROXY_PORT/, 'custom server must make the dedicated dashboard websocket sidecar opt-in')
+assert.match(serverSource, /const dashboardWsProxyServer = dashboardWsProxyPort\s*\?\s*http\.createServer/, 'custom server must only provision the sidecar when explicitly configured')
+assert.match(serverSource, /dashboard-sidecar-listening/, 'custom server must still expose the optional dashboard websocket sidecar listener')
 assert.match(serverSource, /dashboard-upgrade-accepted/, 'custom server must accept dashboard websocket upgrades through the proxy path')
 
 console.log('runtime-authority-resolution-check: PASS shared authority resolution assertions')

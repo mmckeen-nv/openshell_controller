@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server"
-import { createSessionCookieValue, getAuthSettings, sessionCookieOptions, verifyRecoveryToken } from "@/app/lib/controlAuth"
+import { createSessionCookieValue, getAuthSettings, sessionCookieOptionsForRequest, verifyRecoveryToken } from "@/app/lib/controlAuth"
 import { updateLocalAuthCredentials } from "@/app/lib/controlAuthConfig"
 import { checkRateLimit, clearRateLimit, rateLimitKey, recordRateLimitFailure } from "@/app/lib/rateLimit"
 
@@ -37,6 +37,6 @@ export async function POST(request: NextRequest) {
     recoveryToken: result.recoveryToken,
     note: "Password reset. Save the new recovery token from .env.local.",
   })
-  response.cookies.set(settings.cookieName, await createSessionCookieValue(), sessionCookieOptions)
+  response.cookies.set(settings.cookieName, await createSessionCookieValue(), sessionCookieOptionsForRequest(request))
   return response
 }

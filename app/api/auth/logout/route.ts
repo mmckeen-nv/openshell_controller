@@ -1,14 +1,11 @@
-import { NextResponse } from "next/server"
-import { getAuthSettings } from "@/app/lib/controlAuth"
+import { NextRequest, NextResponse } from "next/server"
+import { getAuthSettings, sessionCookieOptionsForRequest } from "@/app/lib/controlAuth"
 
-export async function POST() {
+export async function POST(request: NextRequest) {
   const settings = getAuthSettings()
   const response = NextResponse.json({ ok: true })
   response.cookies.set(settings.cookieName, "", {
-    httpOnly: true,
-    sameSite: "lax",
-    secure: process.env.NODE_ENV === "production",
-    path: "/",
+    ...sessionCookieOptionsForRequest(request),
     maxAge: 0,
   })
   return response

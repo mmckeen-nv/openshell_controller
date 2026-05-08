@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { getDefaultOpenClawDashboardInstanceId, getOpenClawDashboardUrl, probeOpenClawDashboard } from '../../../../lib/openshellHost'
 import { getOpenClawInstanceIdForSandbox, resolveOpenClawInstance, resolveOpenClawInstanceForSandbox } from '../../../../lib/openclawInstances'
 import { resolveRuntimeAuthority } from '../../../../lib/runtimeAuthority'
+import { extractOpenClawDashboardToken, setOpenClawDashboardTokenCookie } from '../../../../lib/openclawDashboardToken'
 
 function parseInventoryCount(requestUrl: URL) {
   const raw = requestUrl.searchParams.get('inventoryCount')
@@ -14,12 +15,37 @@ function firstHeaderValue(value: string | null) {
   return value?.split(',')[0]?.trim() || null
 }
 
+function getConfiguredBaseWsUrl() {
+  return process.env.OPENCLAW_DASHBOARD_BASE_WS_URL?.trim() || process.env.BASE_WS_URL?.trim() || null
+}
+
+function normalizeBrowserWebSocketBase(value: string | null, proxiedUrl: string) {
+  if (!value) return null
+  const parsed = new URL(value)
+  if (parsed.protocol === 'http:') parsed.protocol = 'ws:'
+  if (parsed.protocol === 'https:') parsed.protocol = 'wss:'
+  if (parsed.protocol !== 'ws:' && parsed.protocol !== 'wss:') {
+    throw new Error('OPENCLAW_DASHBOARD_BASE_WS_URL/BASE_WS_URL must use ws://, wss://, http://, or https://')
+  }
+
+  parsed.hash = ''
+  if (parsed.pathname === '/' || parsed.pathname === '') {
+    parsed.pathname = proxiedUrl
+  } else {
+    parsed.pathname = parsed.pathname.replace(/\/+$/, '') || '/'
+  }
+  return parsed.toString()
+}
+
 function buildBrowserGatewayUrl(request: Request, requestUrl: URL, proxiedUrl: string) {
+  const configuredBaseWsUrl = normalizeBrowserWebSocketBase(getConfiguredBaseWsUrl(), proxiedUrl)
+  if (configuredBaseWsUrl) return configuredBaseWsUrl
+
   const forwardedProtocol = firstHeaderValue(request.headers.get('x-forwarded-proto'))
   const forwardedHost = firstHeaderValue(request.headers.get('x-forwarded-host'))
   const host = forwardedHost || request.headers.get('host') || requestUrl.host
   const protocol = (forwardedProtocol || requestUrl.protocol.replace(/:$/, '')) === 'https' ? 'wss:' : 'ws:'
-  const wsProxyPort = process.env.OPENCLAW_DASHBOARD_WS_PROXY_PORT?.trim() || '3001'
+  const wsProxyPort = process.env.OPENCLAW_DASHBOARD_WS_PROXY_PORT?.trim() || ''
   const gatewayHost = wsProxyPort
     ? new URL(`${requestUrl.protocol}//${host}`).hostname + `:${wsProxyPort}`
     : host
@@ -82,7 +108,7 @@ export async function GET(request: Request) {
   const proxiedUrl = authority.bridgeActive ? instanceQualifiedProxyBase : '/api/openshell/dashboard/proxy'
   const launchUrl = buildLaunchUrl(request, requestUrl, proxiedUrl, probe.bootstrapUrl)
 
-  return NextResponse.json({
+  const response = NextResponse.json({
     ok: true,
     sandboxId,
     sandboxInstanceId: mappedSandboxInstanceId,
@@ -130,4 +156,6 @@ export async function GET(request: Request) {
             ? 'OpenClaw Dashboard is loopback-only on the host, so the web UI uses a local proxy route to expose it.'
             : 'OpenClaw Dashboard is reachable directly for this instance.'
   })
+  setOpenClawDashboardTokenCookie(response, request, proxiedUrl, extractOpenClawDashboardToken(probe.bootstrapUrl))
+  return response
 }
