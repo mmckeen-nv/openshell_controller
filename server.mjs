@@ -729,6 +729,7 @@ function tunnelDashboardUpgrade(req, socket, head, upstreamWsUrl, instanceId, co
     socket.pipe(upstreamSocket, { end: false })
     upstreamSocket.pipe(socket, { end: false })
     upstreamSocket.resume()
+    socket.allowHalfOpen = true
     socket.resume()
     logBridge('dashboard-tunnel-open', {
       path: req.url || '/',
@@ -772,7 +773,18 @@ function tunnelDashboardUpgrade(req, socket, head, upstreamWsUrl, instanceId, co
     })
   })
 
-  socket.on('error', () => upstreamSocket.destroy())
+  socket.on('error', (e) => {
+    logBridge('dashboard-tunnel-client-error', {
+      path: req.url || '/',
+      upstreamUrl: upstreamWsUrl.toString(),
+      instanceId,
+      code: e?.code,
+      message: e?.message,
+      upstreamBytes,
+      clientBytes,
+    })
+    upstreamSocket.destroy()
+  })
   socket.on('close', (hadError) => {
     logBridge('dashboard-tunnel-client-close', {
       path: req.url || '/',

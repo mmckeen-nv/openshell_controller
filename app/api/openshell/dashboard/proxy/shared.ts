@@ -246,7 +246,23 @@ function bootstrapScriptResponse(proxyPrefix: string) {
     };
     const settings = readSettings();
 
-    settings.gatewayUrl = gatewayUrl;
+    // Purge stale scoped settings for other gateway URLs so OpenClaw does not
+    // detect a URL change and show the "Change Gateway URL" confirmation modal.
+    try {
+      const keysToRemove = [];
+      for (let i = 0; i < window.localStorage.length; i++) {
+        const k = window.localStorage.key(i);
+        if (k && k.startsWith(settingsPrefix) && !settingsKeys.includes(k) && k !== settingsPrefix + 'default' && k !== settingsKey) {
+          keysToRemove.push(k);
+        }
+      }
+      for (const k of keysToRemove) window.localStorage.removeItem(k);
+    } catch {}
+
+    const effectiveGatewayUrl = token
+      ? gatewayUrl + (gatewayUrl.includes('?') ? '&' : '?') + 'token=' + encodeURIComponent(token)
+      : gatewayUrl;
+    settings.gatewayUrl = effectiveGatewayUrl;
     const serializedSettings = JSON.stringify(settings);
     window.localStorage.setItem(settingsKey, serializedSettings);
     for (const key of settingsKeys) window.localStorage.setItem(key, serializedSettings);
@@ -257,6 +273,23 @@ function bootstrapScriptResponse(proxyPrefix: string) {
   } catch {
     // Best-effort compatibility bridge for OpenClaw's persisted UI settings.
   }
+
+  // Auto-confirm the "Change Gateway URL" modal — this modal appears when OpenClaw detects
+  // a URL change between sandbox sessions, but we always trust the URL set by this proxy.
+  try {
+    const interval = setInterval(() => {
+      if (!document.body.textContent?.includes('Change Gateway URL')) return;
+      const buttons = document.querySelectorAll('button');
+      for (const btn of buttons) {
+        if (btn.textContent?.trim() === 'Confirm') {
+          btn.click();
+          clearInterval(interval);
+          break;
+        }
+      }
+    }, 100);
+    setTimeout(() => clearInterval(interval), 10000);
+  } catch {}
 })();
 `
 

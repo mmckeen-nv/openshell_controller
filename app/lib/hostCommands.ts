@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, readdirSync, statSync } from "node:fs"
+import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from "node:fs"
 import path from "node:path"
 
 const HOME = process.env.HOME || ""
@@ -222,10 +222,17 @@ export const NEMOCLAW_SETUP_CANDIDATES = unique([
 ])
 export const NEMOCLAW_SETUP = firstExisting(NEMOCLAW_SETUP_CANDIDATES, "")
 
+function resolveSymlink(p: string) {
+  try { return realpathSync(p) } catch { return p }
+}
+
 export const NEMOCLAW_CWD_CANDIDATES = unique([
   process.env.NEMOCLAW_CWD,
   HOME ? path.join(HOME, ".nemoclaw/source") : undefined,
   NEMOCLAW_SETUP ? path.dirname(path.dirname(NEMOCLAW_SETUP)) : undefined,
+  // Resolve symlinks before dirname so npm-linked binaries (e.g. NVM → /opt/nemoclaw)
+  // yield the real source root rather than the NVM install directory.
+  NEMOCLAW_BIN.includes("/") ? path.dirname(path.dirname(resolveSymlink(NEMOCLAW_BIN))) : undefined,
   NEMOCLAW_BIN.includes("/") ? path.dirname(path.dirname(NEMOCLAW_BIN)) : undefined,
   HOME ? path.join(HOME, "NemoClaw") : undefined,
   HOME ? path.join(HOME, "nemoclaw") : undefined,

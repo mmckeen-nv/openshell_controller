@@ -260,6 +260,19 @@ async function listOpenShellSandboxNames() {
   }
 }
 
+async function resolveSourceDockerImage(sandboxName: string): Promise<string | null> {
+  try {
+    const { stdout } = await execFileAsync(DOCKER_BIN, [
+      "ps",
+      "--filter", `name=openshell-${sandboxName}`,
+      "--format", "{{.Image}}",
+    ], { env: hostCommandEnv(), timeout: 10000, maxBuffer: 1024 * 1024 })
+    return String(stdout).trim().split(/\r?\n/)[0] || null
+  } catch {
+    return null
+  }
+}
+
 async function resolveSourcePodImageFromRef(sourceSandboxRef: string) {
   const requested = sourceSandboxRef.trim()
   const source = await resolveSandboxRef(requested)
@@ -267,6 +280,7 @@ async function resolveSourcePodImageFromRef(sourceSandboxRef: string) {
   const sourceImage = await readPodImage(sourceName, '{.spec.containers[?(@.name=="agent")].image}')
     .catch(() => null)
     || await readPodImage(sourceName, "{.spec.containers[0].image}").catch(() => null)
+    || await resolveSourceDockerImage(sourceName)
 
   if (!sourceImage) {
     throw new Error(`Could not resolve the running image for source sandbox '${sourceName}'.`)
@@ -510,7 +524,7 @@ async function runCreateCommandBounded(file: string, args: string[], env: NodeJS
   })
 }
 
-async function runCreateCommandUntilReady(file: string, args: string[], env: NodeJS.ProcessEnv, sandboxName: string, timeoutMs: number, intervalMs: number) {
+async function runCreateCommandUntilReady(file: string, args: string[], env: NodeJS.ProcessEnv, sandboxName: string, timeoutMs: number, intervalMs: number, cwd?: string) {
   const startedAt = Date.now()
   console.log(`[sandbox/create] ready-command:start file=${file} args=${JSON.stringify(args)} timeoutMs=${timeoutMs}`)
 
@@ -526,6 +540,7 @@ async function runCreateCommandUntilReady(file: string, args: string[], env: Nod
   }>((resolve) => {
     const child = spawn(file, args, {
       env,
+      cwd,
       stdio: ["ignore", "pipe", "pipe"],
     })
 
@@ -768,20 +783,45 @@ export async function POST(request: Request) {
         OPENSHELL_GATEWAY: process.env.OPENSHELL_GATEWAY || "nemoclaw",
       })
 
+      // When Ollama is configured, route NemoClaw to the local Ollama provider
+      // so it never falls back to NVIDIA NIM even if NEMOCLAW_PROVIDER was
+      // omitted from .env.local.
+      if (process.env.OLLAMA_BASE_URL && !env.NEMOCLAW_PROVIDER) {
+        env.NEMOCLAW_PROVIDER = "ollama"
+        if (process.env.OLLAMA_MODEL && !env.NEMOCLAW_MODEL) {
+          env.NEMOCLAW_MODEL = process.env.OLLAMA_MODEL
+        }
+      }
+
       if (!enableTailscale) {
         env.NVIDIA_API_KEY = env.NVIDIA_API_KEY || "optional-local-mode"
       }
 
       applyCreateInferenceEnv(env, createInference, body)
 
-      const result = await runCommand(
+      // Use runCreateCommandUntilReady so the controller resolves as soon as the sandbox
+      // reaches Ready — before nemoclaw's step 8/8 policy application, which exits 1 on timeout.
+      const result = await runCreateCommandUntilReady(
         createCommand.file,
         createCommand.mode === "legacy-setup" ? [...createCommand.args, sandboxName] : createCommand.args,
         env,
+        sandboxName,
+        600000,
+        5000,
         NEMOCLAW_CWD,
       )
 
-      if (!result.ok) {
+      // If the command exited non-zero before the sandbox was detected as Ready, do one
+      // final readiness poll before giving up — the sandbox may have just beaten the interval.
+      const readiness = await waitForSandboxReady(sandboxName, 90000, 2000)
+      const verification = readiness.verification ?? {
+        verified: false,
+        summary: "Sandbox readiness polling produced no verification result.",
+        error: "Sandbox readiness polling produced no verification result.",
+      }
+      const created = readiness.verified
+
+      if (!created && result.error && !result.timedOut) {
         return NextResponse.json({
           ok: false,
           error: result.error,
@@ -796,13 +836,6 @@ export async function POST(request: Request) {
         }, { status: 500 })
       }
 
-      const readiness = await waitForSandboxReady(sandboxName, 90000, 2000)
-      const verification = readiness.verification ?? {
-        verified: false,
-        summary: "Sandbox readiness polling produced no verification result.",
-        error: "Sandbox readiness polling produced no verification result.",
-      }
-      const created = readiness.verified
       const execApprovalsRepair = created && isOpenClawAgent ? await repairOpenClawExecApprovalsFile(sandboxName).catch((error) => ({
         sandboxName,
         path: "/sandbox/.openclaw/exec-approvals.json",
@@ -810,7 +843,7 @@ export async function POST(request: Request) {
       })) : null
       const deviceApproval = created && isOpenClawAgent ? await approveOpenClawDeviceRequests(sandboxName) : null
       console.log(
-        `[sandbox/create] request:complete sandbox=${sandboxName} created=${created} agent=${agent} readinessAttempts=${readiness.attempts} deviceApproval=${deviceApproval?.approved ?? false} elapsedMs=${elapsedMs(requestStartedAt)}`,
+        `[sandbox/create] request:complete sandbox=${sandboxName} created=${created} agent=${agent} forcedReady=${result.forcedReady} readinessAttempts=${readiness.attempts} deviceApproval=${deviceApproval?.approved ?? false} elapsedMs=${elapsedMs(requestStartedAt)}`,
       )
 
       return NextResponse.json({
@@ -825,7 +858,13 @@ export async function POST(request: Request) {
         enableTailscale,
         gpuMode,
         createInference,
-        createCommand,
+        createCommand: {
+          ...createCommand,
+          forcedReady: result.forcedReady,
+          timedOut: result.timedOut,
+          exitCode: result.exitCode,
+          signal: result.signal,
+        },
         hostPath: HOST_PATH,
         readiness: {
           attempts: readiness.attempts,
@@ -839,9 +878,11 @@ export async function POST(request: Request) {
           ? appendNote(
               agent === "hermes"
                 ? "NemoClaw Hermes workflow completed. Hermes exposes an API endpoint from the sandbox rather than an OpenClaw browser dashboard."
-                : enableTailscale
-                  ? "NemoClaw blueprint workflow completed with Tailscale-enabled prerequisites. Existing healthy OpenShell gateways are reused before any new gateway start is attempted."
-                  : "NemoClaw blueprint workflow completed in local/default mode. Existing healthy OpenShell gateways are reused before any new gateway start is attempted.",
+                : result.forcedReady
+                  ? "NemoClaw blueprint workflow: sandbox reached Ready state and the onboard command was stopped early."
+                  : enableTailscale
+                    ? "NemoClaw blueprint workflow completed with Tailscale-enabled prerequisites. Existing healthy OpenShell gateways are reused before any new gateway start is attempted."
+                    : "NemoClaw blueprint workflow completed in local/default mode. Existing healthy OpenShell gateways are reused before any new gateway start is attempted.",
               gpuMode === "none"
                 ? "GPU passthrough was disabled for this create run."
                 : gpuMode === "required"
