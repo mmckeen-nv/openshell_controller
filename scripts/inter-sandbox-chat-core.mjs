@@ -1,11 +1,14 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises"
+import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 
 export const STORE_DIR = process.env.NEMOCLAW_DASHBOARD_STATE_DIR || path.join(os.homedir(), ".nemoclaw-dashboard")
 export const STORE_PATH = process.env.INTER_SANDBOX_CHAT_STORE || path.join(STORE_DIR, "inter-sandbox-chat.json")
+export const STORE_LOCK_PATH = process.env.INTER_SANDBOX_CHAT_STORE_LOCK || `${STORE_PATH}.lock`
 export const MAX_MESSAGES_PER_ROOM = Number.parseInt(process.env.INTER_SANDBOX_CHAT_ROOM_LIMIT || "500", 10)
 export const MAX_MESSAGE_LENGTH = Number.parseInt(process.env.INTER_SANDBOX_CHAT_MESSAGE_LIMIT || "8000", 10)
+const LOCK_TIMEOUT_MS = Number.parseInt(process.env.INTER_SANDBOX_CHAT_LOCK_TIMEOUT_MS || "10000", 10)
+const LOCK_STALE_MS = Number.parseInt(process.env.INTER_SANDBOX_CHAT_LOCK_STALE_MS || "30000", 10)
 
 const ACK_STATUSES = new Set(["received", "processed", "failed"])
 
@@ -39,6 +42,41 @@ export function cleanAckStatus(value) {
 export function normalizeStringArray(value) {
   if (!Array.isArray(value)) return []
   return Array.from(new Set(value.map((entry) => cleanText(entry)).filter(Boolean)))
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+async function withStoreLock(work) {
+  const started = Date.now()
+  while (true) {
+    try {
+      await mkdir(STORE_LOCK_PATH, { recursive: false, mode: 0o700 })
+      break
+    } catch (error) {
+      if (error?.code !== "EEXIST") throw error
+      try {
+        const lockStat = await stat(STORE_LOCK_PATH)
+        if (Date.now() - lockStat.mtimeMs > LOCK_STALE_MS) {
+          await rm(STORE_LOCK_PATH, { recursive: true, force: true })
+          continue
+        }
+      } catch (statError) {
+        if (statError?.code !== "ENOENT") throw statError
+      }
+      if (Date.now() - started > LOCK_TIMEOUT_MS) {
+        throw new Error(`timed out waiting for inter-sandbox chat store lock: ${STORE_LOCK_PATH}`)
+      }
+      await sleep(25 + Math.floor(Math.random() * 50))
+    }
+  }
+
+  try {
+    return await work()
+  } finally {
+    await rm(STORE_LOCK_PATH, { recursive: true, force: true })
+  }
 }
 
 export function messageNeedsAck(message) {
@@ -80,9 +118,15 @@ export async function readStore() {
   }
 }
 
-export async function writeStore(store) {
+async function writeStoreUnlocked(store) {
   await mkdir(path.dirname(STORE_PATH), { recursive: true, mode: 0o700 })
-  await writeFile(STORE_PATH, `${JSON.stringify(store, null, 2)}\n`, { mode: 0o600 })
+  const tmpPath = `${STORE_PATH}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2)}.tmp`
+  await writeFile(tmpPath, `${JSON.stringify(store, null, 2)}\n`, { mode: 0o600 })
+  await rename(tmpPath, STORE_PATH)
+}
+
+export async function writeStore(store) {
+  return await withStoreLock(() => writeStoreUnlocked(store))
 }
 
 export function messageTargetsAgent(message, { agentId, sandboxId, sandboxName, includeBroadcast = false } = {}) {
@@ -129,42 +173,44 @@ export async function postChatMessage({
   targetSandboxIds,
   targetSandboxNames,
 }) {
-  const store = await readStore()
-  const roomId = cleanRoom(room)
-  const senderName = cleanText(sender, "anonymous-sandbox").slice(0, 120) || "anonymous-sandbox"
-  const text = cleanText(message).slice(0, MAX_MESSAGE_LENGTH)
-  if (!text) return { ok: false, error: "message is required" }
+  return await withStoreLock(async () => {
+    const store = await readStore()
+    const roomId = cleanRoom(room)
+    const senderName = cleanText(sender, "anonymous-sandbox").slice(0, 120) || "anonymous-sandbox"
+    const text = cleanText(message).slice(0, MAX_MESSAGE_LENGTH)
+    if (!text) return { ok: false, error: "message is required" }
 
-  const currentRoom = roomData(store, roomId)
-  const messageOrigin = cleanOrigin(origin)
-  const requiresAck = messageOrigin === "operator"
-  const targets = {
-    agentIds: normalizeStringArray(targetAgentIds),
-    sandboxIds: normalizeStringArray(targetSandboxIds),
-    sandboxNames: normalizeStringArray(targetSandboxNames),
-  }
-  const hasTargets = targets.agentIds.length > 0 || targets.sandboxIds.length > 0 || targets.sandboxNames.length > 0
-  const entry = {
-    id: `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
-    at: nowIso(),
-    room: roomId,
-    sender: senderName,
-    origin: messageOrigin,
-    requiresAck,
-    ...(requiresAck ? { ackToken: cleanText(ackToken).slice(0, 160) || undefined } : {}),
-    ...(hasTargets ? { targets } : {}),
-    message: text,
-  }
+    const currentRoom = roomData(store, roomId)
+    const messageOrigin = cleanOrigin(origin)
+    const requiresAck = messageOrigin === "operator"
+    const targets = {
+      agentIds: normalizeStringArray(targetAgentIds),
+      sandboxIds: normalizeStringArray(targetSandboxIds),
+      sandboxNames: normalizeStringArray(targetSandboxNames),
+    }
+    const hasTargets = targets.agentIds.length > 0 || targets.sandboxIds.length > 0 || targets.sandboxNames.length > 0
+    const entry = {
+      id: `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
+      at: nowIso(),
+      room: roomId,
+      sender: senderName,
+      origin: messageOrigin,
+      requiresAck,
+      ...(requiresAck ? { ackToken: cleanText(ackToken).slice(0, 160) || undefined } : {}),
+      ...(hasTargets ? { targets } : {}),
+      message: text,
+    }
 
-  store.rooms[roomId] = {
-    ...currentRoom,
-    updatedAt: entry.at,
-    messages: [...currentRoom.messages, entry].slice(-Math.max(1, MAX_MESSAGES_PER_ROOM)),
-    receipts: currentRoom.receipts,
-    cursors: currentRoom.cursors,
-  }
-  await writeStore(store)
-  return { ok: true, room: roomId, message: entry }
+    store.rooms[roomId] = {
+      ...currentRoom,
+      updatedAt: entry.at,
+      messages: [...currentRoom.messages, entry].slice(-Math.max(1, MAX_MESSAGES_PER_ROOM)),
+      receipts: currentRoom.receipts,
+      cursors: currentRoom.cursors,
+    }
+    await writeStoreUnlocked(store)
+    return { ok: true, room: roomId, message: entry }
+  })
 }
 
 function writeReceiptToRoom(currentRoom, message, actorId, { agentId, sandboxId, status = "received", note }) {
@@ -195,61 +241,65 @@ function writeReceiptToRoom(currentRoom, message, actorId, { agentId, sandboxId,
 }
 
 export async function recordChatMessageReceipt({ room, messageId, agentId, sandboxId, status = "received", note }) {
-  const store = await readStore()
-  const roomId = cleanRoom(room)
-  const currentRoom = roomData(store, roomId)
-  const message = currentRoom.messages.find((entry) => entry.id === messageId)
-  if (!message) return { ok: false, error: "message not found", room: roomId, messageId }
+  return await withStoreLock(async () => {
+    const store = await readStore()
+    const roomId = cleanRoom(room)
+    const currentRoom = roomData(store, roomId)
+    const message = currentRoom.messages.find((entry) => entry.id === messageId)
+    if (!message) return { ok: false, error: "message not found", room: roomId, messageId }
 
-  const actorId = cleanText(sandboxId) || cleanText(agentId, "anonymous-agent") || "anonymous-agent"
-  const { receipt, receiptAt } = writeReceiptToRoom(currentRoom, message, actorId, {
-    agentId,
-    sandboxId,
-    status,
-    note,
+    const actorId = cleanText(sandboxId) || cleanText(agentId, "anonymous-agent") || "anonymous-agent"
+    const { receipt, receiptAt } = writeReceiptToRoom(currentRoom, message, actorId, {
+      agentId,
+      sandboxId,
+      status,
+      note,
+    })
+    store.rooms[roomId] = {
+      ...currentRoom,
+      updatedAt: receiptAt,
+    }
+    await writeStoreUnlocked(store)
+    return { ok: true, room: roomId, messageId, receipt }
   })
-  store.rooms[roomId] = {
-    ...currentRoom,
-    updatedAt: receiptAt,
-  }
-  await writeStore(store)
-  return { ok: true, room: roomId, messageId, receipt }
 }
 
 export async function ackChatMessage({ room, messageId, ackToken, agentId, sandboxId, status = "received", note }) {
-  const store = await readStore()
-  const roomId = cleanRoom(room)
-  const currentRoom = roomData(store, roomId)
-  const message = currentRoom.messages.find((entry) => entry.id === messageId)
-  if (!message) return { ok: false, error: "message not found", room: roomId, messageId }
-  if (!messageNeedsAck(message)) {
-    return {
-      ok: false,
-      error: "message does not require acknowledgement",
-      room: roomId,
-      messageId,
-      origin: message.origin || "sandbox",
+  return await withStoreLock(async () => {
+    const store = await readStore()
+    const roomId = cleanRoom(room)
+    const currentRoom = roomData(store, roomId)
+    const message = currentRoom.messages.find((entry) => entry.id === messageId)
+    if (!message) return { ok: false, error: "message not found", room: roomId, messageId }
+    if (!messageNeedsAck(message)) {
+      return {
+        ok: false,
+        error: "message does not require acknowledgement",
+        room: roomId,
+        messageId,
+        origin: message.origin || "sandbox",
+      }
     }
-  }
 
-  const providedAckToken = cleanText(ackToken)
-  if (providedAckToken && message.ackToken && providedAckToken !== message.ackToken) {
-    return { ok: false, error: "ack token does not match message", room: roomId, messageId }
-  }
+    const providedAckToken = cleanText(ackToken)
+    if (providedAckToken && message.ackToken && providedAckToken !== message.ackToken) {
+      return { ok: false, error: "ack token does not match message", room: roomId, messageId }
+    }
 
-  const actorId = cleanText(sandboxId) || cleanText(agentId, "anonymous-agent") || "anonymous-agent"
-  const { receipt, receiptAt } = writeReceiptToRoom(currentRoom, message, actorId, {
-    agentId,
-    sandboxId,
-    status,
-    note,
+    const actorId = cleanText(sandboxId) || cleanText(agentId, "anonymous-agent") || "anonymous-agent"
+    const { receipt, receiptAt } = writeReceiptToRoom(currentRoom, message, actorId, {
+      agentId,
+      sandboxId,
+      status,
+      note,
+    })
+    store.rooms[roomId] = {
+      ...currentRoom,
+      updatedAt: receiptAt,
+    }
+    await writeStoreUnlocked(store)
+    return { ok: true, room: roomId, messageId, receipt }
   })
-  store.rooms[roomId] = {
-    ...currentRoom,
-    updatedAt: receiptAt,
-  }
-  await writeStore(store)
-  return { ok: true, room: roomId, messageId, receipt }
 }
 
 export async function claimTargetedMessages({
@@ -266,61 +316,63 @@ export async function claimTargetedMessages({
   cursorId,
   receiptNote = "claimed by inter-sandbox chat cursor",
 }) {
-  const store = await readStore()
-  const roomId = cleanRoom(room)
-  const currentRoom = roomData(store, roomId)
-  const actorId = cleanText(sandboxId) || cleanText(agentId, "anonymous-agent") || "anonymous-agent"
-  const cursorKey = cleanText(cursorId) || actorId
-  const cursor = currentRoom.cursors[cursorKey] && typeof currentRoom.cursors[cursorKey] === "object" ? currentRoom.cursors[cursorKey] : {}
-  const afterId = cleanText(cursor.lastSeenMessageId)
-  const start = afterId ? currentRoom.messages.findIndex((message) => message.id === afterId) + 1 : 0
-  const matchedMessages = currentRoom.messages
-    .slice(Math.max(0, start))
-    .filter((message) => messageMatchesOrigins(message, origins))
-    .filter((message) => messageTargetsAgent(message, { agentId, sandboxId, sandboxName, includeBroadcast }))
-    .filter((message) => !excludeSelf || !messageFromActor(message, { agentId, sandboxId, sandboxName }))
-    .filter((message) => !["processed", "failed"].includes(receiptForActor(currentRoom, message.id, actorId)?.status))
-  const messages = (latestOnly ? matchedMessages.slice(-1) : matchedMessages)
-    .slice(0, Math.max(1, Math.min(50, Number(limit) || 5)))
+  return await withStoreLock(async () => {
+    const store = await readStore()
+    const roomId = cleanRoom(room)
+    const currentRoom = roomData(store, roomId)
+    const actorId = cleanText(sandboxId) || cleanText(agentId, "anonymous-agent") || "anonymous-agent"
+    const cursorKey = cleanText(cursorId) || actorId
+    const cursor = currentRoom.cursors[cursorKey] && typeof currentRoom.cursors[cursorKey] === "object" ? currentRoom.cursors[cursorKey] : {}
+    const afterId = cleanText(cursor.lastSeenMessageId)
+    const start = afterId ? currentRoom.messages.findIndex((message) => message.id === afterId) + 1 : 0
+    const matchedMessages = currentRoom.messages
+      .slice(Math.max(0, start))
+      .filter((message) => messageMatchesOrigins(message, origins))
+      .filter((message) => messageTargetsAgent(message, { agentId, sandboxId, sandboxName, includeBroadcast }))
+      .filter((message) => !excludeSelf || !messageFromActor(message, { agentId, sandboxId, sandboxName }))
+      .filter((message) => !["processed", "failed"].includes(receiptForActor(currentRoom, message.id, actorId)?.status))
+    const messages = (latestOnly ? matchedMessages.slice(-1) : matchedMessages)
+      .slice(0, Math.max(1, Math.min(50, Number(limit) || 5)))
 
-  if (messages.length === 0) {
-    return { ok: true, room: roomId, agentId: cleanText(agentId), sandboxId: cleanText(sandboxId), count: 0, messages: [] }
-  }
-
-  const receiptAt = nowIso()
-  let receiptsChanged = false
-  if (autoAck) {
-    for (const message of messages) {
-      const existing = receiptForActor(currentRoom, message.id, actorId) || {}
-      if (existing.status) continue
-      writeReceiptToRoom(currentRoom, message, actorId, {
-        agentId,
-        sandboxId,
-        status: "received",
-        note: receiptNote,
-      })
-      receiptsChanged = true
+    if (messages.length === 0) {
+      return { ok: true, room: roomId, agentId: cleanText(agentId), sandboxId: cleanText(sandboxId), count: 0, messages: [] }
     }
-  }
 
-  currentRoom.cursors[cursorKey] = {
-    ...cursor,
-    lastSeenMessageId: messages[messages.length - 1].id,
-    updatedAt: receiptAt,
-  }
-  store.rooms[roomId] = {
-    ...currentRoom,
-    updatedAt: receiptsChanged ? receiptAt : currentRoom.updatedAt,
-  }
-  await writeStore(store)
-  return {
-    ok: true,
-    room: roomId,
-    agentId: cleanText(agentId),
-    sandboxId: cleanText(sandboxId),
-    count: messages.length,
-    messages,
-  }
+    const receiptAt = nowIso()
+    let receiptsChanged = false
+    if (autoAck) {
+      for (const message of messages) {
+        const existing = receiptForActor(currentRoom, message.id, actorId) || {}
+        if (existing.status) continue
+        writeReceiptToRoom(currentRoom, message, actorId, {
+          agentId,
+          sandboxId,
+          status: "received",
+          note: receiptNote,
+        })
+        receiptsChanged = true
+      }
+    }
+
+    currentRoom.cursors[cursorKey] = {
+      ...cursor,
+      lastSeenMessageId: messages[messages.length - 1].id,
+      updatedAt: receiptAt,
+    }
+    store.rooms[roomId] = {
+      ...currentRoom,
+      updatedAt: receiptsChanged ? receiptAt : currentRoom.updatedAt,
+    }
+    await writeStoreUnlocked(store)
+    return {
+      ok: true,
+      room: roomId,
+      agentId: cleanText(agentId),
+      sandboxId: cleanText(sandboxId),
+      count: messages.length,
+      messages,
+    }
+  })
 }
 
 export async function claimOperatorMessages(options) {
