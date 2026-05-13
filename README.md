@@ -287,6 +287,34 @@ OPENSHELL_CONTROL_MCP_BROKER_URL=http://localhost:3000/api/mcp/broker
 
 Stdio MCP servers run on the control host. The installer verifies `npx`, creates or reuses a Python virtual environment, installs `uvx` there, and persists that venv path in `.env.local` so the MCP broker can launch `uvx` servers later. Custom MCP server launch commands, such as `node` or `python`, must also be available to the dashboard process.
 
+Inter-Sandbox Chat is installed as a baseline MCP server. When it is enabled for at least one sandbox, the controller-launched sidecar watches the lightweight chat store and broker session store, claims only targeted operator messages, writes receipts, and stays out of normal sandbox-to-sandbox chat. It does not run an LLM polling loop. By default, claimed operator messages are routed into the target sandbox's OpenClaw chat over the local OpenClaw websocket gateway.
+
+```bash
+INTER_SANDBOX_CHAT_SIDECAR_POLL_MS=5000
+INTER_SANDBOX_CHAT_DISPATCH_TIMEOUT_MS=120000
+INTER_SANDBOX_CHAT_OPENCLAW_SESSION_KEY=inter-sandbox-chat
+```
+
+The built-in OpenClaw adapter uses the same sandbox dashboard tunnel mapping as the controller, reads the gateway token from `/sandbox/.openclaw/openclaw.json`, and sends `chat.send` to the configured session. Set `INTER_SANDBOX_CHAT_OPENCLAW_RAW_MESSAGE=1` if you do not want the adapter to wrap chat-room metadata around the operator text.
+
+Sandbox-to-sandbox messages can use the same delivery path without loading a whole room into context. `post_message` accepts optional `targetSandboxIds`, `targetSandboxNames`, and `targetAgentIds`; the sidecar relays targeted sandbox-originated messages into each target sandbox's OpenClaw chat. By default it sends only the newest matching sandbox message per target/room poll:
+
+```bash
+INTER_SANDBOX_CHAT_SIDECAR_RELAY_SANDBOX_MESSAGES=true
+INTER_SANDBOX_CHAT_SIDECAR_SANDBOX_LATEST_ONLY=true
+```
+
+Untargeted shared-room traffic still does not wake every sandbox unless `INTER_SANDBOX_CHAT_SIDECAR_PROCESS_BROADCAST=true` is set.
+
+To override dispatch, configure a command hook:
+
+```bash
+INTER_SANDBOX_CHAT_DISPATCH_COMMAND=/path/to/dispatch-chat-message
+INTER_SANDBOX_CHAT_DISPATCH_ARGS_JSON='[]'
+```
+
+The sidecar sends one JSON payload on stdin with `room`, `message`, `sandboxId`, `sandboxName`, and `agentId`. A custom dispatch command can return JSON like `{ "reply": "done", "note": "handled" }` or plain text; successful replies are posted back to the same room and the operator message is marked `processed`. Set `INTER_SANDBOX_CHAT_SIDECAR_AUTOSTART=0` to disable the controller sidecar.
+
 ## File Transfer
 
 The file transfer UI is scoped to safe sandbox paths:

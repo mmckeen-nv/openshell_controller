@@ -1,6 +1,6 @@
 "use client"
 
-import { useCallback, useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useState } from "react"
 import type { SandboxInventoryItem } from "../hooks/useSandboxInventory"
 
 type ProviderSummary = {
@@ -30,6 +30,21 @@ type SandboxInferenceRoute = {
   model: string
   enabled: boolean
   label: string
+}
+
+type VerifiedInferenceRoute = {
+  id?: string
+  provider: string | null
+  model: string | null
+  label?: string | null
+  source?: string | null
+  lastVerifiedAt?: string | null
+}
+
+type VerifiedSandboxInferenceRoute = SandboxInferenceRoute & {
+  scope: string
+  source: string
+  lastVerifiedAt: string | null
 }
 
 type SandboxInferenceConfig = {
@@ -65,6 +80,49 @@ function dedupeRoutes(routes: SandboxInferenceRoute[]) {
     })).values())
 }
 
+function sourceScope(source: string | null | undefined) {
+  switch (source) {
+    case "gateway":
+      return "Sandbox"
+    case "system":
+      return "System"
+    case "sandbox":
+      return "Sandbox Config"
+    default:
+      return "Verified"
+  }
+}
+
+function verifiedRouteFromStatus(route: InferenceRouteStatus | undefined, label: string, source: "gateway" | "system") {
+  return route?.configured && route.provider && route.model
+    ? {
+        ...makeRoute(route.provider, route.model, label),
+        scope: sourceScope(source),
+        source,
+        lastVerifiedAt: null,
+      }
+    : null
+}
+
+function normalizeVerifiedRoute(route: VerifiedInferenceRoute): VerifiedSandboxInferenceRoute | null {
+  const provider = typeof route.provider === "string" ? route.provider.trim() : ""
+  const model = typeof route.model === "string" ? route.model.trim() : ""
+  if (!provider || !model) return null
+  const source = typeof route.source === "string" && route.source.trim() ? route.source.trim() : "saved"
+  return {
+    ...makeRoute(provider, model, typeof route.label === "string" ? route.label.trim() : ""),
+    scope: sourceScope(source),
+    source,
+    lastVerifiedAt: typeof route.lastVerifiedAt === "string" && route.lastVerifiedAt.trim() ? route.lastVerifiedAt : null,
+  }
+}
+
+function dedupeVerifiedRoutes(routes: Array<VerifiedSandboxInferenceRoute | null>) {
+  return Array.from(new Map(routes
+    .filter((route): route is VerifiedSandboxInferenceRoute => Boolean(route))
+    .map((route) => [route.id, route])).values())
+}
+
 export default function SandboxInferencePanel({
   sandbox,
   embedded = false,
@@ -79,7 +137,7 @@ export default function SandboxInferencePanel({
   const [applying, setApplying] = useState(false)
   const [message, setMessage] = useState("")
   const [providers, setProviders] = useState<ProviderSummary[]>([])
-  const [verifiedRoutes, setVerifiedRoutes] = useState<Array<SandboxInferenceRoute & { scope: "Sandbox" | "System" }>>([])
+  const [verifiedRoutes, setVerifiedRoutes] = useState<VerifiedSandboxInferenceRoute[]>([])
   const [routes, setRoutes] = useState<SandboxInferenceRoute[]>([])
   const [primaryRouteId, setPrimaryRouteId] = useState("")
   const [draftProvider, setDraftProvider] = useState("")
@@ -92,10 +150,6 @@ export default function SandboxInferencePanel({
   const draftProviderIsOllama = draftProvider.toLowerCase().includes("ollama")
   const anyOllamaRoute = routes.some((route) => route.provider.toLowerCase().includes("ollama"))
   const shouldPollOllama = draftProviderIsOllama || anyOllamaRoute
-  const primaryRoute = useMemo(
-    () => routes.find((route) => route.id === primaryRouteId) || routes[0] || null,
-    [routes, primaryRouteId]
-  )
 
   const loadOllamaModels = useCallback(async () => {
     try {
@@ -125,16 +179,21 @@ export default function SandboxInferencePanel({
       const config = configData.config as SandboxInferenceConfig
       const gatewayRoute = inferenceData.gateway as InferenceRouteStatus | undefined
       const systemRoute = inferenceData.system as InferenceRouteStatus | undefined
-      const nextVerifiedRoutes = [
-        gatewayRoute?.configured && gatewayRoute.provider && gatewayRoute.model
-          ? { ...makeRoute(gatewayRoute.provider, gatewayRoute.model, "Active sandbox route"), scope: "Sandbox" as const }
-          : null,
-        systemRoute?.configured && systemRoute.provider && systemRoute.model
-          ? { ...makeRoute(systemRoute.provider, systemRoute.model, "Active system route"), scope: "System" as const }
-          : null,
-      ].filter((route): route is SandboxInferenceRoute & { scope: "Sandbox" | "System" } => Boolean(route))
-      const fallbackProvider = gatewayRoute?.provider || nextProviders[0]?.name || ""
-      const fallbackModel = gatewayRoute?.model || ""
+      const explicitVerifiedRoutes = Array.isArray(inferenceData.verifiedRoutes)
+        ? inferenceData.verifiedRoutes.map((route: VerifiedInferenceRoute) => normalizeVerifiedRoute(route))
+        : []
+      const hasExplicitVerifiedRoutes = explicitVerifiedRoutes.some(Boolean)
+      const nextVerifiedRoutes = dedupeVerifiedRoutes(hasExplicitVerifiedRoutes
+        ? explicitVerifiedRoutes
+        : [
+            verifiedRouteFromStatus(gatewayRoute, "Active sandbox route", "gateway"),
+            verifiedRouteFromStatus(systemRoute, "Active system route", "system"),
+          ])
+      const fallbackRoute = gatewayRoute?.configured && gatewayRoute.provider && gatewayRoute.model
+        ? makeRoute(gatewayRoute.provider, gatewayRoute.model, "Gateway default")
+        : nextVerifiedRoutes[0]
+      const fallbackProvider = fallbackRoute?.provider || nextProviders[0]?.name || ""
+      const fallbackModel = fallbackRoute?.model || ""
       const nextRoutes = dedupeRoutes(Array.isArray(config?.routes) && config.routes.length > 0
         ? config.routes
         : fallbackProvider && fallbackModel
@@ -298,24 +357,18 @@ export default function SandboxInferencePanel({
               </button>
             </div>
           )}
-          {primaryRoute && (
-            <div className="metric p-4">
-              <p className="text-[10px] uppercase tracking-wider text-[var(--foreground-dim)]">Primary Route</p>
-              <p className="mt-2 text-sm font-mono text-[var(--foreground)]">{primaryRoute.provider}</p>
-              <p className="mt-1 text-xs font-mono text-[var(--foreground-dim)]">{primaryRoute.model}</p>
+          <div className="rounded-sm border border-[var(--border-subtle)] bg-[var(--background-tertiary)] p-4">
+            <div className="flex items-center justify-between gap-4">
+              <h5 className="text-xs uppercase tracking-wider text-[var(--foreground)]">Verified Working Routes</h5>
+              <span className="text-[10px] uppercase tracking-wider text-[var(--nvidia-green)]">{verifiedRoutes.length} Available</span>
             </div>
-          )}
-
-          {verifiedRoutes.length > 0 && (
-            <div className="rounded-sm border border-[var(--border-subtle)] bg-[var(--background-tertiary)] p-4">
-              <div className="flex items-center justify-between gap-4">
-                <h5 className="text-xs uppercase tracking-wider text-[var(--foreground)]">Verified Working Routes</h5>
-                <span className="text-[10px] uppercase tracking-wider text-[var(--nvidia-green)]">OpenShell active</span>
-              </div>
+            {verifiedRoutes.length === 0 ? (
+              <p className="mt-3 text-xs text-[var(--foreground-dim)]">No verified routes reported by the main inference config.</p>
+            ) : (
               <div className="mt-3 grid grid-cols-1 gap-2 md:grid-cols-2">
                 {verifiedRoutes.map((route) => (
                   <button
-                    key={`${route.scope}-${route.id}`}
+                    key={`${route.source}-${route.id}`}
                     type="button"
                     onClick={() => addRoute(route.provider, route.model, route.label)}
                     className="rounded-sm border border-[var(--border-subtle)] bg-[var(--background)] p-3 text-left hover:border-[var(--nvidia-green)]"
@@ -326,11 +379,12 @@ export default function SandboxInferencePanel({
                     </div>
                     <div className="mt-2 text-xs font-mono text-[var(--foreground)]">{route.provider}</div>
                     <div className="mt-1 break-all text-[11px] font-mono text-[var(--foreground-dim)]">{route.model}</div>
+                    {route.label && <div className="mt-2 text-[10px] uppercase tracking-wider text-[var(--foreground-dim)]">{route.label}</div>}
                   </button>
                 ))}
               </div>
-            </div>
-          )}
+            )}
+          </div>
 
           <div className="grid grid-cols-1 lg:grid-cols-[minmax(180px,240px)_minmax(0,1fr)_minmax(160px,220px)_auto] gap-3 items-end">
             <div className="space-y-2">
@@ -388,7 +442,7 @@ export default function SandboxInferencePanel({
                   <div key={route.id} className="grid grid-cols-1 lg:grid-cols-[auto_minmax(160px,220px)_minmax(0,1fr)_minmax(140px,200px)_auto] gap-3 rounded-sm border border-[var(--border-subtle)] bg-[var(--background-tertiary)] p-3 items-center">
                     <label className="flex items-center gap-2 text-xs text-[var(--foreground-dim)]">
                       <input type="radio" checked={primaryRouteId === route.id} onChange={() => setPrimaryRouteId(route.id)} />
-                      Primary
+                      Default
                     </label>
                     <span className="text-xs font-mono text-[var(--foreground)]">{route.provider}</span>
                     <input value={route.model} onChange={(event) => updateRoute(route.id, { model: event.target.value })} className="w-full rounded-sm border border-[var(--border-subtle)] bg-[var(--background)] px-3 py-2 text-xs font-mono text-[var(--foreground)] focus:outline-none focus:border-[var(--nvidia-green)]" />

@@ -37,9 +37,13 @@ const helpPath = path.join(root, 'app/components/HelpPanel.tsx')
 const sidebarPath = path.join(root, 'app/components/Sidebar.tsx')
 const sandboxListPath = path.join(root, 'app/components/SandboxList.tsx')
 const pagePath = path.join(root, 'app/page.tsx')
+const serverPath = path.join(root, 'server.mjs')
+const interSandboxChatCorePath = path.join(root, 'scripts/inter-sandbox-chat-core.mjs')
 const interSandboxChatPath = path.join(root, 'scripts/inter-sandbox-chat-mcp.mjs')
+const interSandboxChatOpenClawDispatchPath = path.join(root, 'scripts/inter-sandbox-chat-openclaw-dispatch.mjs')
+const interSandboxChatSidecarPath = path.join(root, 'scripts/inter-sandbox-chat-sidecar.mjs')
 
-const [storeSource, brokerStoreSource, brokerClientSource, brokerProtocolSource, sandboxAutoSyncSource, manifestSource, privilegedFilesSource, routeSource, uploadRouteSource, preflightRouteSource, healthRouteSource, registryRouteSource, registriesRouteSource, registriesAssistRouteSource, installAssistRouteSource, registryStoreSource, inferenceModelSource, brokerCapabilitiesRouteSource, brokerCallRouteSource, brokerMcpRouteSource, sandboxMcpRouteSource, brokerUrlSource, sandboxOpenClawMcpConfigSource, sandboxPermissionsSource, preflightLibSource, preflightRepairLibSource, mcpServerSpecsSource, middlewareSource, panelSource, helpSource, sidebarSource, sandboxListSource, pageSource, interSandboxChatSource] = await Promise.all([
+const [storeSource, brokerStoreSource, brokerClientSource, brokerProtocolSource, sandboxAutoSyncSource, manifestSource, privilegedFilesSource, routeSource, uploadRouteSource, preflightRouteSource, healthRouteSource, registryRouteSource, registriesRouteSource, registriesAssistRouteSource, installAssistRouteSource, registryStoreSource, inferenceModelSource, brokerCapabilitiesRouteSource, brokerCallRouteSource, brokerMcpRouteSource, sandboxMcpRouteSource, brokerUrlSource, sandboxOpenClawMcpConfigSource, sandboxPermissionsSource, preflightLibSource, preflightRepairLibSource, mcpServerSpecsSource, middlewareSource, panelSource, helpSource, sidebarSource, sandboxListSource, pageSource, interSandboxChatCoreSource, interSandboxChatSource, interSandboxChatOpenClawDispatchSource, interSandboxChatSidecarSource, serverSource] = await Promise.all([
   readFile(storePath, 'utf8'),
   readFile(brokerStorePath, 'utf8'),
   readFile(brokerClientPath, 'utf8'),
@@ -73,7 +77,11 @@ const [storeSource, brokerStoreSource, brokerClientSource, brokerProtocolSource,
   readFile(sidebarPath, 'utf8'),
   readFile(sandboxListPath, 'utf8'),
   readFile(pagePath, 'utf8'),
+  readFile(interSandboxChatCorePath, 'utf8'),
   readFile(interSandboxChatPath, 'utf8'),
+  readFile(interSandboxChatOpenClawDispatchPath, 'utf8'),
+  readFile(interSandboxChatSidecarPath, 'utf8'),
+  readFile(serverPath, 'utf8'),
 ])
 
 assert.match(storeSource, /export const MCP_SERVER_CATALOG/, 'MCP store must expose an install catalog')
@@ -82,13 +90,14 @@ assert.match(storeSource, /args:\s*\["blender-mcp"\]/, 'MCP catalog must install
 assert.match(storeSource, /id: "inter-sandbox-chat"/, 'MCP catalog must include Inter-Sandbox Chat')
 assert.match(storeSource, /Inter-Sandbox Chat/, 'MCP catalog must expose the Inter-Sandbox Chat display name')
 assert.match(storeSource, /inter-sandbox-chat-mcp\.mjs/, 'MCP catalog must launch the local Inter-Sandbox Chat server')
-assert.match(storeSource, /BASELINE_MCP_SERVER_IDS = \["memory"\]/, 'MCP dashboard should install Memory as the baseline test server')
+assert.match(storeSource, /BASELINE_MCP_SERVER_IDS = \["memory", "inter-sandbox-chat"\]/, 'MCP dashboard should install Memory and Inter-Sandbox Chat as baseline servers')
 assert.match(storeSource, /ensureBaselineMcpServers/, 'MCP store must seed baseline servers into dashboard state')
 assert.match(storeSource, /mcp-servers\.json/, 'MCP installs must persist to dashboard state')
 assert.match(storeSource, /accessMode/, 'MCP installs must persist sandbox access mode')
 assert.match(storeSource, /allowedSandboxIds/, 'MCP installs must persist allowed sandbox lists')
 assert.match(storeSource, /withoutUndefined/, 'MCP catalog installs must not let omitted API fields erase preset command definitions')
 assert.match(storeSource, /existing\?\.accessMode \|\| "disabled"/, 'MCP server access should default to disabled for sandboxes')
+assert.match(storeSource, /refreshCatalogMcpServers/, 'MCP catalog-backed installs must refresh metadata when bundled catalog definitions change')
 assert.match(storeSource, /export function buildMcpClientConfig/, 'MCP store must export client config JSON')
 assert.match(storeSource, /mcpServers/, 'MCP client config must use the common mcpServers shape')
 assert.match(brokerStoreSource, /mcp-broker-sessions\.json/, 'MCP broker sessions must persist server-side')
@@ -99,9 +108,40 @@ assert.match(brokerClientSource, /StdioClientTransport/, 'MCP broker must suppor
 assert.match(brokerClientSource, /StreamableHTTPClientTransport/, 'MCP broker must support streamable HTTP servers')
 assert.match(brokerClientSource, /callBrokerServerTool/, 'MCP broker must forward allowed tool calls')
 assert.match(interSandboxChatSource, /post_message/, 'Inter-Sandbox Chat MCP server must let agents post messages')
+assert.match(interSandboxChatSource, /post_operator_message/, 'Inter-Sandbox Chat MCP server must provide a dedicated operator post path that requires acknowledgements')
 assert.match(interSandboxChatSource, /read_messages/, 'Inter-Sandbox Chat MCP server must let agents read messages')
+assert.match(interSandboxChatSource, /claim_operator_messages/, 'Inter-Sandbox Chat MCP server must let sidecars claim targeted operator messages without LLM polling')
 assert.match(interSandboxChatSource, /list_rooms/, 'Inter-Sandbox Chat MCP server must let agents discover rooms')
-assert.match(interSandboxChatSource, /inter-sandbox-chat\.json/, 'Inter-Sandbox Chat MCP server must persist chat state in dashboard storage')
+assert.match(interSandboxChatSource, /ack_message/, 'Inter-Sandbox Chat MCP server must let agents acknowledge operator messages')
+assert.match(interSandboxChatSource, /get_message_receipts/, 'Inter-Sandbox Chat MCP server must expose parseable operator message receipts')
+assert.match(interSandboxChatSource, /list_operator_ack_status/, 'Inter-Sandbox Chat MCP server must expose dashboard-friendly operator ack status')
+assert.match(interSandboxChatSource, /origin.*operator|operator.*origin/s, 'Inter-Sandbox Chat MCP server must tag operator-originated messages')
+assert.match(interSandboxChatCoreSource, /messageOrigin === "operator"/, 'Inter-Sandbox Chat core must require acknowledgements only for operator messages')
+assert.match(interSandboxChatCoreSource, /messageTargetsAgent/, 'Inter-Sandbox Chat core must support target-aware claim filtering')
+assert.match(interSandboxChatCoreSource, /messageFromActor/, 'Inter-Sandbox Chat core must avoid echoing sandbox messages back to their sender')
+assert.match(interSandboxChatCoreSource, /claimOperatorMessages/, 'Inter-Sandbox Chat core must expose deterministic claim/cursor behavior')
+assert.match(interSandboxChatCoreSource, /claimTargetedMessages/, 'Inter-Sandbox Chat core must let the sidecar claim targeted sandbox-originated messages')
+assert.match(interSandboxChatSource, /Do not acknowledge sandbox-originated messages/, 'Inter-Sandbox Chat MCP tool guidance must tell agents not to ack sandbox-to-sandbox chat')
+assert.match(interSandboxChatSource, /targetSandboxIds/, 'Inter-Sandbox Chat MCP posts must support explicit sandbox targets')
+assert.match(interSandboxChatCoreSource, /inter-sandbox-chat\.json/, 'Inter-Sandbox Chat core must persist chat state in dashboard storage')
+assert.match(interSandboxChatSidecarSource, /mcp-servers\.json/, 'Inter-Sandbox Chat sidecar must watch MCP server access policy')
+assert.match(interSandboxChatSidecarSource, /mcp-broker-sessions\.json/, 'Inter-Sandbox Chat sidecar must discover sandbox MCP broker sessions')
+assert.match(interSandboxChatSidecarSource, /INTER_SANDBOX_CHAT_DISPATCH_COMMAND/, 'Inter-Sandbox Chat sidecar must use an explicit dispatch command hook')
+assert.match(interSandboxChatSidecarSource, /inter-sandbox-chat-openclaw-dispatch\.mjs/, 'Inter-Sandbox Chat sidecar must default to the built-in OpenClaw chat dispatch adapter')
+assert.match(interSandboxChatSidecarSource, /claimOperatorMessages/, 'Inter-Sandbox Chat sidecar must claim targeted operator messages')
+assert.match(interSandboxChatSidecarSource, /RELAY_SANDBOX_MESSAGES/, 'Inter-Sandbox Chat sidecar must relay targeted sandbox-to-sandbox messages')
+assert.match(interSandboxChatSidecarSource, /SANDBOX_RELAY_LATEST_ONLY/, 'Inter-Sandbox Chat sidecar must be able to send only the latest sandbox chat message')
+assert.match(interSandboxChatSidecarSource, /ackChatMessage/, 'Inter-Sandbox Chat sidecar must write received, processed, and failed receipts')
+assert.match(interSandboxChatSidecarSource, /recordChatMessageReceipt/, 'Inter-Sandbox Chat sidecar must record delivery receipts for sandbox-originated messages without operator acks')
+assert.match(interSandboxChatSidecarSource, /postChatMessage/, 'Inter-Sandbox Chat sidecar must be able to post sandbox replies')
+assert.match(interSandboxChatOpenClawDispatchSource, /chat\.send/, 'Inter-Sandbox Chat OpenClaw dispatch must send claimed messages through OpenClaw chat')
+assert.match(interSandboxChatOpenClawDispatchSource, /inter-sandbox-chat/, 'Inter-Sandbox Chat OpenClaw dispatch must default to a dedicated chat session instead of polluting main')
+assert.match(interSandboxChatOpenClawDispatchSource, /WebSocket/, 'Inter-Sandbox Chat OpenClaw dispatch must use the OpenClaw websocket gateway')
+assert.match(interSandboxChatOpenClawDispatchSource, /openclaw\.json/, 'Inter-Sandbox Chat OpenClaw dispatch must read the sandbox gateway token from OpenClaw config')
+assert.match(interSandboxChatOpenClawDispatchSource, /ssh-proxy/, 'Inter-Sandbox Chat OpenClaw dispatch must route through the OpenShell sandbox SSH proxy')
+assert.match(interSandboxChatOpenClawDispatchSource, /OPENCLAW_SANDBOX_DASHBOARD_PORT_BASE/, 'Inter-Sandbox Chat OpenClaw dispatch must share controller sandbox dashboard port mapping')
+assert.match(serverSource, /inter-sandbox-chat-sidecar\.mjs/, 'OpenShell controller must start the Inter-Sandbox Chat sidecar with the server')
+assert.match(serverSource, /INTER_SANDBOX_CHAT_SIDECAR_AUTOSTART/, 'OpenShell controller must let operators disable the chat sidecar autostart')
 assert.match(brokerProtocolSource, /tools\/list/, 'MCP broker protocol adapter must expose an MCP tools/list JSON-RPC method')
 assert.match(brokerProtocolSource, /tools\/call/, 'MCP broker protocol adapter must expose an MCP tools/call JSON-RPC method')
 assert.match(brokerProtocolSource, /listAllowedBrokerServers/, 'MCP broker protocol adapter must reuse broker access policy')

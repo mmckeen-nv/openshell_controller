@@ -93,6 +93,14 @@ export async function getSandboxInferenceConfig(sandboxId: string): Promise<Sand
   return normalizeSandboxInferenceConfig(sandboxId, store.sandboxes[sandboxId])
 }
 
+export async function listSandboxInferenceRoutes(): Promise<SandboxInferenceRoute[]> {
+  const store = await readStore()
+  const routes = Object.entries(store.sandboxes)
+    .flatMap(([sandboxId, config]) => normalizeSandboxInferenceConfig(sandboxId, config).routes)
+    .filter((route) => route.enabled)
+  return Array.from(new Map(routes.map((route) => [route.id, route])).values())
+}
+
 export async function saveSandboxInferenceConfig(sandboxId: string, input: Partial<SandboxInferenceConfig>): Promise<SandboxInferenceConfig> {
   const store = await readStore()
   const next = normalizeSandboxInferenceConfig(sandboxId, {

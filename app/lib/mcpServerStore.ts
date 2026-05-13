@@ -67,7 +67,7 @@ export const MCP_SERVER_CATALOG: McpCatalogEntry[] = [
   {
     id: "inter-sandbox-chat",
     name: "Inter-Sandbox Chat",
-    summary: "Give allowed sandboxes a shared roomed message board so agents can post updates and read messages from each other through the MCP broker.",
+    summary: "Give allowed sandboxes a shared roomed message board. Agents acknowledge only operator-originated chats; sandbox-to-sandbox chatter stays receipt-free.",
     transport: "stdio",
     command: "node",
     args: [path.join(process.cwd(), "scripts/inter-sandbox-chat-mcp.mjs")],
@@ -95,7 +95,7 @@ export const MCP_SERVER_CATALOG: McpCatalogEntry[] = [
     tags: ["web", "utility"],
   },
 ]
-const BASELINE_MCP_SERVER_IDS = ["memory"]
+const BASELINE_MCP_SERVER_IDS = ["memory", "inter-sandbox-chat"]
 
 function emptyStore(): StoreShape {
   return { servers: {} }
@@ -196,6 +196,34 @@ async function ensureBaselineMcpServers(store: StoreShape) {
   if (changed) await writeStore(store)
 }
 
+async function refreshCatalogMcpServers(store: StoreShape) {
+  let changed = false
+  const catalogById = new Map(MCP_SERVER_CATALOG.map((entry) => [entry.id, entry]))
+  for (const [id, existing] of Object.entries(store.servers)) {
+    if (existing.source !== "catalog") continue
+    const catalog = catalogById.get(id)
+    if (!catalog) continue
+    const next = {
+      ...existing,
+      name: catalog.name,
+      summary: catalog.summary,
+      websiteUrl: catalog.websiteUrl,
+      transport: catalog.transport,
+      command: catalog.command,
+      args: [...catalog.args],
+      env: { ...catalog.env },
+      tags: [...catalog.tags],
+    }
+    if (JSON.stringify(next) === JSON.stringify(existing)) continue
+    store.servers[id] = {
+      ...next,
+      updatedAt: new Date().toISOString(),
+    }
+    changed = true
+  }
+  if (changed) await writeStore(store)
+}
+
 export function buildMcpClientConfig(servers: McpServerInstall[]) {
   return {
     mcpServers: Object.fromEntries(
@@ -228,6 +256,7 @@ export function sandboxCanAccessMcpServer(server: McpServerInstall, sandboxId: s
 export async function listMcpServers() {
   const store = await readStore()
   await ensureBaselineMcpServers(store)
+  await refreshCatalogMcpServers(store)
   const servers = Object.values(store.servers).sort((a, b) => a.name.localeCompare(b.name))
   return {
     catalog: MCP_SERVER_CATALOG,

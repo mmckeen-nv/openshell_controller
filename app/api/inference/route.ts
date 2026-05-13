@@ -3,6 +3,14 @@ import { execFile } from "node:child_process"
 import { promisify } from "node:util"
 import { normalizeInferenceBaseUrlForGateway } from "@/app/lib/inferenceEndpointUrl"
 import { OPENSHELL_BIN, hostCommandEnv } from "@/app/lib/hostCommands"
+import {
+  listSavedVerifiedInferenceRoutes,
+  mergeVerifiedInferenceRoutes,
+  rememberVerifiedInferenceRoute,
+  removeVerifiedInferenceRoutesForProvider,
+  type VerifiedInferenceRoute,
+} from "@/app/lib/inferenceRouteStore"
+import { listSandboxInferenceRoutes } from "@/app/lib/sandboxInferenceStore"
 
 const execFileAsync = promisify(execFile)
 
@@ -14,6 +22,10 @@ type InferenceRoute = {
   model: string | null
   version: string | null
   timeout: string | null
+}
+
+type ProviderSummary = {
+  name: string | null
 }
 
 function stripAnsi(value: string) {
@@ -51,6 +63,39 @@ function parseRoute(output: string, label: "Gateway inference" | "System inferen
     version: readField(section, "Version"),
     timeout: readField(section, "Timeout"),
   }
+}
+
+function verifiedRouteFromStatus(route: InferenceRoute, label: string, source: "gateway" | "system"): VerifiedInferenceRoute | null {
+  if (!route.configured || !route.provider || !route.model) return null
+  return {
+    id: `${route.provider}::${route.model}`,
+    provider: route.provider,
+    model: route.model,
+    label,
+    source,
+    lastVerifiedAt: null,
+  }
+}
+
+async function buildVerifiedRoutes(gateway: InferenceRoute, system: InferenceRoute, providers: ProviderSummary[] = []) {
+  const [savedRoutes, sandboxRoutes] = await Promise.all([
+    listSavedVerifiedInferenceRoutes(),
+    listSandboxInferenceRoutes(),
+  ])
+  const providerNames = new Set(providers.map((provider) => provider.name).filter(Boolean))
+  const providerIsConfigured = (provider: string) => providerNames.size === 0 || providerNames.has(provider)
+  return mergeVerifiedInferenceRoutes([
+    ...sandboxRoutes.filter((route) => providerIsConfigured(route.provider)).map((route) => ({
+      provider: route.provider,
+      model: route.model,
+      label: route.label || "Saved sandbox route",
+      source: "sandbox",
+      lastVerifiedAt: null,
+    })),
+    ...savedRoutes.filter((route) => providerIsConfigured(route.provider)),
+    verifiedRouteFromStatus(system, "Active system route", "system"),
+    verifiedRouteFromStatus(gateway, "Active sandbox route", "gateway"),
+  ])
 }
 
 function parseProvider(output: string) {
@@ -128,10 +173,13 @@ export async function GET() {
       runOpenShell(["inference", "get"]),
       readProviders(),
     ])
+    const gateway = parseRoute(inference.stdout, "Gateway inference")
+    const system = parseRoute(inference.stdout, "System inference")
     return NextResponse.json({
       ok: true,
-      gateway: parseRoute(inference.stdout, "Gateway inference"),
-      system: parseRoute(inference.stdout, "System inference"),
+      gateway,
+      system,
+      verifiedRoutes: await buildVerifiedRoutes(gateway, system, providers),
       providers,
       raw: inference.stdout,
     })
@@ -182,15 +230,24 @@ export async function POST(request: Request) {
       if (noVerify) routeArgs.push("--no-verify")
       if (Number.isFinite(timeout) && timeout >= 0) routeArgs.push("--timeout", String(timeout))
       inferenceResult = await runOpenShell(routeArgs)
+      await rememberVerifiedInferenceRoute({
+        provider: name,
+        model,
+        label: system ? "System inference" : "Sandbox inference",
+        source: system ? "system" : "gateway",
+      })
     }
 
     const refreshed = await runOpenShell(["inference", "get"])
+    const gateway = parseRoute(refreshed.stdout, "Gateway inference")
+    const systemRoute = parseRoute(refreshed.stdout, "System inference")
     return NextResponse.json({
       ok: true,
       provider: name,
       active: makeActive,
-      gateway: parseRoute(refreshed.stdout, "Gateway inference"),
-      system: parseRoute(refreshed.stdout, "System inference"),
+      gateway,
+      system: systemRoute,
+      verifiedRoutes: await buildVerifiedRoutes(gateway, systemRoute),
       stdout: redactSecretOutput([providerResult.stdout, inferenceResult?.stdout].filter(Boolean).join("\n\n"), [apiKey]),
       stderr: redactSecretOutput([providerResult.stderr, inferenceResult?.stderr].filter(Boolean).join("\n\n"), [apiKey]),
     })
@@ -206,16 +263,20 @@ export async function DELETE(request: Request) {
     const url = new URL(request.url)
     const name = validateName(body?.name ?? url.searchParams.get("name"))
     const result = await runOpenShell(["provider", "delete", name])
+    await removeVerifiedInferenceRoutesForProvider(name)
     const [inference, providers] = await Promise.all([
       runOpenShell(["inference", "get"]),
       readProviders(),
     ])
+    const gateway = parseRoute(inference.stdout, "Gateway inference")
+    const system = parseRoute(inference.stdout, "System inference")
 
     return NextResponse.json({
       ok: true,
       provider: name,
-      gateway: parseRoute(inference.stdout, "Gateway inference"),
-      system: parseRoute(inference.stdout, "System inference"),
+      gateway,
+      system,
+      verifiedRoutes: await buildVerifiedRoutes(gateway, system, providers),
       providers,
       stdout: result.stdout,
       stderr: result.stderr,

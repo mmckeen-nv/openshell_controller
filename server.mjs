@@ -60,6 +60,37 @@ function logBridge(event, fields = {}) {
   console.log(`[terminal-bridge] ts=${now()} event=${event}${payload ? ` ${payload}` : ''}`)
 }
 
+const managedChildren = new Set()
+let managedChildShutdownHandlersInstalled = false
+
+function stopManagedChildren() {
+  for (const child of managedChildren) {
+    if (!child.killed) child.kill('SIGTERM')
+  }
+}
+
+function installManagedChildShutdownHandlers() {
+  if (managedChildShutdownHandlersInstalled) return
+  managedChildShutdownHandlersInstalled = true
+  process.once('exit', stopManagedChildren)
+  process.once('SIGINT', () => {
+    stopManagedChildren()
+    process.exit(130)
+  })
+  process.once('SIGTERM', () => {
+    stopManagedChildren()
+    process.exit(143)
+  })
+}
+
+function registerManagedChild(child) {
+  managedChildren.add(child)
+  installManagedChildShutdownHandlers()
+  child.once('exit', () => {
+    managedChildren.delete(child)
+  })
+}
+
 function isAuthDisabled() {
   return /^(1|true|yes|on)$/i.test(process.env.OPENSHELL_CONTROL_AUTH_DISABLED || '')
 }
@@ -408,22 +439,10 @@ async function startLocalTerminalServerIfNeeded() {
     pid: child.pid,
     terminalServerUrl: terminalServerUrl.toString(),
   })
+  registerManagedChild(child)
 
   child.once('exit', (code, signal) => {
     logBridge('terminal-server-exited', { code, signal })
-  })
-
-  const stopChild = () => {
-    if (!child.killed) child.kill('SIGTERM')
-  }
-  process.once('exit', stopChild)
-  process.once('SIGINT', () => {
-    stopChild()
-    process.exit(130)
-  })
-  process.once('SIGTERM', () => {
-    stopChild()
-    process.exit(143)
   })
 
   if (!await waitForTerminalServer()) {
@@ -435,10 +454,46 @@ async function startLocalTerminalServerIfNeeded() {
   return child
 }
 
+function shouldAutoStartInterSandboxChatSidecar() {
+  return !/^(0|false|no|off)$/i.test(process.env.INTER_SANDBOX_CHAT_SIDECAR_AUTOSTART || '')
+}
+
+function startInterSandboxChatSidecar() {
+  if (!shouldAutoStartInterSandboxChatSidecar()) {
+    logBridge('inter-sandbox-chat-sidecar-autostart-skipped', {
+      reason: 'disabled',
+    })
+    return null
+  }
+
+  const child = spawn(process.execPath, ['scripts/inter-sandbox-chat-sidecar.mjs'], {
+    cwd: process.cwd(),
+    env: process.env,
+    stdio: ['ignore', 'inherit', 'inherit'],
+  })
+
+  logBridge('inter-sandbox-chat-sidecar-autostarted', {
+    pid: child.pid,
+  })
+  registerManagedChild(child)
+
+  child.once('error', (error) => {
+    logBridge('inter-sandbox-chat-sidecar-error', {
+      reason: error instanceof Error ? error.message : 'spawn failed',
+    })
+  })
+  child.once('exit', (code, signal) => {
+    logBridge('inter-sandbox-chat-sidecar-exited', { code, signal })
+  })
+
+  return child
+}
+
 const app = next({ dev, hostname, port })
 const handle = app.getRequestHandler()
 
 await startLocalTerminalServerIfNeeded()
+startInterSandboxChatSidecar()
 await app.prepare()
 const handleUpgrade = typeof app.getUpgradeHandler === 'function'
   ? app.getUpgradeHandler()
