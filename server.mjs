@@ -490,6 +490,13 @@ function startInterSandboxChatSidecar() {
 }
 
 const app = next({ dev, hostname, port })
+// Next.js's NextCustomServer lazily attaches its own 'upgrade' listener to the
+// http server on the first request (see node_modules/next/dist/server/next.js
+// setupWebSocketHandler). When EventEmitter dispatches an 'upgrade', that
+// listener runs alongside ours and destroys the socket, killing our dashboard
+// WebSocket bridge ~3 ms after we send 101 Switching Protocols. Setting the
+// internal flag prevents Next.js from ever attaching that listener.
+app.didWebSocketSetup = true
 const handle = app.getRequestHandler()
 
 await startLocalTerminalServerIfNeeded()

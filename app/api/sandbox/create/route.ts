@@ -799,17 +799,26 @@ export async function POST(request: Request) {
 
       applyCreateInferenceEnv(env, createInference, body)
 
-      // Use runCreateCommandUntilReady so the controller resolves as soon as the sandbox
-      // reaches Ready — before nemoclaw's step 8/8 policy application, which exits 1 on timeout.
-      const result = await runCreateCommandUntilReady(
-        createCommand.file,
-        createCommand.mode === "legacy-setup" ? [...createCommand.args, sandboxName] : createCommand.args,
-        env,
-        sandboxName,
-        600000,
-        5000,
-        NEMOCLAW_CWD,
-      )
+      // OpenClaw: SIGTERM as soon as the sandbox is Ready — this skips nemoclaw's step 8/8
+      // policy application which reliably times out and exits 1 even on success.
+      // Hermes: must run to completion. The agent_setup step (after sandbox-ready) is where
+      // nemoclaw configures the Hermes API server inside the sandbox; killing early leaves
+      // Hermes half-installed and unregistered. The fallback below still tolerates a
+      // non-zero exit if the sandbox itself comes up Ready.
+      const createCommandArgs = createCommand.mode === "legacy-setup"
+        ? [...createCommand.args, sandboxName]
+        : createCommand.args
+      const result = agent === "hermes"
+        ? await runCreateCommandBounded(createCommand.file, createCommandArgs, env, 900000)
+        : await runCreateCommandUntilReady(
+            createCommand.file,
+            createCommandArgs,
+            env,
+            sandboxName,
+            600000,
+            5000,
+            NEMOCLAW_CWD,
+          )
 
       // If the command exited non-zero before the sandbox was detected as Ready, do one
       // final readiness poll before giving up — the sandbox may have just beaten the interval.
@@ -842,8 +851,9 @@ export async function POST(request: Request) {
         error: error instanceof Error ? error.message : "Failed to repair OpenClaw exec approvals file",
       })) : null
       const deviceApproval = created && isOpenClawAgent ? await approveOpenClawDeviceRequests(sandboxName) : null
+      const forcedReady = "forcedReady" in result ? result.forcedReady : false
       console.log(
-        `[sandbox/create] request:complete sandbox=${sandboxName} created=${created} agent=${agent} forcedReady=${result.forcedReady} readinessAttempts=${readiness.attempts} deviceApproval=${deviceApproval?.approved ?? false} elapsedMs=${elapsedMs(requestStartedAt)}`,
+        `[sandbox/create] request:complete sandbox=${sandboxName} created=${created} agent=${agent} forcedReady=${forcedReady} readinessAttempts=${readiness.attempts} deviceApproval=${deviceApproval?.approved ?? false} elapsedMs=${elapsedMs(requestStartedAt)}`,
       )
 
       return NextResponse.json({
@@ -860,7 +870,7 @@ export async function POST(request: Request) {
         createInference,
         createCommand: {
           ...createCommand,
-          forcedReady: result.forcedReady,
+          forcedReady,
           timedOut: result.timedOut,
           exitCode: result.exitCode,
           signal: result.signal,
@@ -878,7 +888,7 @@ export async function POST(request: Request) {
           ? appendNote(
               agent === "hermes"
                 ? "NemoClaw Hermes workflow completed. Hermes exposes an API endpoint from the sandbox rather than an OpenClaw browser dashboard."
-                : result.forcedReady
+                : forcedReady
                   ? "NemoClaw blueprint workflow: sandbox reached Ready state and the onboard command was stopped early."
                   : enableTailscale
                     ? "NemoClaw blueprint workflow completed with Tailscale-enabled prerequisites. Existing healthy OpenShell gateways are reused before any new gateway start is attempted."
