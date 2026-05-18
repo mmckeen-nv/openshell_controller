@@ -194,6 +194,52 @@ pkill -f 'node server.mjs|npm run dev|npm run start' || true
 npm run start
 ```
 
+### Proposed: Delegate auth to the mcpauth IdP via Traefik forwardAuth
+
+The shared-password gate above is the only thing standing between a request and the controller's API. For deployments behind Traefik we can replace it with an existing internal IdP (`mcpauth`, repo: `Projects/mcpauth`) using Traefik's `forwardAuth` middleware. This keeps controller code untouched and moves all identity into the IdP.
+
+**Approach (minimal change, no controller code edits):**
+
+1. Define a Traefik middleware that points at mcpauth's forward-auth endpoint, and attach it to both controller routers — the HTTP router and the WebSocket router (`8-openshell-controller-router-auth@file` and `8-openshell-controller-ws-router@file` in the current Pangolin-managed config). The middleware must be set on the WS router too, because the dashboard WebSocket upgrade currently relies on the controller's own cookie check (`server.mjs:149 isAuthenticatedUpgrade`).
+2. Set `OPENSHELL_CONTROL_AUTH_DISABLED=true` in `.env.local` so the controller trusts whatever mcpauth has already approved. The `/login`, `/setup-account`, `/forgot-password` pages become inert.
+3. Decide whether to leave Pangolin's `badger@http` middleware in place (defence in depth) or remove it so mcpauth is the sole gate. If both are kept, the user logs in twice.
+
+Example Traefik dynamic config (sketch — adjust paths and headers to match mcpauth's actual forwardAuth endpoint and cookie names):
+
+```yaml
+http:
+  middlewares:
+    mcpauth-forward:
+      forwardAuth:
+        address: "http://mcpauth:11000/auth/forward"
+        trustForwardHeader: true
+        authResponseHeaders:
+          - "Remote-Email"
+          - "Remote-User"
+  routers:
+    8-openshell-controller-router-auth:
+      middlewares:
+        - mcpauth-forward
+        # - badger@http   # optional: remove once mcpauth is verified
+    8-openshell-controller-ws-router:
+      middlewares:
+        - mcpauth-forward
+```
+
+**Trade-off — identity vs zero code change:** with `OPENSHELL_CONTROL_AUTH_DISABLED=true` the controller no longer knows *who* the caller is — every authenticated user becomes "operator". That is fine for shared-team use but loses per-user audit, sandbox ownership, and the `sub` claim baked into the session cookie. If per-user identity matters later, swap the password cookie for header-based identity:
+
+- Wire `controlAuth.ts` and `server.mjs:isAuthenticatedUpgrade` to read `Remote-Email` (or whichever header mcpauth forwards) instead of decoding the password JWT.
+- Stop minting the local session cookie; treat the absence of the forwarded identity header as unauthenticated.
+- Drop the `/login`, `/setup-account`, `/forgot-password` routes (or have them no-op when auth is delegated).
+
+**Items to nail down when implementing:**
+
+- Confirm the exact mcpauth forwardAuth path and which cookie / header it consumes (Cloudflare-style `CF_Authorization`? OAuth2 PKCE cookie? See `mcpauth/server/edge_auth.go`).
+- Verify mcpauth's forward-auth endpoint returns 401 (not a 302 redirect) for unauthenticated WebSocket upgrade requests — WebSocket clients cannot follow redirects, so mcpauth must surface its own login flow on a separate HTTP route, the way Pangolin's `badger` already does.
+- Decide whether the redirect target on 401 lives on the controller subdomain or on a dedicated `auth.…` subdomain (cleaner cookie scoping).
+- Register the controller's host as an authorised redirect URI in whichever OAuth provider mcpauth fronts.
+- Audit any controller endpoints that should remain reachable without auth (health checks, etc.) and add a Traefik `priority` override or path exclusion for them.
+
 ## OpenShell And OpenClaw Notes
 
 The dashboard shells out to the OpenShell CLI for several operations:
