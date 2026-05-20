@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server"
 import { execFile } from "node:child_process"
-import { existsSync } from "node:fs"
-import { readFile } from "node:fs/promises"
+import { existsSync, statSync } from "node:fs"
+import { readdir, readFile } from "node:fs/promises"
 import { isIP } from "node:net"
 import { release } from "node:os"
 import { promisify } from "node:util"
@@ -365,6 +365,36 @@ function windowsPowerShellExecutable() {
   return "powershell.exe"
 }
 
+async function findWslInteropSocket() {
+  if (process.env.WSL_INTEROP && existsSync(process.env.WSL_INTEROP)) return process.env.WSL_INTEROP
+  const candidates = ["/run/WSL", "/var/run/WSL"]
+  for (const dir of candidates) {
+    try {
+      const entries = await readdir(dir)
+      const sockets = entries
+        .filter((entry) => /_interop$/.test(entry))
+        .map((entry) => `${dir}/${entry}`)
+        .filter((entry) => {
+          try {
+            return statSync(entry).isSocket()
+          } catch {
+            return false
+          }
+        })
+        .sort()
+      if (sockets.length > 0) return sockets[sockets.length - 1]
+    } catch {
+      // Older WSL or non-systemd WSL may not have this directory.
+    }
+  }
+  return ""
+}
+
+async function windowsInteropExecEnv() {
+  const interop = await findWslInteropSocket()
+  return interop ? { ...process.env, WSL_INTEROP: interop } : process.env
+}
+
 async function probeWindowsCurlCandidate(candidate: OllamaProbeCandidate): Promise<OllamaProbeResult> {
   const startedAt = Date.now()
   try {
@@ -374,6 +404,7 @@ async function probeWindowsCurlCandidate(candidate: OllamaProbeCandidate): Promi
       String(WINDOWS_CURL_TIMEOUT_SECONDS),
       tagsUrl(candidate.baseUrl),
     ], {
+      env: await windowsInteropExecEnv(),
       timeout: OLLAMA_PROBE_TIMEOUT_MS + 1000,
       maxBuffer: WINDOWS_CURL_OUTPUT_LIMIT,
       windowsHide: true,
@@ -411,6 +442,7 @@ async function probeWindowsPowerShellCandidate(candidate: OllamaProbeCandidate):
       String(WINDOWS_CURL_TIMEOUT_SECONDS),
       tagsUrl(candidate.baseUrl),
     ], {
+      env: await windowsInteropExecEnv(),
       timeout: OLLAMA_PROBE_TIMEOUT_MS + 1000,
       maxBuffer: WINDOWS_CURL_OUTPUT_LIMIT,
       windowsHide: true,
