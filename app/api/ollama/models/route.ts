@@ -31,9 +31,13 @@ type OllamaTag = {
   }
 }
 
+type OllamaHostKind = "custom" | "linux" | "win" | "wsl2"
+
 type OllamaProbeCandidate = {
   baseUrl: string
   source: string
+  hostKind: OllamaHostKind
+  hostLabel: string
   via: "fetch" | "windows-curl"
 }
 
@@ -43,6 +47,24 @@ type OllamaProbeResult = OllamaProbeCandidate & {
   status?: number
   error?: string
   elapsedMs: number
+}
+
+type OllamaModelRow = {
+  id: string
+  name: string
+  model: string
+  modifiedAt: string | null
+  size: number | null
+  sizeLabel: string | null
+  digest: string | null
+  family: string | null
+  parameterSize: string | null
+  quantization: string | null
+  hostKind: OllamaHostKind
+  hostLabel: string
+  source: string
+  baseUrl: string
+  via: OllamaProbeCandidate["via"]
 }
 
 function parsePositiveInteger(value: string | undefined, fallback: number) {
@@ -102,19 +124,28 @@ function formatBytes(size: unknown) {
   return `${value >= 10 || unit === 0 ? value.toFixed(0) : value.toFixed(1)} ${units[unit]}`
 }
 
-function modelRowsFromTags(data: any) {
+function modelRowsFromTags(data: any, origin: OllamaProbeCandidate): OllamaModelRow[] {
   return Array.isArray(data?.models)
-    ? data.models.map((item: OllamaTag) => ({
-        name: item.model || item.name || "",
-        model: item.model || item.name || "",
-        modifiedAt: item.modified_at || null,
-        size: typeof item.size === "number" ? item.size : null,
-        sizeLabel: formatBytes(item.size),
-        digest: item.digest || null,
-        family: item.details?.family || null,
-        parameterSize: item.details?.parameter_size || null,
-        quantization: item.details?.quantization_level || null,
-      })).filter((item: { name: string }) => item.name)
+    ? data.models.map((item: OllamaTag) => {
+        const name = item.model || item.name || ""
+        return {
+          id: `${origin.hostKind}:${name}`,
+          name,
+          model: name,
+          modifiedAt: item.modified_at || null,
+          size: typeof item.size === "number" ? item.size : null,
+          sizeLabel: formatBytes(item.size),
+          digest: item.digest || null,
+          family: item.details?.family || null,
+          parameterSize: item.details?.parameter_size || null,
+          quantization: item.details?.quantization_level || null,
+          hostKind: origin.hostKind,
+          hostLabel: origin.hostLabel,
+          source: origin.source,
+          baseUrl: origin.baseUrl,
+          via: origin.via,
+        }
+      }).filter((item: { name: string }) => item.name)
     : []
 }
 
@@ -170,17 +201,29 @@ function hostUrl(host: string, port = DEFAULT_OLLAMA_PORT) {
   return `http://${formattedHost}:${port}`
 }
 
-function addFetchCandidate(candidates: OllamaProbeCandidate[], value: string | undefined, source: string) {
+function addFetchCandidate(
+  candidates: OllamaProbeCandidate[],
+  value: string | undefined,
+  source: string,
+  hostKind: OllamaHostKind,
+  hostLabel: string,
+) {
   const baseUrl = normalizeOllamaBaseUrl(value)
   if (!baseUrl) return
-  candidates.push({ baseUrl, source, via: "fetch" })
+  candidates.push({ baseUrl, source, hostKind, hostLabel, via: "fetch" })
 }
 
-function addWindowsCurlCandidate(candidates: OllamaProbeCandidate[], value: string | undefined, source: string) {
+function addWindowsCurlCandidate(
+  candidates: OllamaProbeCandidate[],
+  value: string | undefined,
+  source: string,
+  hostKind: OllamaHostKind,
+  hostLabel: string,
+) {
   if (process.env.OPENSHELL_OLLAMA_WINDOWS_INTEROP === "0") return
   const baseUrl = normalizeOllamaBaseUrl(value)
   if (!baseUrl) return
-  candidates.push({ baseUrl, source, via: "windows-curl" })
+  candidates.push({ baseUrl, source, hostKind, hostLabel, via: "windows-curl" })
 }
 
 function dedupeCandidates(candidates: OllamaProbeCandidate[]) {
@@ -211,23 +254,25 @@ async function buildProbeCandidates() {
   const candidates: OllamaProbeCandidate[] = []
   const wsl = await isWslRuntime()
 
-  addFetchCandidate(candidates, process.env.OPENSHELL_OLLAMA_BASE_URL, "OPENSHELL_OLLAMA_BASE_URL")
-  addFetchCandidate(candidates, process.env.OLLAMA_BASE_URL, "OLLAMA_BASE_URL")
-  addFetchCandidate(candidates, process.env.OLLAMA_HOST, "OLLAMA_HOST")
+  addFetchCandidate(candidates, process.env.OPENSHELL_OLLAMA_BASE_URL, "OPENSHELL_OLLAMA_BASE_URL", "custom", "CUSTOM")
+  addFetchCandidate(candidates, process.env.OLLAMA_BASE_URL, "OLLAMA_BASE_URL", "custom", "CUSTOM")
+  addFetchCandidate(candidates, process.env.OLLAMA_HOST, "OLLAMA_HOST", "custom", "CUSTOM")
   for (const host of customHostCandidates()) {
-    addFetchCandidate(candidates, customHostUrl(host), "OPENSHELL_OLLAMA_HOSTS")
+    addFetchCandidate(candidates, customHostUrl(host), "OPENSHELL_OLLAMA_HOSTS", "custom", "CUSTOM")
   }
-  addFetchCandidate(candidates, DEFAULT_OLLAMA_URL, wsl ? "wsl-localhost" : "localhost")
+  addFetchCandidate(candidates, DEFAULT_OLLAMA_URL, wsl ? "wsl-localhost" : "localhost", wsl ? "wsl2" : "linux", wsl ? "WSL2" : "LINUX")
 
   if (wsl) {
     for (const host of await readWslHostCandidates()) {
-      addFetchCandidate(candidates, hostUrl(host), "wsl-windows-host")
+      addFetchCandidate(candidates, hostUrl(host), "wsl-windows-host", "win", "WIN")
     }
-    addFetchCandidate(candidates, hostUrl("host.docker.internal"), "host.docker.internal")
+    addFetchCandidate(candidates, hostUrl("host.docker.internal"), "host.docker.internal", "win", "WIN")
     addWindowsCurlCandidate(
       candidates,
       process.env.OPENSHELL_WINDOWS_OLLAMA_BASE_URL || DEFAULT_OLLAMA_URL,
       "windows-localhost",
+      "win",
+      "WIN",
     )
   }
 
@@ -239,11 +284,31 @@ function publicProbeResult(result: OllamaProbeResult) {
     ok: result.ok,
     baseUrl: result.baseUrl,
     source: result.source,
+    hostKind: result.hostKind,
+    hostLabel: result.hostLabel,
     via: result.via,
     status: result.status ?? null,
     elapsedMs: result.elapsedMs,
     error: result.error || null,
   }
+}
+
+function aggregateModels(results: OllamaProbeResult[]) {
+  const seen = new Set<string>()
+  const models: OllamaModelRow[] = []
+  for (const result of results.filter((item) => item.ok)) {
+    for (const model of modelRowsFromTags(result.data, result)) {
+      const key = `${model.hostKind}:${model.name}`
+      if (seen.has(key)) continue
+      seen.add(key)
+      models.push(model)
+    }
+  }
+  return models.sort((a, b) => {
+    const sourceOrder = { wsl2: 0, win: 1, linux: 2, custom: 3 } as Record<OllamaHostKind, number>
+    const sourceDiff = sourceOrder[a.hostKind] - sourceOrder[b.hostKind]
+    return sourceDiff || a.name.localeCompare(b.name)
+  })
 }
 
 function probeErrorMessage(error: unknown) {
@@ -344,16 +409,24 @@ export async function GET() {
   ])
 
   const results = await Promise.all(candidates.map(probeCandidate))
-  const available = results.find((result) => result.ok)
+  const availableResults = results.filter((result) => result.ok)
 
-  if (available) {
-    const models = modelRowsFromTags(available.data)
+  if (availableResults.length > 0) {
+    const models = aggregateModels(results)
     return NextResponse.json({
       ok: true,
       available: true,
-      baseUrl: available.baseUrl,
-      source: available.source,
-      via: available.via,
+      baseUrl: availableResults[0].baseUrl,
+      source: availableResults[0].source,
+      via: availableResults[0].via,
+      sources: availableResults.map((result) => ({
+        baseUrl: result.baseUrl,
+        source: result.source,
+        hostKind: result.hostKind,
+        hostLabel: result.hostLabel,
+        via: result.via,
+        count: modelRowsFromTags(result.data, result).length,
+      })),
       models,
       count: models.length,
       elapsedMs: Date.now() - startedAt,

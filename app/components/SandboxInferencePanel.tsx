@@ -18,10 +18,13 @@ type InferenceRouteStatus = {
 }
 
 type OllamaModel = {
+  id?: string
   name: string
   sizeLabel: string | null
   parameterSize: string | null
   quantization: string | null
+  hostLabel?: string | null
+  hostKind?: string | null
 }
 
 type SandboxInferenceRoute = {
@@ -55,6 +58,15 @@ type SandboxInferenceConfig = {
   routes: SandboxInferenceRoute[]
   primaryRouteId: string
   updatedAt: string | null
+}
+
+function OllamaHostBadge({ label }: { label?: string | null }) {
+  if (!label) return null
+  return <span className="shrink-0 rounded-sm border border-[var(--border-subtle)] bg-[var(--background-tertiary)] px-1.5 py-0.5 text-[9px] font-mono uppercase tracking-wider text-[var(--foreground-dim)]">[{label}]</span>
+}
+
+function ollamaModelKey(item: OllamaModel) {
+  return item.id || `${item.hostLabel || "LOCAL"}:${item.name}`
 }
 
 function makeRoute(provider: string, model: string, label = ""): SandboxInferenceRoute {
@@ -420,8 +432,8 @@ export default function SandboxInferencePanel({
               ) : (
                 <div className="mt-3 grid grid-cols-1 md:grid-cols-2 gap-2">
                   {ollamaModels.map((item) => (
-                    <button key={item.name} type="button" onClick={() => addRoute(draftProvider, item.name, "Ollama")} className="rounded-sm border border-[var(--border-subtle)] bg-[var(--background)] p-3 text-left hover:border-[var(--nvidia-green)]">
-                      <div className="text-xs font-mono text-[var(--foreground)]">{item.name}</div>
+                    <button key={ollamaModelKey(item)} type="button" onClick={() => addRoute(draftProvider, item.name, "Ollama")} className="rounded-sm border border-[var(--border-subtle)] bg-[var(--background)] p-3 text-left hover:border-[var(--nvidia-green)]">
+                      <div className="flex min-w-0 items-center gap-2 text-xs font-mono text-[var(--foreground)]"><span className="truncate">{item.name}</span><OllamaHostBadge label={item.hostLabel} /></div>
                       <div className="mt-1 text-[11px] text-[var(--foreground-dim)]">
                         {[item.parameterSize, item.quantization, item.sizeLabel].filter(Boolean).join(" · ") || "local model"}
                       </div>

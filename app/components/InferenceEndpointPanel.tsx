@@ -25,6 +25,7 @@ type InferenceResponse = {
 }
 
 type OllamaModel = {
+  id?: string
   name: string
   model: string
   modifiedAt: string | null
@@ -32,6 +33,8 @@ type OllamaModel = {
   family: string | null
   parameterSize: string | null
   quantization: string | null
+  hostLabel?: string | null
+  hostKind?: string | null
 }
 
 const providerTypeOptions = [
@@ -70,6 +73,19 @@ function emptyRoute(): InferenceRoute {
 
 function FieldLabel({ children }: { children: React.ReactNode }) {
   return <label className="text-[10px] uppercase tracking-wider text-[var(--foreground-dim)]">{children}</label>
+}
+
+function OllamaHostBadge({ label }: { label?: string | null }) {
+  if (!label) return null
+  return <span className="shrink-0 rounded-sm border border-[var(--border-subtle)] bg-[var(--background-tertiary)] px-1.5 py-0.5 text-[9px] font-mono uppercase tracking-wider text-[var(--foreground-dim)]">[{label}]</span>
+}
+
+function ollamaModelKey(item: OllamaModel) {
+  return item.id || `${item.hostLabel || "LOCAL"}:${item.name}`
+}
+
+function ollamaSourceSummary(models: OllamaModel[]) {
+  return Array.from(new Set(models.map((item) => item.hostLabel).filter(Boolean))).join(" + ")
 }
 
 function VllmAdvancedConfiguration({
@@ -461,8 +477,9 @@ export default function InferenceEndpointPanel() {
         return
       }
       const models = Array.isArray(data.models) ? data.models : []
+      const sources = ollamaSourceSummary(models)
       setOllamaModels(models)
-      setOllamaMessage(models.length > 0 ? `${models.length} Ollama model${models.length === 1 ? "" : "s"} available. Click one to load the Ollama endpoint preset.` : "Ollama is reachable but has no models installed.")
+      setOllamaMessage(models.length > 0 ? `${models.length} Ollama model${models.length === 1 ? "" : "s"} available${sources ? ` from ${sources}` : ""}. Click one to load the Ollama endpoint preset.` : "Ollama is reachable but has no models installed.")
       if (models[0]?.name) setModel((current) => current || models[0].name)
     } catch (error) {
       setOllamaModels([])
@@ -627,8 +644,8 @@ export default function InferenceEndpointPanel() {
                 {ollamaModels.length > 0 ? (
                   <div className="mt-3 grid grid-cols-1 md:grid-cols-2 gap-2">
                     {ollamaModels.map((item) => (
-                      <button key={item.name} type="button" onClick={() => applyOllamaModelPreset(item.name)} className={`rounded-sm border p-3 text-left ${isOllamaEndpoint && model === item.name ? "border-[var(--nvidia-green)] bg-[rgba(118,185,0,0.08)]" : "border-[var(--border-subtle)] bg-[var(--background)] hover:border-[var(--nvidia-green)]"}`}>
-                        <div className="text-xs font-mono text-[var(--foreground)]">{item.name}</div>
+                      <button key={ollamaModelKey(item)} type="button" onClick={() => applyOllamaModelPreset(item.name)} className={`rounded-sm border p-3 text-left ${isOllamaEndpoint && model === item.name ? "border-[var(--nvidia-green)] bg-[rgba(118,185,0,0.08)]" : "border-[var(--border-subtle)] bg-[var(--background)] hover:border-[var(--nvidia-green)]"}`}>
+                        <div className="flex min-w-0 items-center gap-2 text-xs font-mono text-[var(--foreground)]"><span className="truncate">{item.name}</span><OllamaHostBadge label={item.hostLabel} /></div>
                         <div className="mt-1 text-[11px] text-[var(--foreground-dim)]">
                           {[item.parameterSize, item.quantization, item.sizeLabel].filter(Boolean).join(" · ") || item.family || "local model"}
                         </div>
@@ -655,7 +672,7 @@ export default function InferenceEndpointPanel() {
                   <FieldLabel>Model</FieldLabel>
                   {isOllamaEndpoint && ollamaModels.length > 0 ? (
                     <select value={model} onChange={(event) => setModel(event.target.value)} className="w-full rounded-sm border border-[var(--border-subtle)] bg-[var(--background-tertiary)] px-3 py-2 text-sm font-mono text-[var(--foreground)] focus:outline-none focus:border-[var(--nvidia-green)]">
-                      {ollamaModels.map((item) => <option key={item.name} value={item.name}>{item.name}</option>)}
+                      {ollamaModels.map((item) => <option key={ollamaModelKey(item)} value={item.name}>{item.hostLabel ? `[${item.hostLabel}] ` : ""}{item.name}</option>)}
                     </select>
                   ) : (
                     <input value={model} onChange={(event) => setModel(event.target.value)} placeholder="provider/model-name" className="w-full rounded-sm border border-[var(--border-subtle)] bg-[var(--background-tertiary)] px-3 py-2 text-sm font-mono text-[var(--foreground)] focus:outline-none focus:border-[var(--nvidia-green)]" />
