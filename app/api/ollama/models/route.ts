@@ -14,6 +14,7 @@ const OLLAMA_BASE_URL = normalizeOllamaBaseUrl(
 const OLLAMA_PROBE_TIMEOUT_MS = parsePositiveInteger(process.env.OPENSHELL_OLLAMA_PROBE_TIMEOUT_MS, 2500)
 const WINDOWS_CURL_TIMEOUT_SECONDS = Math.max(1, Math.ceil(OLLAMA_PROBE_TIMEOUT_MS / 1000))
 const WINDOWS_CURL_OUTPUT_LIMIT = 10 * 1024 * 1024
+const WINDOWS_LOCAL_OLLAMA_URLS = [DEFAULT_OLLAMA_URL, "http://localhost:11434"]
 const execFileAsync = promisify(execFile)
 
 export const runtime = "nodejs"
@@ -38,7 +39,7 @@ type OllamaProbeCandidate = {
   source: string
   hostKind: OllamaHostKind
   hostLabel: string
-  via: "fetch" | "windows-curl"
+  via: "fetch" | "windows-curl" | "windows-powershell"
 }
 
 type OllamaProbeResult = OllamaProbeCandidate & {
@@ -213,17 +214,16 @@ function addFetchCandidate(
   candidates.push({ baseUrl, source, hostKind, hostLabel, via: "fetch" })
 }
 
-function addWindowsCurlCandidate(
+function addWindowsInteropCandidates(
   candidates: OllamaProbeCandidate[],
   value: string | undefined,
   source: string,
-  hostKind: OllamaHostKind,
-  hostLabel: string,
 ) {
   if (process.env.OPENSHELL_OLLAMA_WINDOWS_INTEROP === "0") return
   const baseUrl = normalizeOllamaBaseUrl(value)
   if (!baseUrl) return
-  candidates.push({ baseUrl, source, hostKind, hostLabel, via: "windows-curl" })
+  candidates.push({ baseUrl, source, hostKind: "win", hostLabel: "WIN", via: "windows-curl" })
+  candidates.push({ baseUrl, source, hostKind: "win", hostLabel: "WIN", via: "windows-powershell" })
 }
 
 function dedupeCandidates(candidates: OllamaProbeCandidate[]) {
@@ -267,13 +267,13 @@ async function buildProbeCandidates() {
       addFetchCandidate(candidates, hostUrl(host), "wsl-windows-host", "win", "WIN")
     }
     addFetchCandidate(candidates, hostUrl("host.docker.internal"), "host.docker.internal", "win", "WIN")
-    addWindowsCurlCandidate(
-      candidates,
-      process.env.OPENSHELL_WINDOWS_OLLAMA_BASE_URL || DEFAULT_OLLAMA_URL,
-      "windows-localhost",
-      "win",
-      "WIN",
-    )
+    const windowsLocalUrls = new Set([
+      process.env.OPENSHELL_WINDOWS_OLLAMA_BASE_URL,
+      ...WINDOWS_LOCAL_OLLAMA_URLS,
+    ].filter((value): value is string => Boolean(value)))
+    for (const url of windowsLocalUrls) {
+      addWindowsInteropCandidates(candidates, url, "windows-localhost")
+    }
   }
 
   return dedupeCandidates(candidates)
@@ -357,6 +357,14 @@ function windowsCurlExecutable() {
   return "curl.exe"
 }
 
+function windowsPowerShellExecutable() {
+  const override = String(process.env.OPENSHELL_WINDOWS_POWERSHELL_EXE || "").trim()
+  if (override) return override
+  const windowsPowerShell = "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe"
+  if (existsSync(windowsPowerShell)) return windowsPowerShell
+  return "powershell.exe"
+}
+
 async function probeWindowsCurlCandidate(candidate: OllamaProbeCandidate): Promise<OllamaProbeResult> {
   const startedAt = Date.now()
   try {
@@ -389,10 +397,52 @@ async function probeWindowsCurlCandidate(candidate: OllamaProbeCandidate): Promi
   }
 }
 
+async function probeWindowsPowerShellCandidate(candidate: OllamaProbeCandidate): Promise<OllamaProbeResult> {
+  const startedAt = Date.now()
+  try {
+    const { stdout } = await execFileAsync(windowsPowerShellExecutable(), [
+      "-NoLogo",
+      "-NoProfile",
+      "-NonInteractive",
+      "-ExecutionPolicy",
+      "Bypass",
+      "-Command",
+      "$ProgressPreference = 'SilentlyContinue'; (Invoke-WebRequest -UseBasicParsing -TimeoutSec $args[0] -Uri $args[1]).Content",
+      String(WINDOWS_CURL_TIMEOUT_SECONDS),
+      tagsUrl(candidate.baseUrl),
+    ], {
+      timeout: OLLAMA_PROBE_TIMEOUT_MS + 1000,
+      maxBuffer: WINDOWS_CURL_OUTPUT_LIMIT,
+      windowsHide: true,
+    })
+    const data = JSON.parse(String(stdout || "{}"))
+    if (!data || typeof data !== "object") throw new Error("Ollama returned a non-JSON response")
+    return {
+      ...candidate,
+      ok: true,
+      data,
+      status: 200,
+      elapsedMs: Date.now() - startedAt,
+    }
+  } catch (error) {
+    return {
+      ...candidate,
+      ok: false,
+      elapsedMs: Date.now() - startedAt,
+      error: probeErrorMessage(error),
+    }
+  }
+}
+
 async function probeCandidate(candidate: OllamaProbeCandidate) {
-  return candidate.via === "windows-curl"
-    ? probeWindowsCurlCandidate(candidate)
-    : probeFetchCandidate(candidate)
+  switch (candidate.via) {
+    case "windows-curl":
+      return probeWindowsCurlCandidate(candidate)
+    case "windows-powershell":
+      return probeWindowsPowerShellCandidate(candidate)
+    default:
+      return probeFetchCandidate(candidate)
+  }
 }
 
 function unreachableMessage(wsl: boolean) {
@@ -427,6 +477,8 @@ export async function GET() {
         via: result.via,
         count: modelRowsFromTags(result.data, result).length,
       })),
+      checkedHostLabels: Array.from(new Set(results.map((result) => result.hostLabel))),
+      availableHostLabels: Array.from(new Set(availableResults.map((result) => result.hostLabel))),
       models,
       count: models.length,
       elapsedMs: Date.now() - startedAt,
@@ -442,6 +494,8 @@ export async function GET() {
     count: 0,
     elapsedMs: Date.now() - startedAt,
     error: unreachableMessage(wsl),
+    checkedHostLabels: Array.from(new Set(results.map((result) => result.hostLabel))),
+    availableHostLabels: [],
     probed: results.map(publicProbeResult),
   }, { status: 200 })
 }

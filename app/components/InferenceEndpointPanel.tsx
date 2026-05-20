@@ -88,6 +88,10 @@ function ollamaSourceSummary(models: OllamaModel[]) {
   return Array.from(new Set(models.map((item) => item.hostLabel).filter(Boolean))).join(" + ")
 }
 
+function ollamaProbeSummary(labels: unknown) {
+  return Array.isArray(labels) ? labels.filter((item): item is string => typeof item === "string" && Boolean(item)).join(" + ") : ""
+}
+
 function VllmAdvancedConfiguration({
   model,
   port,
@@ -478,8 +482,9 @@ export default function InferenceEndpointPanel() {
       }
       const models = Array.isArray(data.models) ? data.models : []
       const sources = ollamaSourceSummary(models)
+      const checked = ollamaProbeSummary(data.checkedHostLabels)
       setOllamaModels(models)
-      setOllamaMessage(models.length > 0 ? `${models.length} Ollama model${models.length === 1 ? "" : "s"} available${sources ? ` from ${sources}` : ""}. Click one to load the Ollama endpoint preset.` : "Ollama is reachable but has no models installed.")
+      setOllamaMessage(models.length > 0 ? `${models.length} Ollama model${models.length === 1 ? "" : "s"} available${sources ? ` from ${sources}` : ""}${checked && checked !== sources ? `. Checked ${checked}.` : ""} Click one to load the Ollama endpoint preset.` : (checked ? `Checked ${checked}; no Ollama models reported.` : "Ollama is reachable but has no models installed."))
       if (models[0]?.name) setModel((current) => current || models[0].name)
     } catch (error) {
       setOllamaModels([])
