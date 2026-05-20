@@ -28,6 +28,7 @@ type OllamaModel = {
   id?: string
   name: string
   model: string
+  baseUrl?: string | null
   modifiedAt: string | null
   sizeLabel: string | null
   family: string | null
@@ -90,6 +91,15 @@ function ollamaSourceSummary(models: OllamaModel[]) {
 
 function ollamaProbeSummary(labels: unknown) {
   return Array.isArray(labels) ? labels.filter((item): item is string => typeof item === "string" && Boolean(item)).join(" + ") : ""
+}
+
+function ollamaOpenAiBaseUrl(item: OllamaModel) {
+  const baseUrl = typeof item.baseUrl === "string" ? item.baseUrl.trim().replace(/\/+$/, "") : ""
+  return baseUrl ? `${baseUrl}/v1` : OLLAMA_BASE_URL
+}
+
+function ollamaProviderName(item: OllamaModel) {
+  return item.hostKind === "win" ? "ollama-win" : OLLAMA_PROVIDER_NAME
 }
 
 function VllmAdvancedConfiguration({
@@ -500,11 +510,12 @@ export default function InferenceEndpointPanel() {
     return () => window.clearInterval(interval)
   }, [loadOllamaModels])
 
-  function applyOllamaModelPreset(modelName: string) {
-    setName(OLLAMA_PROVIDER_NAME)
+  function applyOllamaModelPreset(item: OllamaModel) {
+    const modelName = item.name
+    setName(ollamaProviderName(item))
     setType("openai")
     setModel(modelName)
-    setBaseUrl(OLLAMA_BASE_URL)
+    setBaseUrl(ollamaOpenAiBaseUrl(item))
     setCredentialKey("OPENAI_API_KEY")
     setApiKey("")
     setRoute("gateway")
@@ -649,7 +660,7 @@ export default function InferenceEndpointPanel() {
                 {ollamaModels.length > 0 ? (
                   <div className="mt-3 grid grid-cols-1 md:grid-cols-2 gap-2">
                     {ollamaModels.map((item) => (
-                      <button key={ollamaModelKey(item)} type="button" onClick={() => applyOllamaModelPreset(item.name)} className={`rounded-sm border p-3 text-left ${isOllamaEndpoint && model === item.name ? "border-[var(--nvidia-green)] bg-[rgba(118,185,0,0.08)]" : "border-[var(--border-subtle)] bg-[var(--background)] hover:border-[var(--nvidia-green)]"}`}>
+                      <button key={ollamaModelKey(item)} type="button" onClick={() => applyOllamaModelPreset(item)} className={`rounded-sm border p-3 text-left ${isOllamaEndpoint && model === item.name ? "border-[var(--nvidia-green)] bg-[rgba(118,185,0,0.08)]" : "border-[var(--border-subtle)] bg-[var(--background)] hover:border-[var(--nvidia-green)]"}`}>
                         <div className="flex min-w-0 items-center gap-2 text-xs font-mono text-[var(--foreground)]"><span className="truncate">{item.name}</span><OllamaHostBadge label={item.hostLabel} /></div>
                         <div className="mt-1 text-[11px] text-[var(--foreground-dim)]">
                           {[item.parameterSize, item.quantization, item.sizeLabel].filter(Boolean).join(" · ") || item.family || "local model"}

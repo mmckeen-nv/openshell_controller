@@ -438,7 +438,7 @@ async function probeWindowsPowerShellCandidate(candidate: OllamaProbeCandidate):
       "-ExecutionPolicy",
       "Bypass",
       "-Command",
-      "$ProgressPreference = 'SilentlyContinue'; (Invoke-WebRequest -UseBasicParsing -TimeoutSec $args[0] -Uri $args[1]).Content",
+      "& { param([int]$timeoutSec, [string]$uri) $ProgressPreference = 'SilentlyContinue'; (Invoke-WebRequest -UseBasicParsing -TimeoutSec $timeoutSec -Uri $uri).Content }",
       String(WINDOWS_CURL_TIMEOUT_SECONDS),
       tagsUrl(candidate.baseUrl),
     ], {
