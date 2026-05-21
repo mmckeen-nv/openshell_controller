@@ -299,7 +299,7 @@ upsert_env() {
 set_env() {
   local key="$1"
   local value="$2"
-  [[ -n "$value" ]] || return
+  [[ -n "$value" ]] || return 0
   touch "$ENV_FILE"
   if grep -qE "^${key}=" "$ENV_FILE"; then
     sed -i.bak -E "s|^${key}=.*$|${key}=${value}|" "$ENV_FILE"
@@ -408,6 +408,12 @@ OPENSHELL_CONTROL_CREATE_GPU_MODE=none
 # OPENSHELL_GATEWAY_HOST=host.docker.internal
 # OPENSHELL_GATEWAY_PORT=8080
 # OPENSHELL_GATEWAY_URL=http://host.docker.internal:8080
+# Ollama model discovery prefers WSL2 localhost, then the Windows host gateway.
+# Keep Ollama in WSL2 for large local models unless you intentionally configure Windows-host Ollama.
+# OPENSHELL_OLLAMA_BASE_URL=http://127.0.0.1:11434
+# OPENSHELL_OLLAMA_HOSTS=127.0.0.1,172.19.0.1
+# OPENSHELL_OLLAMA_PROBE_TIMEOUT_MS=2500
+# OPENSHELL_OLLAMA_WINDOWS_INTEROP=1
 # For reverse proxies, OpenClaw dashboard websockets use the same-origin proxy path by default.
 # OPENCLAW_DASHBOARD_BASE_WS_URL=wss://control.example.com
 # BASE_WS_URL=wss://control.example.com
@@ -424,9 +430,13 @@ upsert_env "NEXT_PUBLIC_ENABLE_SANDBOX_OPERATIONS" "true"
 upsert_env "OPEN_SHELL_CONTAINER" "$OPEN_SHELL_CONTAINER_DEFAULT"
 upsert_env "OPENSHELL_GATEWAY" "nemoclaw"
 upsert_env "OPENSHELL_CONTROL_CREATE_GPU_MODE" "none"
+upsert_env "OPENSHELL_OLLAMA_BASE_URL" "http://127.0.0.1:11434"
+upsert_env "OPENSHELL_OLLAMA_WINDOWS_INTEROP" "1"
 set_env "OPENSHELL_GATEWAY_HOST" "${OPENSHELL_GATEWAY_HOST:-}"
 set_env "OPENSHELL_GATEWAY_PORT" "${OPENSHELL_GATEWAY_PORT:-}"
 set_env "OPENSHELL_GATEWAY_URL" "${OPENSHELL_GATEWAY_URL:-}"
+set_env "OPENSHELL_OLLAMA_HOSTS" "${OPENSHELL_OLLAMA_HOSTS:-}"
+set_env "OPENSHELL_OLLAMA_PROBE_TIMEOUT_MS" "${OPENSHELL_OLLAMA_PROBE_TIMEOUT_MS:-}"
 set_env "OPENSHELL_CONTROL_VENV" "${VIRTUAL_ENV:-$PROJECT_VENV}"
 set_env "OPENSHELL_HOME" "${HOME:-}"
 set_env "OPENSHELL_BIN" "${OPENSHELL_BIN:-}"

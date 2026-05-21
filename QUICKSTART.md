@@ -4,12 +4,12 @@
 
 1. **Navigate to project directory:**
 ```bash
-cd /path/to/nemoclaw-dashboard
+cd /path/to/openshell_controller
 ```
 
 2. **Install dependencies:**
 ```bash
-npm install
+./install.sh
 ```
 
 3. **Start the development server:**
@@ -24,40 +24,38 @@ http://localhost:3000
 
 ## What You'll See
 
-- **Configuration Panel** at the top - set your OpenShell and Ollama URLs
-- **Telemetry Cards** - CPU, memory, disk, and GPU usage (updates every 3 seconds)
-- **One-Click Actions** - Start Sandbox, Stop Sandbox, Create Instance, Switch Model buttons
-- **Model Switcher** - Dropdown to select Ollama models
-- **Configuration Panels** - View settings for OpenShell, NemoClaw, and Ollama
+- **Sandbox inventory** from the OpenShell gateway
+- **Operator terminal** and OpenClaw dashboard proxy links
+- **Inference settings** for OpenAI-compatible providers, Ollama, NIM, and vLLM
+- **Ollama model discovery** across WSL2 localhost and optional Windows-host Ollama
+- **MCP broker settings** and per-sandbox MCP access controls
 
-## Testing the Dashboard
+## Ollama Smoke Test
 
-### Test 1: Verify Dashboard Loads
-1. Open `http://localhost:3000`
-2. All sections should render without errors
-3. Telemetry should show values (randomly generated)
+For WSL2 demo hosts, run Ollama in WSL2:
 
-### Test 2: Configuration Panel
-1. Edit the OpenShell URL field
-2. Edit the Ollama URL field
-3. Settings are saved to localStorage (persists on refresh)
+```bash
+ollama serve
+ollama pull qwen2.5:7b
+ollama pull nemotron-3-super:120b
+```
 
-### Test 3: One-Click Actions
-1. Click "Start Sandbox"
-2. Click "Stop Sandbox"
-3. Click "Create Instance"
-4. Click "Switch Model"
-5. Check that status messages appear
+Configure the gateway:
 
-### Test 4: Model Switcher
-1. Select a different model from the dropdown
-2. Click "Switch Model"
-3. Verify success message
+```bash
+openshell provider update ollama-local \
+  --credential OPENAI_API_KEY=ollama \
+  --config OPENAI_BASE_URL=http://127.0.0.1:11434/v1
 
-### Test 5: Telemetry Updates
-1. Wait 3 seconds
-2. Telemetry values should update automatically
-3. No console errors should appear
+openshell inference set \
+  --no-verify \
+  --provider ollama-local \
+  --model nemotron-3-super:120b \
+  --timeout 600
+```
+
+`qwen2.5:7b` reports a 32768 token context. `nemotron-3-super:120b` reports a
+262144 token context and needs about 94 GB of RTX 6000 VRAM at Q4_K_M.
 
 ## Troubleshooting
 
@@ -67,26 +65,20 @@ http://localhost:3000
 - Restart the server
 
 ### API endpoints returning errors
-- This is expected - endpoints are mocked for development
-- Check browser console for specific errors
-- No real connection to OpenShell/Ollama is required
+- Check `openshell sandbox list`
+- Check that the OpenShell gateway container is running
+- Check browser console and server logs for specific errors
+
+### Ollama models do not appear
+- Confirm WSL2 Ollama is reachable: `curl http://127.0.0.1:11434/api/tags`
+- If using Windows-host Ollama, confirm it is reachable from WSL2 through the
+  detected host gateway or Windows interop
+- Review `OLLAMA_INFERENCE.md` for the supported environment overrides
 
 ### Dependencies not installing
-- Make sure you're running Node.js 18 or later
+- Make sure you're running Node.js 20 or later
 - Clear npm cache: `npm cache clean --force`
 - Try reinstalling: `rm -rf node_modules package-lock.json && npm install`
-
-## Next Steps (Production)
-
-To make this production-ready:
-
-1. Replace mock API routes with real API calls to OpenShell (port 8080) and Ollama (port 11434)
-2. Add authentication to API routes
-3. Implement proper error handling
-4. Add loading states and skeletons
-5. Add dark mode toggle
-6. Add more detailed telemetry charts
-7. Add deployment configuration (Docker, Vercel, etc.)
 
 ## Support
 
