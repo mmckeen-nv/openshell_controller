@@ -167,6 +167,22 @@ Default ports:
 
 The dashboard WebSocket proxy is served on the same listener by default, using `/api/openshell/dashboard/proxy` or `/api/openshell/instances/[instanceId]/dashboard/proxy`. Set `OPENCLAW_DASHBOARD_WS_PROXY_PORT=3001` only if you intentionally want the legacy dedicated sidecar listener.
 
+## Ollama Inference
+
+For WSL2 demo hosts, prefer running Ollama inside WSL2 and routing OpenShell
+through `ollama-local` at `http://127.0.0.1:11434/v1`. This avoids Windows/WSL
+host routing surprises and was validated with both `qwen2.5:7b` and
+`nemotron-3-super:120b`.
+
+The `nemotron-3-super:120b` Ollama tag reports a `262144` token context window
+and was smoke-tested end to end through cuFolio sandbox chat on an RTX 6000
+Blackwell. It fit in VRAM at Q4_K_M, but responses are much slower than the 7B
+fallback.
+
+See [OLLAMA_INFERENCE.md](OLLAMA_INFERENCE.md) for setup commands, context-window
+notes, and the optional Windows-host thinkless proxy used for models that return
+reasoning without OpenAI `message.content`.
+
 ## Authentication
 
 This project currently uses a simple local password and signed HTTP-only cookie.

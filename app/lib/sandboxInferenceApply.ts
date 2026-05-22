@@ -7,16 +7,36 @@ const execFileAsync = promisify(execFile)
 const DOCKER_BIN = process.env.DOCKER_BIN || "docker"
 const OPENSHELL_CLUSTER_CONTAINER = process.env.OPENSHELL_CLUSTER_CONTAINER || "openshell-cluster-nemoclaw"
 
+function modelContextWindow(modelId: string) {
+  const normalized = modelId.toLowerCase()
+  if (normalized.includes("nemotron-3-super") && normalized.includes("120b")) return 262144
+  if (normalized.includes("qwen2.5:7b")) return 32768
+  if (normalized.includes("qwen3.5:27b")) return 32768
+  return 131072
+}
+
+function modelMaxTokens(modelId: string) {
+  const contextWindow = modelContextWindow(modelId)
+  if (contextWindow >= 262144) return 8192
+  if (contextWindow <= 32768) return 2048
+  return 4096
+}
+
+function modelSupportsReasoning(modelId: string) {
+  const normalized = modelId.toLowerCase()
+  return normalized.includes("nemotron-3-super")
+}
+
 function modelEntry(modelId: string, modelName: string, compat: Record<string, unknown> | null) {
   return {
     ...(compat ? { compat } : {}),
     id: modelId,
     name: modelName,
-    reasoning: false,
+    reasoning: modelSupportsReasoning(modelId),
     input: ["text"],
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-    contextWindow: 131072,
-    maxTokens: 4096,
+    contextWindow: modelContextWindow(modelId),
+    maxTokens: modelMaxTokens(modelId),
   }
 }
 
