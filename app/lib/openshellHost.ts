@@ -3,6 +3,10 @@ import { promisify } from "node:util"
 import { HOST_PATH, OPENCLAW_BIN, OPENSHELL_BIN, hostCommandEnv } from "./hostCommands"
 import { getDefaultOpenClawInstance, getOpenClawDashboardPortForSandbox, resolveOpenClawInstance } from "./openclawInstances"
 
+const VPS_HOST = process.env.SANDBOX_VPS_HOST?.trim() || ''
+const VPS_SSH_KEY = process.env.SANDBOX_VPS_SSH_KEY?.trim() || ''
+const VPS_USER = process.env.SANDBOX_VPS_USER?.trim() || 'root'
+
 const execFileAsync = promisify(execFile)
 const OPENSHELL_GATEWAY = process.env.OPENSHELL_GATEWAY || "openshell"
 const OPENSHELL_NAMESPACE = "agent-sandbox-system"
@@ -417,7 +421,10 @@ async function execSandboxSsh(sandboxName: string, command: string, timeoutMs = 
   })
 }
 
-export async function prebuildHermesDashboardWebUi(sandboxName: string): Promise<{ built: boolean; skipped: boolean; error?: string }> {
+export async function prebuildHermesDashboardWebUi(
+  sandboxName: string,
+  sandboxId?: string,
+): Promise<{ built: boolean; skipped: boolean; error?: string }> {
   const cmd = [
     'test -d /opt/hermes/hermes_cli/web_dist && echo already_built',
     '|| (cd /opt/hermes/web',
@@ -425,7 +432,9 @@ export async function prebuildHermesDashboardWebUi(sandboxName: string): Promise
     '&& npm run build --silent && echo build_ok)',
   ].join(' ')
   try {
-    const { stdout } = await execSandboxSsh(sandboxName, cmd, 120000)
+    const { stdout } = VPS_HOST && sandboxId
+      ? await execSandboxViaDockerExec(sandboxName, sandboxId, cmd, 120000)
+      : await execSandboxSsh(sandboxName, cmd, 120000)
     const skipped = stdout.includes('already_built')
     return { built: !skipped, skipped }
   } catch (error) {
@@ -579,6 +588,131 @@ export function getDefaultOpenClawDashboardInstanceId() {
 const HERMES_DASHBOARD_REMOTE_PORT = 9119
 const HERMES_DASHBOARD_PORT_BASE = Number.parseInt(process.env.HERMES_DASHBOARD_PORT_BASE || '21000', 10)
 const HERMES_DASHBOARD_PORT_RANGE = 2000
+const HERMES_SOCAT_BRIDGE_PORT = 19119
+
+function buildVpsSshBaseArgs(): string[] {
+  const args: string[] = []
+  if (VPS_SSH_KEY) args.push('-i', VPS_SSH_KEY)
+  args.push(
+    '-o', 'BatchMode=yes',
+    '-o', 'StrictHostKeyChecking=no',
+    '-o', 'UserKnownHostsFile=/dev/null',
+    '-o', 'ConnectTimeout=10',
+    '-o', 'LogLevel=ERROR',
+  )
+  return args
+}
+
+function getSandboxContainerName(sandboxName: string, sandboxId: string) {
+  return `openshell-${sandboxName}-${sandboxId}`
+}
+
+async function getSandboxContainerIp(sandboxName: string, sandboxId: string): Promise<string> {
+  const containerName = getSandboxContainerName(sandboxName, sandboxId)
+  const { stdout } = await execFileAsync('ssh', [
+    ...buildVpsSshBaseArgs(),
+    `${VPS_USER}@${VPS_HOST}`,
+    `docker inspect ${containerName} --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}'`,
+  ], { timeout: 8000, env: buildOpenClawEnv() })
+  const ip = stdout.trim()
+  if (!ip) throw new Error(`Could not resolve container IP for ${sandboxName}`)
+  return ip
+}
+
+async function execSandboxViaDockerExec(
+  sandboxName: string,
+  sandboxId: string,
+  command: string,
+  timeoutMs = 30000,
+) {
+  const containerName = getSandboxContainerName(sandboxName, sandboxId)
+  return execFileAsync('ssh', [
+    ...buildVpsSshBaseArgs(),
+    `${VPS_USER}@${VPS_HOST}`,
+    `docker exec ${containerName} bash -c ${JSON.stringify(command)}`,
+  ], {
+    timeout: timeoutMs,
+    maxBuffer: 2 * 1024 * 1024,
+    env: buildOpenClawEnv(),
+  })
+}
+
+async function ensureHermesDashboardDockerTunnel(
+  sandboxName: string,
+  sandboxId: string,
+  port: number,
+): Promise<{ listenerPresent: boolean; listenerSummary: string | null }> {
+  const containerName = getSandboxContainerName(sandboxName, sandboxId)
+  const runOnVps = (cmd: string, timeout = 15000) =>
+    execFileAsync('ssh', [...buildVpsSshBaseArgs(), `${VPS_USER}@${VPS_HOST}`, cmd], {
+      timeout,
+      maxBuffer: 2 * 1024 * 1024,
+      env: buildOpenClawEnv(),
+    })
+
+  // Build web UI if missing
+  const buildCmd = [
+    'test -d /opt/hermes/hermes_cli/web_dist',
+    '|| (cd /opt/hermes/web',
+    '&& (npm ci --prefer-offline --no-audit --no-fund --silent 2>/dev/null || npm install --no-audit --no-fund --silent 2>/dev/null)',
+    '&& npm run build --silent)',
+  ].join(' ')
+  await runOnVps(
+    `docker exec ${containerName} bash -c ${JSON.stringify(buildCmd)}`,
+    120000,
+  ).catch(() => null)
+
+  // Start hermes dashboard if not already running
+  const startCmd = [
+    `curl -sf --max-time 2 http://127.0.0.1:${HERMES_DASHBOARD_REMOTE_PORT}/ >/dev/null 2>&1`,
+    `|| nohup hermes dashboard --no-open --skip-build >/tmp/hermes-dashboard.log 2>&1 </dev/null &`,
+  ].join(' ')
+  await runOnVps(
+    `docker exec -d ${containerName} bash -c ${JSON.stringify(startCmd)}`,
+  ).catch(() => null)
+
+  // Poll until dashboard is up (up to 10 s)
+  for (let attempt = 0; attempt < 20; attempt++) {
+    try {
+      await runOnVps(
+        `docker exec ${containerName} curl -sf --max-time 2 http://127.0.0.1:${HERMES_DASHBOARD_REMOTE_PORT}/ >/dev/null`,
+        5000,
+      )
+      break
+    } catch {
+      await sleep(500)
+    }
+  }
+
+  // Start socat bridge inside container: 0.0.0.0:BRIDGE_PORT → 127.0.0.1:REMOTE_PORT
+  const socatCmd = [
+    `(ss -tlnp 2>/dev/null | grep -q ':${HERMES_SOCAT_BRIDGE_PORT} ')`,
+    `|| nohup socat TCP-LISTEN:${HERMES_SOCAT_BRIDGE_PORT},reuseaddr,fork TCP:127.0.0.1:${HERMES_DASHBOARD_REMOTE_PORT} >/tmp/hermes-socat.log 2>&1 </dev/null &`,
+  ].join(' ')
+  await runOnVps(
+    `docker exec -d ${containerName} bash -c ${JSON.stringify(socatCmd)}`,
+  ).catch(() => null)
+
+  // Get container bridge IP
+  const containerIp = await getSandboxContainerIp(sandboxName, sandboxId)
+
+  await sleep(500)
+
+  // SSH tunnel: Mac localhost:port → VPS → container:BRIDGE_PORT
+  const child = spawn('ssh', [
+    ...buildVpsSshBaseArgs(),
+    '-N',
+    '-L', `127.0.0.1:${port}:${containerIp}:${HERMES_SOCAT_BRIDGE_PORT}`,
+    `${VPS_USER}@${VPS_HOST}`,
+  ], {
+    detached: true,
+    env: buildOpenClawEnv(),
+    stdio: 'ignore',
+  })
+  child.unref()
+
+  return waitForListeningPort(port, 10000)
+}
 
 export function getHermesDashboardPortForSandbox(sandboxName: string): number {
   let hash = 0
@@ -588,16 +722,21 @@ export function getHermesDashboardPortForSandbox(sandboxName: string): number {
   return HERMES_DASHBOARD_PORT_BASE + (Math.abs(hash) % HERMES_DASHBOARD_PORT_RANGE)
 }
 
-export async function ensureHermesDashboardTunnel(sandboxName: string): Promise<{ port: number; listenerPresent: boolean; listenerSummary: string | null }> {
+export async function ensureHermesDashboardTunnel(
+  sandboxName: string,
+  sandboxId: string,
+): Promise<{ port: number; listenerPresent: boolean; listenerSummary: string | null }> {
   const port = getHermesDashboardPortForSandbox(sandboxName)
 
   const initial = await inspectListeningPort(port)
   if (initial.listenerPresent) return { port, ...initial }
 
-  // Fresh Hermes sandboxes don't have the web UI pre-built. Build it once if missing.
-  // npm ci is used instead of npm install because it's faster and more reliable in
-  // restricted network environments (--prefer-offline avoids fetching from the registry
-  // when node_modules is already partially populated from the image layer).
+  if (VPS_HOST) {
+    const result = await ensureHermesDashboardDockerTunnel(sandboxName, sandboxId, port)
+    return { port, ...result }
+  }
+
+  // Fallback: openshell ssh-proxy approach (requires openshell gateway to be running)
   const ensureBuildCmd = [
     'test -d /opt/hermes/hermes_cli/web_dist',
     '|| (cd /opt/hermes/web',
@@ -606,14 +745,12 @@ export async function ensureHermesDashboardTunnel(sandboxName: string): Promise<
   ].join(' ')
   await execSandboxSsh(sandboxName, ensureBuildCmd, 120000).catch(() => null)
 
-  // Start hermes dashboard inside the sandbox as a background daemon
   const startCmd = [
     `curl -fsS --max-time 2 http://127.0.0.1:${HERMES_DASHBOARD_REMOTE_PORT}/ >/dev/null 2>&1`,
     `|| (nohup hermes dashboard --no-open --skip-build 2>/tmp/hermes-dashboard.log </dev/null &)`,
   ].join(' ')
   await execSandboxSsh(sandboxName, startCmd, 10000).catch(() => null)
 
-  // Wait up to 8 s for the dashboard to come up inside the sandbox
   for (let attempt = 0; attempt < 16; attempt++) {
     try {
       await execSandboxSsh(sandboxName, `curl -fsS --max-time 2 http://127.0.0.1:${HERMES_DASHBOARD_REMOTE_PORT}/ >/dev/null`, 5000)
@@ -623,7 +760,6 @@ export async function ensureHermesDashboardTunnel(sandboxName: string): Promise<
     }
   }
 
-  // Set up a persistent SSH port-forward tunnel to expose the sandbox's loopback port here
   const child = spawn("ssh", buildSandboxSshArgs(sandboxName, [
     "-N",
     "-L", `127.0.0.1:${port}:127.0.0.1:${HERMES_DASHBOARD_REMOTE_PORT}`,

@@ -8,7 +8,7 @@ export async function GET(
   try {
     const { sandboxId } = await params
     const sandbox = await resolveSandboxRef(sandboxId)
-    const { port, listenerPresent } = await ensureHermesDashboardTunnel(sandbox.name)
+    const { port, listenerPresent } = await ensureHermesDashboardTunnel(sandbox.name, sandbox.id ?? sandboxId)
     const proxyUrl = `/api/sandbox/${encodeURIComponent(sandboxId)}/hermes/proxy`
 
     return NextResponse.json({

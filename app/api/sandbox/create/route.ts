@@ -853,7 +853,7 @@ export async function POST(request: Request) {
       const deviceApproval = created && isOpenClawAgent ? await approveOpenClawDeviceRequests(sandboxName) : null
       // Pre-build the Hermes dashboard web UI so "Launch Hermes Dashboard" is instant on first use.
       const hermesDashboardBuild = created && agent === "hermes"
-        ? await prebuildHermesDashboardWebUi(sandboxName).catch((error) => ({
+        ? await prebuildHermesDashboardWebUi(sandboxName, verification.details?.id ?? undefined).catch((error) => ({
             built: false,
             skipped: false,
             error: error instanceof Error ? error.message : "Hermes dashboard web UI pre-build failed",

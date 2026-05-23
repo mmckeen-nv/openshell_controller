@@ -6,9 +6,32 @@ const HOP_BY_HOP_HEADERS = new Set([
   'proxy-authorization', 'te', 'trailer', 'transfer-encoding', 'upgrade', 'content-length',
 ])
 
-function injectBaseTag(html: string, proxyBase: string) {
-  const base = `<base href="${proxyBase}/">`
-  return html.replace(/<head(\s[^>]*)?>/i, (match) => `${match}${base}`)
+function rewriteHtmlForProxy(html: string, proxyBase: string): string {
+  // Rewrite absolute-root paths in the original HTML first, before injecting our own tags.
+  // Vite builds emit paths like /assets/index.js and /favicon.ico in src/href attributes;
+  // the browser resolves these against the origin (bypassing <base href>), so we prepend
+  // the proxy base directly.
+  let result = html.replace(/((?:src|href|action)=["'])\/(?!\/)/gi, `$1${proxyBase}/`)
+
+  // Inject a fetch/XHR interceptor so the dashboard's JS API calls (e.g. /api/config)
+  // are rerouted through the proxy rather than hitting the controller origin.
+  // Do this after the regex rewrite so our injected tags are not themselves rewritten.
+  const escapedBase = proxyBase.replace(/'/g, "\\'")
+  const headInject = `<base href="${proxyBase}/">` +
+    `<script>(function(){` +
+    `var B='${escapedBase}';` +
+    `var F=window.fetch;` +
+    `window.fetch=function(u,o){` +
+    `if(typeof u==='string'&&u.startsWith('/')&&!u.startsWith(B))u=B+u;` +
+    `return F.call(this,u,o);};` +
+    `var X=XMLHttpRequest.prototype.open;` +
+    `XMLHttpRequest.prototype.open=function(m,u){` +
+    `if(typeof u==='string'&&u.startsWith('/')&&!u.startsWith(B))u=B+u;` +
+    `return X.apply(this,arguments);};` +
+    `})()</script>`
+  result = result.replace(/<head(\s[^>]*)?>/i, (match) => `${match}${headInject}`)
+
+  return result
 }
 
 export async function proxyHermesDashboard(request: Request, sandboxId: string, upstreamPath: string) {
@@ -60,7 +83,7 @@ export async function proxyHermesDashboard(request: Request, sandboxId: string, 
 
   const contentType = upstream.headers.get('content-type') || ''
   if (contentType.includes('text/html')) {
-    const body = injectBaseTag(await upstream.text(), proxyBase)
+    const body = rewriteHtmlForProxy(await upstream.text(), proxyBase)
     responseHeaders.set('content-type', contentType)
     return new NextResponse(body, { status: upstream.status, headers: responseHeaders })
   }
