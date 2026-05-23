@@ -200,6 +200,7 @@ export default function SandboxList({
   dashboardSessionId,
 }: SandboxListProps) {
   const [dashboardMessage, setDashboardMessage] = useState<string>('')
+  const [hermesDashboardLaunching, setHermesDashboardLaunching] = useState(false)
   const [restartInProgress, setRestartInProgress] = useState(false)
   const [permissionMessage, setPermissionMessage] = useState('')
   const [permissionFeeds, setPermissionFeeds] = useState<Record<string, PermissionFeed>>({})
@@ -332,6 +333,23 @@ export default function SandboxList({
       launch: 'hermes',
     })
     window.open(route, '_blank', 'noopener,noreferrer')
+  }
+
+  const launchHermesDashboard = async (sandbox: SandboxInventoryItem) => {
+    if (hermesDashboardLaunching) return
+    try {
+      setHermesDashboardLaunching(true)
+      setDashboardMessage(`Starting Hermes dashboard for ${sandbox.name}…`)
+      const res = await fetch(`/api/sandbox/${encodeURIComponent(sandbox.id)}/hermes/dashboard`)
+      const data = await res.json()
+      if (!res.ok || !data.ok) throw new Error(data.error || 'Failed to start Hermes dashboard')
+      setDashboardMessage(data.note || 'Hermes dashboard started.')
+      window.open(data.proxyUrl, '_blank', 'noopener,noreferrer')
+    } catch (error) {
+      setDashboardMessage(error instanceof Error ? error.message : 'Failed to start Hermes dashboard.')
+    } finally {
+      setHermesDashboardLaunching(false)
+    }
   }
 
   const updateMcpServerAccess = async (
@@ -666,12 +684,21 @@ export default function SandboxList({
                         Start OpenClaw Gateway Dashboard
                       </button>
                     ) : (
-                      <button
-                        onClick={() => connectToHermes(selectedSandbox)}
-                        className="action-button px-3 py-2"
-                      >
-                        Connect to Hermes
-                      </button>
+                      <>
+                        <button
+                          onClick={() => connectToHermes(selectedSandbox)}
+                          className="action-button px-3 py-2"
+                        >
+                          Connect to Hermes
+                        </button>
+                        <button
+                          onClick={() => launchHermesDashboard(selectedSandbox)}
+                          disabled={hermesDashboardLaunching}
+                          className="action-button px-3 py-2"
+                        >
+                          {hermesDashboardLaunching ? 'Starting Dashboard…' : 'Launch Hermes Dashboard'}
+                        </button>
+                      </>
                     )}
                     <button
                       onClick={restartSandbox}

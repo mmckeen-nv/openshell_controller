@@ -417,6 +417,22 @@ async function execSandboxSsh(sandboxName: string, command: string, timeoutMs = 
   })
 }
 
+export async function prebuildHermesDashboardWebUi(sandboxName: string): Promise<{ built: boolean; skipped: boolean; error?: string }> {
+  const cmd = [
+    'test -d /opt/hermes/hermes_cli/web_dist && echo already_built',
+    '|| (cd /opt/hermes/web',
+    '&& (npm ci --prefer-offline --no-audit --no-fund --silent 2>/dev/null || npm install --no-audit --no-fund --silent 2>/dev/null)',
+    '&& npm run build --silent && echo build_ok)',
+  ].join(' ')
+  try {
+    const { stdout } = await execSandboxSsh(sandboxName, cmd, 120000)
+    const skipped = stdout.includes('already_built')
+    return { built: !skipped, skipped }
+  } catch (error) {
+    return { built: false, skipped: false, error: error instanceof Error ? error.message : String(error) }
+  }
+}
+
 async function ensureRemoteSandboxOpenClawDashboard(sandboxName: string) {
   const command = [
     `curl -fsS --max-time 2 http://127.0.0.1:${SANDBOX_DASHBOARD_REMOTE_PORT}/ >/dev/null 2>&1`,
@@ -558,6 +574,68 @@ export function getOpenClawDashboardUrl(instanceId?: string | null) {
 
 export function getDefaultOpenClawDashboardInstanceId() {
   return getDefaultOpenClawInstance().id
+}
+
+const HERMES_DASHBOARD_REMOTE_PORT = 9119
+const HERMES_DASHBOARD_PORT_BASE = Number.parseInt(process.env.HERMES_DASHBOARD_PORT_BASE || '21000', 10)
+const HERMES_DASHBOARD_PORT_RANGE = 2000
+
+export function getHermesDashboardPortForSandbox(sandboxName: string): number {
+  let hash = 0
+  for (let i = 0; i < sandboxName.length; i++) {
+    hash = ((hash << 5) - hash + sandboxName.charCodeAt(i)) | 0
+  }
+  return HERMES_DASHBOARD_PORT_BASE + (Math.abs(hash) % HERMES_DASHBOARD_PORT_RANGE)
+}
+
+export async function ensureHermesDashboardTunnel(sandboxName: string): Promise<{ port: number; listenerPresent: boolean; listenerSummary: string | null }> {
+  const port = getHermesDashboardPortForSandbox(sandboxName)
+
+  const initial = await inspectListeningPort(port)
+  if (initial.listenerPresent) return { port, ...initial }
+
+  // Fresh Hermes sandboxes don't have the web UI pre-built. Build it once if missing.
+  // npm ci is used instead of npm install because it's faster and more reliable in
+  // restricted network environments (--prefer-offline avoids fetching from the registry
+  // when node_modules is already partially populated from the image layer).
+  const ensureBuildCmd = [
+    'test -d /opt/hermes/hermes_cli/web_dist',
+    '|| (cd /opt/hermes/web',
+    '&& (npm ci --prefer-offline --no-audit --no-fund --silent 2>/dev/null || npm install --no-audit --no-fund --silent 2>/dev/null)',
+    '&& npm run build --silent)',
+  ].join(' ')
+  await execSandboxSsh(sandboxName, ensureBuildCmd, 120000).catch(() => null)
+
+  // Start hermes dashboard inside the sandbox as a background daemon
+  const startCmd = [
+    `curl -fsS --max-time 2 http://127.0.0.1:${HERMES_DASHBOARD_REMOTE_PORT}/ >/dev/null 2>&1`,
+    `|| (nohup hermes dashboard --no-open --skip-build 2>/tmp/hermes-dashboard.log </dev/null &)`,
+  ].join(' ')
+  await execSandboxSsh(sandboxName, startCmd, 10000).catch(() => null)
+
+  // Wait up to 8 s for the dashboard to come up inside the sandbox
+  for (let attempt = 0; attempt < 16; attempt++) {
+    try {
+      await execSandboxSsh(sandboxName, `curl -fsS --max-time 2 http://127.0.0.1:${HERMES_DASHBOARD_REMOTE_PORT}/ >/dev/null`, 5000)
+      break
+    } catch {
+      await sleep(500)
+    }
+  }
+
+  // Set up a persistent SSH port-forward tunnel to expose the sandbox's loopback port here
+  const child = spawn("ssh", buildSandboxSshArgs(sandboxName, [
+    "-N",
+    "-L", `127.0.0.1:${port}:127.0.0.1:${HERMES_DASHBOARD_REMOTE_PORT}`,
+  ]), {
+    detached: true,
+    env: buildOpenClawEnv(),
+    stdio: "ignore",
+  })
+  child.unref()
+
+  const result = await waitForListeningPort(port, 8000)
+  return { port, ...result }
 }
 
 export { OPENSHELL_BIN, OPENSHELL_GATEWAY, OPENSHELL_NAMESPACE }

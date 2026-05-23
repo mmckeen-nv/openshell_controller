@@ -3,7 +3,7 @@ import { execFile, spawn } from "node:child_process"
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs"
 import path from "node:path"
 import { promisify } from "node:util"
-import { inspectSandbox, resolveSandboxRef } from "@/app/lib/openshellHost"
+import { inspectSandbox, prebuildHermesDashboardWebUi, resolveSandboxRef } from "@/app/lib/openshellHost"
 import { repairOpenClawExecApprovalsFile } from "@/app/lib/sandboxPrivilegedFiles"
 import {
   commandExists,
@@ -851,6 +851,14 @@ export async function POST(request: Request) {
         error: error instanceof Error ? error.message : "Failed to repair OpenClaw exec approvals file",
       })) : null
       const deviceApproval = created && isOpenClawAgent ? await approveOpenClawDeviceRequests(sandboxName) : null
+      // Pre-build the Hermes dashboard web UI so "Launch Hermes Dashboard" is instant on first use.
+      const hermesDashboardBuild = created && agent === "hermes"
+        ? await prebuildHermesDashboardWebUi(sandboxName).catch((error) => ({
+            built: false,
+            skipped: false,
+            error: error instanceof Error ? error.message : "Hermes dashboard web UI pre-build failed",
+          }))
+        : null
       const forcedReady = "forcedReady" in result ? result.forcedReady : false
       console.log(
         `[sandbox/create] request:complete sandbox=${sandboxName} created=${created} agent=${agent} forcedReady=${forcedReady} readinessAttempts=${readiness.attempts} deviceApproval=${deviceApproval?.approved ?? false} elapsedMs=${elapsedMs(requestStartedAt)}`,
@@ -882,6 +890,7 @@ export async function POST(request: Request) {
         },
         execApprovalsRepair,
         deviceApproval,
+        hermesDashboardBuild,
         stdout: result.stdout,
         stderr: result.stderr,
         note: created
