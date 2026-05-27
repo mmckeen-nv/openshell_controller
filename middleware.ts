@@ -93,20 +93,7 @@ function hasTrustedOrigin(request: NextRequest) {
 function getSandboxIdFromRequest(request: NextRequest): string | null {
   const { pathname, searchParams } = request.nextUrl
 
-  if (pathname.startsWith("/api/sandbox/")) {
-    const parts = pathname.split("/")
-    if (parts[3] && parts[3] !== "create" && parts[3] !== "delete") {
-      return parts[3]
-    }
-  }
-
-  if (pathname.startsWith("/api/telemetry/sandbox/")) {
-    const parts = pathname.split("/")
-    if (parts[4]) {
-      return parts[4]
-    }
-  }
-
+  // Gate dashboard proxy access by sandbox name (extracted from instance ID format: sandbox-{port}-{name})
   if (pathname.startsWith("/api/openshell/instances/")) {
     const parts = pathname.split("/")
     const instanceId = parts[4]
