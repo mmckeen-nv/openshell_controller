@@ -59,6 +59,8 @@ MCPAUTH_CALLBACK_URL=https://openshell-controller.ag-*.nemoclaw.dpdns.org/api/au
 ```
 
 `SANDBOX_ACCESS_USERS` is a comma-separated list of `sandboxName:email` pairs.
+Use the sandbox **name** (not the UUID) — e.g. `my-first-claw:alice@company.com`.
+The name is what appears in the dashboard URL and the instance ID format `sandbox-{port}-{name}`.
 A sandbox can have at most one assigned user. Operator (password login) bypasses
 this check and sees all sandboxes.
 
@@ -101,7 +103,9 @@ Added to the existing Next.js middleware:
 
 ## Assigning a Sandbox to a User
 
-Edit `.env.local` on the server and add the sandbox name and email to `SANDBOX_ACCESS_USERS`:
+Edit `.env.local` on the server and add the sandbox **name** and email to `SANDBOX_ACCESS_USERS`.
+The sandbox name is the short identifier (e.g. `my-first-claw`), not the UUID.
+Find it with `openshell sandbox list` or from the sandbox URL in the dashboard.
 
 ```env
 SANDBOX_ACCESS_USERS=alice-sandbox:alice@company.com,bob-sandbox:bob@company.com
