@@ -19,12 +19,22 @@ const BROKER_PATHS = [
   "/api/mcp/broker",
 ]
 
+// Routes where MCPAuth users may POST. The route handler itself is responsible
+// for verifying the caller is authorized for the specific sandbox.
+const MCPAUTH_WRITE_ALLOWED_PATHS = [
+  "/api/openshell/terminal/live",
+]
+
 function isPublicPath(pathname: string) {
   return PUBLIC_PATHS.some((path) => pathname === path || pathname.startsWith(`${path}/`))
 }
 
 function isBrokerPath(pathname: string) {
   return BROKER_PATHS.some((path) => pathname === path || pathname.startsWith(`${path}/`))
+}
+
+function isMcpAuthAllowedWritePath(pathname: string) {
+  return MCPAUTH_WRITE_ALLOWED_PATHS.some((path) => pathname === path || pathname.startsWith(`${path}/`))
 }
 
 function isAssetPath(pathname: string) {
@@ -155,18 +165,26 @@ export async function middleware(request: NextRequest) {
   // 1. Operator Auth Check
   const authenticated = await verifySessionCookieValue(request.cookies.get(settings.cookieName)?.value)
   if (authenticated) {
-    return withSecurityHeaders(NextResponse.next())
+    // Strip any client-supplied x-forwarded-user so downstream routes only see it
+    // when the MCPAuth path below populates it.
+    const requestHeaders = new Headers(request.headers)
+    requestHeaders.delete("x-forwarded-user")
+    return withSecurityHeaders(NextResponse.next({ request: { headers: requestHeaders } }))
   }
 
   // 2. MCPAuth Auth Check
   if (cfUserEmail) {
-    // MCPAuth enterprise users are read-only — block all state-changing methods globally
+    // MCPAuth enterprise users are read-only by default. A small allowlist of
+    // POST endpoints (e.g. terminal session allocation) lets them through; the
+    // route handler then enforces per-sandbox access.
     const isWriteRequest = !["GET", "HEAD", "OPTIONS"].includes(request.method.toUpperCase())
-    if (isWriteRequest) {
+    if (isWriteRequest && !isMcpAuthAllowedWritePath(pathname)) {
       return withSecurityHeaders(NextResponse.json({ ok: false, error: "Forbidden: Operator role required" }, { status: 403 }))
     }
 
-    // Gate access to specific sandbox resources
+    // Gate access to sandbox resources whose ID is encoded in the URL. (Routes
+    // whose sandboxId is in the request body must do their own gating using the
+    // x-forwarded-user header.)
     const sandboxId = getSandboxIdFromRequest(request)
     if (sandboxId && !isUserAuthorizedForSandbox(cfUserEmail, sandboxId)) {
       if (pathname.startsWith("/api/")) {

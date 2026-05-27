@@ -232,7 +232,7 @@ function getSandboxIdFromUpgradeUrl(url) {
   }
 }
 
-function isMCPAuthDashboardUpgradeAuthorized(req) {
+function isMCPAuthSandboxUpgradeAuthorized(req) {
   const cfAuthToken = readCookieValue(req.headers.cookie, 'CF_Authorization')
   const payload = verifyCFAuthorizationJWT(cfAuthToken)
   if (!payload) return false
@@ -245,7 +245,7 @@ function isMCPAuthDashboardUpgradeAuthorized(req) {
   if (!authorizedEmails) return false
   const authorized = authorizedEmails.has(email.toLowerCase())
   if (authorized) {
-    logBridge('dashboard-ws-mcpauth-authorized', {
+    logBridge('ws-upgrade-mcpauth-authorized', {
       path: req.url || '/',
       sandboxId,
       remoteAddress: req.socket.remoteAddress || 'unknown',
@@ -997,7 +997,7 @@ clientWss.on('connection', (client, req) => {
 
 server.on('upgrade', (req, socket, head) => {
   if ((req.url || '').startsWith(terminalProxyPath)) {
-    if (!isAuthenticatedUpgrade(req)) {
+    if (!isAuthenticatedUpgrade(req) && !isMCPAuthSandboxUpgradeAuthorized(req)) {
       rejectUnauthorizedUpgrade(req, socket, req.url || '/')
       return
     }
@@ -1015,7 +1015,7 @@ server.on('upgrade', (req, socket, head) => {
     (req.url || '').startsWith(legacyDashboardProxyPrefix) ||
     (req.url || '').startsWith(instancesProxyPrefix)
   ) {
-    if (!isAuthenticatedUpgrade(req) && !isMCPAuthDashboardUpgradeAuthorized(req)) {
+    if (!isAuthenticatedUpgrade(req) && !isMCPAuthSandboxUpgradeAuthorized(req)) {
       rejectUnauthorizedUpgrade(req, socket, req.url || '/')
       return
     }
@@ -1037,7 +1037,7 @@ server.on('upgrade', (req, socket, head) => {
 if (dashboardWsProxyServer) {
   dashboardWsProxyServer.on('upgrade', (req, socket, head) => {
     if ((req.url || '').startsWith(terminalProxyPath)) {
-      if (!isAuthenticatedUpgrade(req)) {
+      if (!isAuthenticatedUpgrade(req) && !isMCPAuthSandboxUpgradeAuthorized(req)) {
         rejectUnauthorizedUpgrade(req, socket, req.url || '/')
         return
       }
@@ -1055,7 +1055,7 @@ if (dashboardWsProxyServer) {
       (req.url || '').startsWith(legacyDashboardProxyPrefix) ||
       (req.url || '').startsWith(instancesProxyPrefix)
     ) {
-      if (!isAuthenticatedUpgrade(req) && !isMCPAuthDashboardUpgradeAuthorized(req)) {
+      if (!isAuthenticatedUpgrade(req) && !isMCPAuthSandboxUpgradeAuthorized(req)) {
         rejectUnauthorizedUpgrade(req, socket, req.url || '/')
         return
       }

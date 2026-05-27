@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server'
+import { isUserAuthorizedForSandbox } from '@/app/lib/controlAuth'
 import { inspectSandbox } from '@/app/lib/openshellHost'
 import { resolveRuntimeAuthority } from '@/app/lib/runtimeAuthority'
 
@@ -104,6 +105,19 @@ export async function POST(request: Request) {
     const dashboardSessionId = typeof body?.dashboardSessionId === 'string' && body.dashboardSessionId.trim()
       ? body.dashboardSessionId.trim()
       : 'dashboard-host'
+
+    // MCPAuth users are gated by SANDBOX_ACCESS_USERS. The middleware sets
+    // x-forwarded-user only for verified MCPAuth callers (it strips any
+    // client-supplied value in other paths) so trusting it here is safe.
+    const mcpAuthUser = request.headers.get('x-forwarded-user')?.trim().toLowerCase()
+    if (mcpAuthUser) {
+      if (!sandboxId || !isUserAuthorizedForSandbox(mcpAuthUser, sandboxId)) {
+        return NextResponse.json(
+          { ok: false, error: `Forbidden: no access to sandbox ${sandboxId || '(none)'}` },
+          { status: 403 },
+        )
+      }
+    }
 
     const requestedSandboxId = sandboxId || 'host'
 
