@@ -8,5 +8,9 @@ export async function POST(request: NextRequest) {
     ...sessionCookieOptionsForRequest(request),
     maxAge: 0,
   })
+  response.cookies.set("CF_Authorization", "", {
+    ...sessionCookieOptionsForRequest(request),
+    maxAge: 0,
+  })
   return response
 }

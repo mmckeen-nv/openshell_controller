@@ -6,6 +6,7 @@ import path from "node:path"
 import { promisify } from "node:util"
 import { NEMOCLAW_BIN, NODE_BIN, OPENSHELL_BIN, hostCommandEnv } from "@/app/lib/hostCommands"
 import { resolveRuntimeAuthority } from "@/app/lib/runtimeAuthority"
+import { isUserAuthorizedForSandbox } from "@/app/lib/controlAuth"
 
 const execFileAsync = promisify(execFile)
 const NEMOCLAW_REGISTRY_FILE = path.join(process.env.HOME || "/tmp", ".nemoclaw", "sandboxes.json")
@@ -318,10 +319,16 @@ async function readSandbox(name: string, defaultSandboxNames: Set<string>, regis
   }
 }
 
-export async function GET() {
+export async function GET(request: Request) {
   try {
+    const userEmail = request.headers.get("x-forwarded-user")
     const { stdout: sandboxListStdout } = await execOpenShell(["sandbox", "list"])
-    const names = parseOpenShellSandboxNames(sandboxListStdout)
+    let names = parseOpenShellSandboxNames(sandboxListStdout)
+
+    if (userEmail) {
+      names = names.filter((name) => isUserAuthorizedForSandbox(userEmail, name))
+    }
+
     const [nemoclawListResult, nemoclawStatusResult] = names.length > 0
       ? await Promise.all([
           execNemoclaw(["list"]).catch(() => null),
@@ -348,6 +355,7 @@ export async function GET() {
       pods: { items },
       nemoclaw,
       host: readHostIdentity(),
+      userEmail: userEmail || null,
       source: "openshell-cli",
       authoritySource: "runtimeAuthority",
       truthState: hasMappedFallbackWithoutInventory ? "unverified" : "verified",

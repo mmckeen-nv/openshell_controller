@@ -1,10 +1,11 @@
 import { NextRequest, NextResponse } from "next/server"
-import { getAuthSettings, verifySessionCookieValue } from "./app/lib/controlAuth"
+import { getAuthSettings, verifySessionCookieValue, verifyCFAuthorizationJWT, isUserAuthorizedForSandbox } from "./app/lib/controlAuth"
 
 const PUBLIC_PATHS = [
   "/login",
   "/api/auth/login",
   "/api/auth/logout",
+  "/api/auth/callback",
   "/setup-account",
   "/forgot-password",
   "/api/auth/setup",
@@ -89,9 +90,49 @@ function hasTrustedOrigin(request: NextRequest) {
   }
 }
 
+function getSandboxIdFromRequest(request: NextRequest): string | null {
+  const { pathname, searchParams } = request.nextUrl
+
+  if (pathname.startsWith("/api/sandbox/")) {
+    const parts = pathname.split("/")
+    if (parts[3] && parts[3] !== "create" && parts[3] !== "delete") {
+      return parts[3]
+    }
+  }
+
+  if (pathname.startsWith("/api/telemetry/sandbox/")) {
+    const parts = pathname.split("/")
+    if (parts[4]) {
+      return parts[4]
+    }
+  }
+
+  if (pathname.startsWith("/api/openshell/instances/")) {
+    const parts = pathname.split("/")
+    const instanceId = parts[4]
+    if (instanceId) {
+      const decodedInstanceId = decodeURIComponent(instanceId)
+      const match = decodedInstanceId.match(/^sandbox-(\d+)-(.+)$/)
+      if (match) return match[2]
+    }
+  }
+
+  const querySandboxId = searchParams.get("sandboxId")
+  if (querySandboxId) {
+    return querySandboxId
+  }
+
+  return null
+}
+
 export async function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl
   const settings = getAuthSettings()
+
+  const host = request.headers.get("host") || "localhost:3000"
+  const protocol = request.headers.get("x-forwarded-proto") || request.nextUrl.protocol || "http"
+  const cleanProtocol = protocol.endsWith(":") ? protocol.slice(0, -1) : protocol
+  const baseUrl = `${cleanProtocol}://${host}`
 
   if (isStateChangingMethod(request.method) && !hasTrustedOrigin(request)) {
     return withSecurityHeaders(NextResponse.json({ ok: false, error: "Untrusted request origin" }, { status: 403 }))
@@ -99,7 +140,7 @@ export async function middleware(request: NextRequest) {
 
   if (settings.disabled || isAssetPath(pathname)) {
     if (pathname === "/login") {
-      return withSecurityHeaders(NextResponse.redirect(new URL("/", request.url)))
+      return withSecurityHeaders(NextResponse.redirect(new URL("/", baseUrl)))
     }
     return withSecurityHeaders(NextResponse.next())
   }
@@ -108,23 +149,59 @@ export async function middleware(request: NextRequest) {
     return withSecurityHeaders(NextResponse.next())
   }
 
+  // Intercept and validate the MCPAuth CF_Authorization JWT cookie
+  const cfAuthCookie = request.cookies.get("CF_Authorization")?.value
+  const cfAuthPayload = await verifyCFAuthorizationJWT(cfAuthCookie)
+  const cfUserEmail = cfAuthPayload?.email || cfAuthPayload?.sub || null
+
   if (isPublicPath(pathname)) {
-    if (pathname === "/login" && await verifySessionCookieValue(request.cookies.get(settings.cookieName)?.value)) {
-      return withSecurityHeaders(NextResponse.redirect(new URL("/", request.url)))
+    if (pathname === "/login") {
+      const hasOperatorSession = await verifySessionCookieValue(request.cookies.get(settings.cookieName)?.value)
+      if (hasOperatorSession || cfUserEmail) {
+        return withSecurityHeaders(NextResponse.redirect(new URL("/", baseUrl)))
+      }
     }
     return withSecurityHeaders(NextResponse.next())
   }
 
+  // 1. Operator Auth Check
   const authenticated = await verifySessionCookieValue(request.cookies.get(settings.cookieName)?.value)
   if (authenticated) {
     return withSecurityHeaders(NextResponse.next())
   }
 
+  // 2. MCPAuth Auth Check
+  if (cfUserEmail) {
+    // Non-operator enterprise users cannot create/delete sandboxes
+    if (pathname === "/api/sandbox/create" || pathname === "/api/sandbox/delete" || pathname.startsWith("/api/actions/nemoclaw-create")) {
+      return withSecurityHeaders(NextResponse.json({ ok: false, error: "Forbidden: Operator role required" }, { status: 403 }))
+    }
+
+    // Gate access to specific sandbox resources
+    const sandboxId = getSandboxIdFromRequest(request)
+    if (sandboxId && !isUserAuthorizedForSandbox(cfUserEmail, sandboxId)) {
+      if (pathname.startsWith("/api/")) {
+        return withSecurityHeaders(NextResponse.json({ ok: false, error: `Forbidden: No access to sandbox ${sandboxId}` }, { status: 403 }))
+      }
+      return new NextResponse("Forbidden: Access denied to this sandbox", { status: 403 })
+    }
+
+    // Forward the authenticated email identity downstream
+    const requestHeaders = new Headers(request.headers)
+    requestHeaders.set("x-forwarded-user", cfUserEmail)
+    return withSecurityHeaders(NextResponse.next({
+      request: {
+        headers: requestHeaders,
+      }
+    }))
+  }
+
+  // 3. Fallback: unauthenticated
   if (pathname.startsWith("/api/")) {
     return withSecurityHeaders(NextResponse.json({ ok: false, error: "Authentication required" }, { status: 401 }))
   }
 
-  const loginUrl = new URL("/login", request.url)
+  const loginUrl = new URL("/login", baseUrl)
   loginUrl.searchParams.set("next", `${pathname}${request.nextUrl.search}`)
   return withSecurityHeaders(NextResponse.redirect(loginUrl))
 }
@@ -132,3 +209,4 @@ export async function middleware(request: NextRequest) {
 export const config = {
   matcher: ["/((?!_next/static|_next/image).*)"],
 }
+
