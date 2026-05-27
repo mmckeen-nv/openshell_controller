@@ -685,6 +685,43 @@ async function approveOpenClawDeviceRequests(sandboxName: string) {
   }
 }
 
+async function ensureOpenClawGatewayToken(sandboxName: string) {
+  const script = [
+    "openclaw doctor --generate-gateway-token >/dev/null 2>&1 || true",
+    'token=$(node -e \'const fs=require("fs"); try { const c=JSON.parse(fs.readFileSync("/sandbox/.openclaw/openclaw.json","utf8")); process.stdout.write(String(c?.gateway?.auth?.token||c?.gateway?.token||"")); } catch(e) {}\')',
+    'printf "%s" "$token"',
+  ].join("; ")
+
+  const result = await runCreateCommandBounded(OPENSHELL_BIN, [
+    "sandbox",
+    "exec",
+    "-n",
+    sandboxName,
+    "--",
+    "sh",
+    "-lc",
+    script,
+  ], hostCommandEnv({
+    OPENSHELL_GATEWAY: process.env.OPENSHELL_GATEWAY || "nemoclaw",
+  }), 60000)
+
+  const token = (result.stdout || "").trim()
+  const tokenPresent = Boolean(token) && !/\s/.test(token)
+
+  return {
+    attempted: true,
+    tokenPresent,
+    completed: result.completed,
+    timedOut: result.timedOut,
+    exitCode: result.exitCode,
+    signal: result.signal,
+    error: result.error,
+    note: tokenPresent
+      ? "Ensured OpenClaw gateway auth token in /sandbox/.openclaw/openclaw.json so the dashboard proxy can authenticate."
+      : "Tried to generate OpenClaw gateway auth token but the sandbox config still has no token; dashboard proxy will fail until this is fixed.",
+  }
+}
+
 async function waitForSandboxReady(sandboxName: string, timeoutMs: number, intervalMs: number) {
   const startedAt = Date.now()
   let lastVerification: SandboxVerification | null = null
@@ -851,6 +888,16 @@ export async function POST(request: Request) {
         error: error instanceof Error ? error.message : "Failed to repair OpenClaw exec approvals file",
       })) : null
       const deviceApproval = created && isOpenClawAgent ? await approveOpenClawDeviceRequests(sandboxName) : null
+      const gatewayToken = created && isOpenClawAgent ? await ensureOpenClawGatewayToken(sandboxName).catch((error) => ({
+        attempted: true,
+        tokenPresent: false,
+        completed: false,
+        timedOut: false,
+        exitCode: null as number | null,
+        signal: null as string | null,
+        error: error instanceof Error ? error.message : "Failed to ensure OpenClaw gateway auth token.",
+        note: "Failed to ensure OpenClaw gateway auth token; dashboard proxy will fail until this is fixed.",
+      })) : null
       // Pre-build the Hermes dashboard web UI dependencies on sandbox creation.
       const hermesDashboardBuild = created && agent === "hermes"
         ? await prebuildHermesDashboardWebUi(sandboxName).catch((error) => ({
@@ -890,6 +937,7 @@ export async function POST(request: Request) {
         },
         execApprovalsRepair,
         deviceApproval,
+        gatewayToken,
         hermesDashboardBuild,
         stdout: result.stdout,
         stderr: result.stderr,
@@ -949,9 +997,10 @@ export async function POST(request: Request) {
         error: error instanceof Error ? error.message : "Failed to repair OpenClaw exec approvals file",
       })) : null
       const deviceApproval = created ? await approveOpenClawDeviceRequests(sandboxName) : null
+      const gatewayToken = created ? await ensureOpenClawGatewayToken(sandboxName).catch(() => null) : null
       const policyPrepared = Boolean(policy)
       console.log(
-        `[sandbox/create] request:complete sandbox=${sandboxName} created=${created} createTimedOut=${createAttempt.timedOut} readinessAttempts=${readiness.attempts} deviceApproval=${deviceApproval?.approved ?? false} elapsedMs=${elapsedMs(requestStartedAt)}`,
+        `[sandbox/create] request:complete sandbox=${sandboxName} created=${created} createTimedOut=${createAttempt.timedOut} readinessAttempts=${readiness.attempts} deviceApproval=${deviceApproval?.approved ?? false} gatewayTokenPresent=${gatewayToken?.tokenPresent ?? false} elapsedMs=${elapsedMs(requestStartedAt)}`,
       )
       return NextResponse.json({
         ok: created,
@@ -977,6 +1026,7 @@ export async function POST(request: Request) {
         },
         execApprovalsRepair,
         deviceApproval,
+        gatewayToken,
         policyPrepared,
         note: created
           ? appendNote(
@@ -1034,8 +1084,9 @@ export async function POST(request: Request) {
         error: error instanceof Error ? error.message : "Failed to repair OpenClaw exec approvals file",
       })) : null
       const deviceApproval = created ? await approveOpenClawDeviceRequests(sandboxName) : null
+      const gatewayToken = created ? await ensureOpenClawGatewayToken(sandboxName).catch(() => null) : null
       console.log(
-        `[sandbox/create] request:complete sandbox=${sandboxName} created=${created} mode=redeploy-image createTimedOut=${createAttempt.timedOut} readinessAttempts=${readiness.attempts} deviceApproval=${deviceApproval?.approved ?? false} elapsedMs=${elapsedMs(requestStartedAt)}`,
+        `[sandbox/create] request:complete sandbox=${sandboxName} created=${created} mode=redeploy-image createTimedOut=${createAttempt.timedOut} readinessAttempts=${readiness.attempts} deviceApproval=${deviceApproval?.approved ?? false} gatewayTokenPresent=${gatewayToken?.tokenPresent ?? false} elapsedMs=${elapsedMs(requestStartedAt)}`,
       )
 
       const createFailed = createAttempt.completed && createAttempt.exitCode !== 0 && !created
@@ -1069,6 +1120,7 @@ export async function POST(request: Request) {
         registry,
         execApprovalsRepair,
         deviceApproval,
+        gatewayToken,
         note: created
           ? appendNote(
               `Sandbox created by redeploying the running image from '${source.name}' instead of rebuilding it.`,
