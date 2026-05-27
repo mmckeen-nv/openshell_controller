@@ -8,9 +8,19 @@ export default function LoginPage() {
   const [password, setPassword] = useState("")
   const [message, setMessage] = useState("")
   const [busy, setBusy] = useState(false)
+  const [mcpAuthLoginUrl, setMcpAuthLoginUrl] = useState<string | null>(null)
 
   useEffect(() => {
     setNextPath(new URLSearchParams(window.location.search).get("next") || "/")
+
+    fetch("/api/auth/login")
+      .then((res) => res.json())
+      .then((data) => {
+        if (data.mcpAuthLoginUrl) {
+          setMcpAuthLoginUrl(data.mcpAuthLoginUrl)
+        }
+      })
+      .catch(() => null)
   }, [])
 
   const submit = async (event: FormEvent<HTMLFormElement>) => {
@@ -62,6 +72,23 @@ export default function LoginPage() {
           {busy ? "Signing In..." : "Sign In"}
         </button>
 
+        {mcpAuthLoginUrl && (
+          <>
+            <div className="relative flex py-2 items-center">
+              <div className="flex-grow border-t border-[var(--border-subtle)]"></div>
+              <span className="flex-shrink mx-4 text-[10px] text-[var(--foreground-dim)] uppercase tracking-wider font-mono">Or</span>
+              <div className="flex-grow border-t border-[var(--border-subtle)]"></div>
+            </div>
+
+            <a
+              href={`${mcpAuthLoginUrl}${mcpAuthLoginUrl.includes("?") ? "&" : "?"}state=${encodeURIComponent(nextPath)}`}
+              className="w-full rounded-sm border border-[var(--border-subtle)] bg-[var(--surface-raised)] px-4 py-2 text-xs font-mono uppercase tracking-wider text-[var(--foreground)] hover:border-[var(--nvidia-green)] hover:text-[var(--nvidia-green)] transition-all text-center block"
+            >
+              Sign In via Company Portal
+            </a>
+          </>
+        )}
+
         <div className="flex items-center justify-between text-xs">
           <a href="/setup-account" className="text-[var(--foreground-dim)] hover:text-[var(--nvidia-green)]">Setup Account</a>
           <a href="/forgot-password" className="text-[var(--foreground-dim)] hover:text-[var(--nvidia-green)]">Forgot Password?</a>
@@ -70,3 +97,4 @@ export default function LoginPage() {
     </AuthShell>
   )
 }
+

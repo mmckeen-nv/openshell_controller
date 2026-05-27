@@ -148,3 +148,103 @@ export function sessionCookieOptionsForRequest(request: CookieSecurityRequest) {
     secure: shouldUseSecureSessionCookie(request),
   }
 }
+
+export function getCFAuthSecret() {
+  return process.env.MCPAUTH_JWT_SECRET || process.env.CF_AUTH_JWT_SECRET || "my-secret-key"
+}
+
+export async function verifyCFAuthorizationJWT(token: string | undefined) {
+  if (!token) return null
+
+  const parts = token.split(".")
+  if (parts.length !== 3) return null
+
+  const [headerB64, payloadB64, signatureB64] = parts
+
+  try {
+    const signingInput = `${headerB64}.${payloadB64}`
+    const secret = getCFAuthSecret()
+    const key = await crypto.subtle.importKey(
+      "raw",
+      new TextEncoder().encode(secret),
+      { name: "HMAC", hash: "SHA-256" },
+      false,
+      ["sign"],
+    )
+    const sigBuffer = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(signingInput))
+    const sigBytes = Array.from(new Uint8Array(sigBuffer), (byte) => String.fromCharCode(byte)).join("")
+    const expectedSignatureB64 = base64UrlEncode(sigBytes)
+
+    if (signatureB64 !== expectedSignatureB64) {
+      return null
+    }
+
+    const payload = JSON.parse(base64UrlDecode(payloadB64))
+    const now = Math.floor(Date.now() / 1000)
+    if (typeof payload.exp === "number" && payload.exp < now) {
+      return null
+    }
+    return payload
+  } catch {
+    return null
+  }
+}
+
+export function getSandboxAccessMap(): Map<string, Set<string>> {
+  const map = new Map<string, Set<string>>()
+  const env = process.env.SANDBOX_ACCESS_USERS || ""
+  if (!env) return map
+
+  const pairs = env.split(",")
+  for (const pair of pairs) {
+    const [sandboxName, email] = pair.split(":")
+    if (sandboxName && email) {
+      const trimmedSandbox = sandboxName.trim()
+      const trimmedEmail = email.trim().toLowerCase()
+      if (!map.has(trimmedSandbox)) {
+        map.set(trimmedSandbox, new Set())
+      }
+      map.get(trimmedSandbox)!.add(trimmedEmail)
+    }
+  }
+  return map
+}
+
+export function isUserAuthorizedForSandbox(email: string, sandboxId: string | null): boolean {
+  if (!sandboxId) return false
+  const map = getSandboxAccessMap()
+  const authorizedEmails = map.get(sandboxId)
+  if (!authorizedEmails) return false
+  return authorizedEmails.has(email.toLowerCase())
+}
+
+export async function mintCFAuthorizationJWT(email: string, scopes: string[] = [], ttlSeconds: number = 86400) {
+  const secret = getCFAuthSecret()
+  const now = Math.floor(Date.now() / 1000)
+  const payload = {
+    sub: email,
+    email: email,
+    scopes: scopes,
+    iat: now,
+    exp: now + ttlSeconds,
+  }
+
+  const header = { alg: "HS256", typ: "JWT" }
+  const headerB64 = base64UrlEncode(JSON.stringify(header))
+  const payloadB64 = base64UrlEncode(JSON.stringify(payload))
+  const signingInput = `${headerB64}.${payloadB64}`
+
+  const key = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"],
+  )
+  const sigBuffer = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(signingInput))
+  const sigBytes = Array.from(new Uint8Array(sigBuffer), (byte) => String.fromCharCode(byte)).join("")
+  const signatureB64 = base64UrlEncode(sigBytes)
+
+  return `${signingInput}.${signatureB64}`
+}
+

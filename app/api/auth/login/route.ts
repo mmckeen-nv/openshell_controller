@@ -37,3 +37,25 @@ export async function POST(request: NextRequest) {
   response.cookies.set(settings.cookieName, await createSessionCookieValue(), sessionCookieOptionsForRequest(request))
   return response
 }
+
+export async function GET() {
+  const loginBase = process.env.MCPAUTH_LOGIN_URL || ""
+  const clientId = process.env.MCPAUTH_CLIENT_ID || ""
+  const redirectUri = process.env.MCPAUTH_CALLBACK_URL || ""
+  
+  let mcpAuthLoginUrl: string | null = null
+  if (loginBase && clientId && redirectUri) {
+    const params = new URLSearchParams({
+      client_id: clientId,
+      redirect_uri: redirectUri,
+      response_type: "code",
+      scope: "openid email",
+    })
+    mcpAuthLoginUrl = `${loginBase}?${params.toString()}`
+  }
+
+  return NextResponse.json({
+    mcpAuthLoginUrl,
+  })
+}
+
