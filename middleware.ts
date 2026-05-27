@@ -159,9 +159,9 @@ export async function middleware(request: NextRequest) {
 
   // 2. MCPAuth Auth Check
   if (cfUserEmail) {
-    // Non-operator enterprise users cannot create/delete sandboxes (state-changing requests only)
+    // MCPAuth enterprise users are read-only — block all state-changing methods globally
     const isWriteRequest = !["GET", "HEAD", "OPTIONS"].includes(request.method.toUpperCase())
-    if (isWriteRequest && (pathname === "/api/sandbox/create" || pathname === "/api/sandbox/delete" || pathname.startsWith("/api/actions/nemoclaw-create"))) {
+    if (isWriteRequest) {
       return withSecurityHeaders(NextResponse.json({ ok: false, error: "Forbidden: Operator role required" }, { status: 403 }))
     }
 
