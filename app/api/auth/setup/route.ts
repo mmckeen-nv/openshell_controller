@@ -3,6 +3,7 @@ import {
   createSessionCookieValue,
   getAuthSettings,
   sessionCookieOptionsForRequest,
+  verifyCFAuthorizationJWT,
   verifyPassword,
   verifyRecoveryToken,
   verifySessionCookieValue,
@@ -38,6 +39,11 @@ export async function POST(request: NextRequest) {
   }
 
   const signedIn = await verifySessionCookieValue(request.cookies.get(settings.cookieName)?.value)
+  const cfAuth = await verifyCFAuthorizationJWT(request.cookies.get("CF_Authorization")?.value)
+  if (cfAuth && !signedIn) {
+    return NextResponse.json({ ok: false, error: "Operator session required to change the password." }, { status: 403 })
+  }
+
   const currentPasswordOk = currentPassword ? await verifyPassword(currentPassword) : false
   const recoveryOk = recoveryToken ? await verifyRecoveryToken(recoveryToken) : false
   const firstRun = !settings.configured

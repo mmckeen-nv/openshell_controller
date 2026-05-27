@@ -1,5 +1,12 @@
 import { NextRequest, NextResponse } from "next/server"
-import { createSessionCookieValue, getAuthSettings, sessionCookieOptionsForRequest, verifyRecoveryToken } from "@/app/lib/controlAuth"
+import {
+  createSessionCookieValue,
+  getAuthSettings,
+  sessionCookieOptionsForRequest,
+  verifyCFAuthorizationJWT,
+  verifyRecoveryToken,
+  verifySessionCookieValue,
+} from "@/app/lib/controlAuth"
 import { scheduleControllerRestart, updateLocalAuthCredentials } from "@/app/lib/controlAuthConfig"
 import { checkRateLimit, clearRateLimit, rateLimitKey, recordRateLimitFailure } from "@/app/lib/rateLimit"
 
@@ -20,6 +27,13 @@ export async function POST(request: NextRequest) {
     )
   }
 
+  const settings = getAuthSettings()
+  const signedIn = await verifySessionCookieValue(request.cookies.get(settings.cookieName)?.value)
+  const cfAuth = await verifyCFAuthorizationJWT(request.cookies.get("CF_Authorization")?.value)
+  if (cfAuth && !signedIn) {
+    return NextResponse.json({ ok: false, error: "Operator session required to reset the password." }, { status: 403 })
+  }
+
   if (password.length < 8) {
     return NextResponse.json({ ok: false, error: "Password must be at least 8 characters." }, { status: 400 })
   }
@@ -31,7 +45,6 @@ export async function POST(request: NextRequest) {
 
   clearRateLimit(limitKey)
   const result = await updateLocalAuthCredentials(password)
-  const settings = getAuthSettings()
   const willRestart = scheduleControllerRestart()
   const response = NextResponse.json({
     ok: true,

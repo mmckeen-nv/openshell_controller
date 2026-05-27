@@ -4,21 +4,46 @@ import { FormEvent, useCallback, useEffect, useState } from "react"
 import AuthShell from "../components/AuthShell"
 
 type AccessEntry = { sandboxName: string; email: string }
+type AuthMe = { operator: boolean; configured: boolean }
 
 const RESTART_RELOAD_MS = 6000
 
 export default function SecurityPage() {
+  const [me, setMe] = useState<AuthMe | null>(null)
+
+  useEffect(() => {
+    fetch("/api/auth/me", { cache: "no-store" })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => setMe(data ?? { operator: false, configured: true }))
+      .catch(() => setMe({ operator: false, configured: true }))
+  }, [])
+
+  const showPassword = me ? me.operator || !me.configured : false
+  const showSandboxAccess = me?.operator === true
+  const showLockedNotice = me ? !me.operator && me.configured : false
+
   return (
     <AuthShell title="Security" description="Manage the operator password and per-sandbox access for company users.">
-      <PasswordSection />
-      <div className="border-t border-[var(--border-subtle)]" />
-      <SandboxAccessSection />
+      {me === null ? (
+        <p className="text-xs text-[var(--foreground-dim)]">Loading…</p>
+      ) : (
+        <>
+          {showPassword && <PasswordSection firstRun={!me.configured} />}
+          {showPassword && showSandboxAccess && <div className="border-t border-[var(--border-subtle)]" />}
+          {showSandboxAccess && <SandboxAccessSection />}
+          {showLockedNotice && (
+            <p className="text-xs text-[var(--foreground-dim)]">
+              Operator session required to manage security settings. Sign in with the operator password to change the password or edit sandbox access.
+            </p>
+          )}
+        </>
+      )}
       <a href="/login" className="block text-center text-xs text-[var(--foreground-dim)] hover:text-[var(--nvidia-green)]">Back to Sign In</a>
     </AuthShell>
   )
 }
 
-function PasswordSection() {
+function PasswordSection({ firstRun }: { firstRun: boolean }) {
   const [currentPassword, setCurrentPassword] = useState("")
   const [password, setPassword] = useState("")
   const [confirmPassword, setConfirmPassword] = useState("")
@@ -58,16 +83,18 @@ function PasswordSection() {
 
   return (
     <form onSubmit={submit} className="space-y-4">
-      <h2 className="text-xs uppercase tracking-wider text-[var(--foreground)]">Change Password</h2>
-      <label className="block space-y-2">
-        <span className="text-[10px] uppercase tracking-wider text-[var(--foreground-dim)]">Current Password</span>
-        <input
-          type="password"
-          value={currentPassword}
-          onChange={(event) => setCurrentPassword(event.target.value)}
-          className="w-full rounded-sm border border-[var(--border-subtle)] bg-[var(--background-tertiary)] px-3 py-2 text-sm text-[var(--foreground)] outline-none focus:border-[var(--nvidia-green)]"
-        />
-      </label>
+      <h2 className="text-xs uppercase tracking-wider text-[var(--foreground)]">{firstRun ? "Set Password" : "Change Password"}</h2>
+      {!firstRun && (
+        <label className="block space-y-2">
+          <span className="text-[10px] uppercase tracking-wider text-[var(--foreground-dim)]">Current Password</span>
+          <input
+            type="password"
+            value={currentPassword}
+            onChange={(event) => setCurrentPassword(event.target.value)}
+            className="w-full rounded-sm border border-[var(--border-subtle)] bg-[var(--background-tertiary)] px-3 py-2 text-sm text-[var(--foreground)] outline-none focus:border-[var(--nvidia-green)]"
+          />
+        </label>
+      )}
 
       <label className="block space-y-2">
         <span className="text-[10px] uppercase tracking-wider text-[var(--foreground-dim)]">New Password</span>
