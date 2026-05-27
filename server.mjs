@@ -169,6 +169,91 @@ function rejectUnauthorizedUpgrade(req, socket, path) {
   socket.end('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\nContent-Length: 0\r\n\r\n')
 }
 
+function getCFAuthJWTSecret() {
+  return process.env.MCPAUTH_JWT_SECRET || process.env.CF_AUTH_JWT_SECRET || 'my-secret-key'
+}
+
+function cfAuthHmac(payload) {
+  return crypto.createHmac('sha256', getCFAuthJWTSecret()).update(payload).digest('base64url')
+}
+
+function verifyCFAuthorizationJWT(token) {
+  if (!token) return null
+  const parts = token.split('.')
+  if (parts.length !== 3) return null
+  const [headerB64, payloadB64, signatureB64] = parts
+  try {
+    if (!safeEqual(signatureB64, cfAuthHmac(`${headerB64}.${payloadB64}`))) return null
+    const payload = JSON.parse(base64UrlDecode(payloadB64))
+    const now = Math.floor(Date.now() / 1000)
+    if (typeof payload.exp === 'number' && payload.exp < now) return null
+    return payload
+  } catch {
+    return null
+  }
+}
+
+function getSandboxAccessMapForServer() {
+  const map = new Map()
+  const env = process.env.SANDBOX_ACCESS_USERS || ''
+  if (!env) return map
+  for (const pair of env.split(',')) {
+    const trimmed = pair.trim()
+    if (!trimmed) continue
+    const colonIndex = trimmed.indexOf(':')
+    if (colonIndex === -1) continue
+    const sandboxName = trimmed.slice(0, colonIndex).trim()
+    const email = trimmed.slice(colonIndex + 1).trim().toLowerCase()
+    if (sandboxName && email) {
+      if (!map.has(sandboxName)) map.set(sandboxName, new Set())
+      map.get(sandboxName).add(email)
+    }
+  }
+  return map
+}
+
+function getSandboxIdFromUpgradeUrl(url) {
+  try {
+    const parsed = new URL(url || '/', `http://localhost:${port}`)
+    const { pathname, searchParams } = parsed
+    if (pathname.startsWith(instancesProxyPrefix)) {
+      const suffixIndex = pathname.indexOf(dashboardProxySuffix, instancesProxyPrefix.length)
+      if (suffixIndex !== -1) {
+        const instanceId = decodeURIComponent(pathname.slice(instancesProxyPrefix.length, suffixIndex))
+        const match = instanceId.match(/^sandbox-(\d+)-(.+)$/)
+        if (match) return match[2]
+      }
+    }
+    const querySandboxId = searchParams.get('sandboxId')
+    if (querySandboxId) return querySandboxId
+    return null
+  } catch {
+    return null
+  }
+}
+
+function isMCPAuthDashboardUpgradeAuthorized(req) {
+  const cfAuthToken = readCookieValue(req.headers.cookie, 'CF_Authorization')
+  const payload = verifyCFAuthorizationJWT(cfAuthToken)
+  if (!payload) return false
+  const email = (String(payload.email || payload.sub || '')).trim()
+  if (!email) return false
+  const sandboxId = getSandboxIdFromUpgradeUrl(req.url)
+  if (!sandboxId) return false
+  const map = getSandboxAccessMapForServer()
+  const authorizedEmails = map.get(sandboxId)
+  if (!authorizedEmails) return false
+  const authorized = authorizedEmails.has(email.toLowerCase())
+  if (authorized) {
+    logBridge('dashboard-ws-mcpauth-authorized', {
+      path: req.url || '/',
+      sandboxId,
+      remoteAddress: req.socket.remoteAddress || 'unknown',
+    })
+  }
+  return authorized
+}
+
 function buildTerminalUpstreamUrl(req) {
   const incoming = new URL(req.url || '/', `http://${req.headers.host || `${hostname}:${port}`}`)
   const upstream = new URL('/ws', `${terminalWsProtocol}//${terminalServerUrl.host}`)
@@ -930,7 +1015,7 @@ server.on('upgrade', (req, socket, head) => {
     (req.url || '').startsWith(legacyDashboardProxyPrefix) ||
     (req.url || '').startsWith(instancesProxyPrefix)
   ) {
-    if (!isAuthenticatedUpgrade(req)) {
+    if (!isAuthenticatedUpgrade(req) && !isMCPAuthDashboardUpgradeAuthorized(req)) {
       rejectUnauthorizedUpgrade(req, socket, req.url || '/')
       return
     }
@@ -970,7 +1055,7 @@ if (dashboardWsProxyServer) {
       (req.url || '').startsWith(legacyDashboardProxyPrefix) ||
       (req.url || '').startsWith(instancesProxyPrefix)
     ) {
-      if (!isAuthenticatedUpgrade(req)) {
+      if (!isAuthenticatedUpgrade(req) && !isMCPAuthDashboardUpgradeAuthorized(req)) {
         rejectUnauthorizedUpgrade(req, socket, req.url || '/')
         return
       }
