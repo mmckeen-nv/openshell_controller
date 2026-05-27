@@ -90,7 +90,7 @@ export default function LoginPage() {
         )}
 
         <div className="flex items-center justify-between text-xs">
-          <a href="/setup-account" className="text-[var(--foreground-dim)] hover:text-[var(--nvidia-green)]">Setup Account</a>
+          <a href="/setup-account" className="text-[var(--foreground-dim)] hover:text-[var(--nvidia-green)]">Security</a>
           <a href="/forgot-password" className="text-[var(--foreground-dim)] hover:text-[var(--nvidia-green)]">Forgot Password?</a>
         </div>
       </form>

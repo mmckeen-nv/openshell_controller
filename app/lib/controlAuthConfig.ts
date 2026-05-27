@@ -58,3 +58,29 @@ export async function updateLocalAuthCredentials(password: string) {
 
   return { recoveryToken }
 }
+
+export type SandboxAccessEntry = { sandboxName: string; email: string }
+
+export function serializeSandboxAccessEntries(entries: SandboxAccessEntry[]) {
+  return entries
+    .map((entry) => `${entry.sandboxName.trim()}:${entry.email.trim().toLowerCase()}`)
+    .join(",")
+}
+
+export async function updateSandboxAccessUsers(entries: SandboxAccessEntry[]) {
+  const value = serializeSandboxAccessEntries(entries)
+  let content = await readEnvFile()
+  content = upsertEnv(content, "SANDBOX_ACCESS_USERS", value)
+  await writeFile(ENV_PATH, content, "utf8")
+  process.env.SANDBOX_ACCESS_USERS = value
+  return { value }
+}
+
+export function scheduleControllerRestart(delayMs = 500) {
+  if (process.env.NODE_ENV !== "production") return false
+  setTimeout(() => {
+    console.log("[security] restarting controller to pick up .env.local changes")
+    process.exit(0)
+  }, delayMs).unref?.()
+  return true
+}

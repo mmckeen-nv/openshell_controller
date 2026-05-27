@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server"
 import { createSessionCookieValue, getAuthSettings, sessionCookieOptionsForRequest, verifyRecoveryToken } from "@/app/lib/controlAuth"
-import { updateLocalAuthCredentials } from "@/app/lib/controlAuthConfig"
+import { scheduleControllerRestart, updateLocalAuthCredentials } from "@/app/lib/controlAuthConfig"
 import { checkRateLimit, clearRateLimit, rateLimitKey, recordRateLimitFailure } from "@/app/lib/rateLimit"
 
 const RECOVERY_WINDOW_MS = 15 * 60 * 1000
@@ -32,10 +32,12 @@ export async function POST(request: NextRequest) {
   clearRateLimit(limitKey)
   const result = await updateLocalAuthCredentials(password)
   const settings = getAuthSettings()
+  const willRestart = scheduleControllerRestart()
   const response = NextResponse.json({
     ok: true,
     recoveryToken: result.recoveryToken,
     note: "Password reset. Save the new recovery token from .env.local.",
+    willRestart,
   })
   response.cookies.set(settings.cookieName, await createSessionCookieValue(), sessionCookieOptionsForRequest(request))
   return response
