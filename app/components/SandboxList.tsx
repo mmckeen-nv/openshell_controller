@@ -82,6 +82,29 @@ function displaySandboxAgent(agent?: string) {
   return 'OpenClaw'
 }
 
+function CopyLinkButton({ label, copied, onClick }: { label: string; copied: boolean; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-label={label}
+      title={label}
+      className={`inline-flex items-center justify-center w-9 px-2 rounded-sm border text-[var(--foreground-dim)] hover:border-[var(--nvidia-green)] hover:text-[var(--nvidia-green)] transition-colors ${copied ? 'border-[var(--nvidia-green)] text-[var(--nvidia-green)]' : 'border-[var(--border-subtle)]'}`}
+    >
+      {copied ? (
+        <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="square" strokeLinejoin="miter" aria-hidden="true">
+          <path d="M5 12l5 5L20 7" />
+        </svg>
+      ) : (
+        <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="square" strokeLinejoin="miter" aria-hidden="true">
+          <rect x="9" y="9" width="11" height="11" rx="1" />
+          <path d="M5 15V5a1 1 0 0 1 1-1h10" />
+        </svg>
+      )}
+    </button>
+  )
+}
+
 function SandboxTypeLogo({ agent }: { agent?: string }) {
   const isHermes = agent === 'hermes'
   const label = isHermes ? 'Hermes sandbox' : 'OpenClaw sandbox'
@@ -332,6 +355,21 @@ const [restartInProgress, setRestartInProgress] = useState(false)
       launch: 'hermes',
     })
     window.open(route, '_blank', 'noopener,noreferrer')
+  }
+
+  const [copiedLinkFor, setCopiedLinkFor] = useState<string | null>(null)
+  const copyShareableLink = async (kind: 'hermes' | 'openclaw', sandbox: SandboxInventoryItem) => {
+    const origin = typeof window !== 'undefined' ? window.location.origin : ''
+    const url = kind === 'hermes'
+      ? `${origin}/operator-terminal?sandboxId=${encodeURIComponent(sandbox.name)}&launch=hermes`
+      : `${origin}/launch/dashboard?sandboxId=${encodeURIComponent(sandbox.name)}`
+    try {
+      await navigator.clipboard.writeText(url)
+      setCopiedLinkFor(`${kind}:${sandbox.name}`)
+      window.setTimeout(() => setCopiedLinkFor((current) => current === `${kind}:${sandbox.name}` ? null : current), 1800)
+    } catch {
+      setDashboardMessage(`Copy this link: ${url}`)
+    }
   }
 
   const updateMcpServerAccess = async (
@@ -641,39 +679,51 @@ const [restartInProgress, setRestartInProgress] = useState(false)
                 <div className="space-y-6">
                   <div className="flex flex-wrap items-center gap-3 max-sm:[&>button]:w-full">
                     {!selectedSandboxIsHermes ? (
-                      <button
-                        onClick={async () => {
-                          try {
-                            const searchParams = new URLSearchParams()
-                            searchParams.set('sandboxId', selectedSandbox.name)
-                            searchParams.set('inventoryCount', String(sandboxes.length))
-                            const res = await fetch(`/api/openshell/dashboard/open?${searchParams.toString()}`)
-                            const data = await res.json()
-                            setDashboardMessage(renderDashboardTruthMessage(data))
-                            if (data.reachable && data.launchUrl) {
-                              openDashboardUrl(data.launchUrl, data.openInNewTab)
-                            } else if (data.reachable && data.proxiedUrl) {
-                              openDashboardUrl(data.proxiedUrl, data.openInNewTab)
-                            } else if (data.reachable && data.dashboardUrl && !data.loopbackOnly) {
-                              openDashboardUrl(data.dashboardUrl, data.openInNewTab)
+                      <span className="inline-flex items-stretch gap-1">
+                        <button
+                          onClick={async () => {
+                            try {
+                              const searchParams = new URLSearchParams()
+                              searchParams.set('sandboxId', selectedSandbox.name)
+                              searchParams.set('inventoryCount', String(sandboxes.length))
+                              const res = await fetch(`/api/openshell/dashboard/open?${searchParams.toString()}`)
+                              const data = await res.json()
+                              setDashboardMessage(renderDashboardTruthMessage(data))
+                              if (data.reachable && data.launchUrl) {
+                                openDashboardUrl(data.launchUrl, data.openInNewTab)
+                              } else if (data.reachable && data.proxiedUrl) {
+                                openDashboardUrl(data.proxiedUrl, data.openInNewTab)
+                              } else if (data.reachable && data.dashboardUrl && !data.loopbackOnly) {
+                                openDashboardUrl(data.dashboardUrl, data.openInNewTab)
+                              }
+                            } catch (error) {
+                              setDashboardMessage('Failed to resolve OpenClaw Dashboard endpoint.')
                             }
-                          } catch (error) {
-                            setDashboardMessage('Failed to resolve OpenClaw Dashboard endpoint.')
-                          }
-                        }}
-                        className="action-button px-3 py-2"
-                      >
-                        Start OpenClaw Gateway Dashboard
-                      </button>
+                          }}
+                          className="action-button px-3 py-2"
+                        >
+                          Start OpenClaw Gateway Dashboard
+                        </button>
+                        <CopyLinkButton
+                          label={copiedLinkFor === `openclaw:${selectedSandbox.name}` ? 'Copied!' : 'Copy shareable dashboard link'}
+                          copied={copiedLinkFor === `openclaw:${selectedSandbox.name}`}
+                          onClick={() => copyShareableLink('openclaw', selectedSandbox)}
+                        />
+                      </span>
                     ) : (
-                      <>
+                      <span className="inline-flex items-stretch gap-1">
                         <button
                           onClick={() => connectToHermes(selectedSandbox)}
                           className="action-button px-3 py-2"
                         >
                           Connect to Hermes
                         </button>
-                      </>
+                        <CopyLinkButton
+                          label={copiedLinkFor === `hermes:${selectedSandbox.name}` ? 'Copied!' : 'Copy shareable Hermes link'}
+                          copied={copiedLinkFor === `hermes:${selectedSandbox.name}`}
+                          onClick={() => copyShareableLink('hermes', selectedSandbox)}
+                        />
+                      </span>
                     )}
                     <button
                       onClick={restartSandbox}

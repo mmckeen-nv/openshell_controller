@@ -105,6 +105,21 @@ function OperatorTerminalInner() {
   const [liveSession, setLiveSession] = useState<LiveTerminalSession | null>(null)
   const [terminalReady, setTerminalReady] = useState(false)
   const [showRecovery, setShowRecovery] = useState(false)
+  const [isFullscreen, setIsFullscreen] = useState(false)
+
+  useEffect(() => {
+    if (!isFullscreen) return
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setIsFullscreen(false)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [isFullscreen])
+
+  useEffect(() => {
+    const id = requestAnimationFrame(() => fitAddonRef.current?.fit())
+    return () => cancelAnimationFrame(id)
+  }, [isFullscreen])
 
   const terminalContainerRef = useRef<HTMLDivElement | null>(null)
   const terminalRef = useRef<XTermInstance | null>(null)
@@ -405,12 +420,42 @@ function OperatorTerminalInner() {
           </div>
         </section>
 
-        <section className="panel p-6 space-y-4">
+        <section className={isFullscreen
+          ? "fixed inset-0 z-50 bg-[var(--background)] p-4 flex flex-col gap-3"
+          : "panel p-6 space-y-4"}>
           <div className="flex items-center justify-between gap-3 flex-wrap">
-            <div><h3 className="text-sm font-semibold uppercase tracking-wider">Live Terminal</h3></div>
-            <div className="text-[11px] text-[var(--foreground-dim)] font-mono">{terminalStatus}</div>
+            <div className="flex items-center gap-3">
+              <h3 className="text-sm font-semibold uppercase tracking-wider">Live Terminal</h3>
+              {isFullscreen && sandboxId && (
+                <span className="text-[11px] font-mono text-[var(--foreground-dim)]">/ {sandboxId}</span>
+              )}
+            </div>
+            <div className="flex items-center gap-3">
+              <div className="text-[11px] text-[var(--foreground-dim)] font-mono">{terminalStatus}</div>
+              <button
+                type="button"
+                onClick={() => setIsFullscreen((current) => !current)}
+                aria-label={isFullscreen ? 'Exit fullscreen' : 'Enter fullscreen'}
+                title={isFullscreen ? 'Exit fullscreen (Esc)' : 'Enter fullscreen'}
+                className="flex items-center justify-center w-8 h-8 rounded-sm border border-[var(--border-subtle)] text-[var(--foreground-dim)] hover:border-[var(--nvidia-green)] hover:text-[var(--nvidia-green)] transition-colors"
+              >
+                {isFullscreen ? (
+                  <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="square" strokeLinejoin="miter" aria-hidden="true">
+                    <path d="M9 4v5H4 M15 4v5h5 M9 20v-5H4 M15 20v-5h5" />
+                  </svg>
+                ) : (
+                  <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="square" strokeLinejoin="miter" aria-hidden="true">
+                    <path d="M4 9V4h5 M20 9V4h-5 M4 15v5h5 M20 15v5h-5" />
+                  </svg>
+                )}
+              </button>
+            </div>
           </div>
-          <div className="rounded-sm border border-[var(--border-subtle)] bg-black p-3"><div ref={terminalContainerRef} className="h-[68vh] min-h-[460px] w-full" /></div>
+          <div className={isFullscreen
+            ? "rounded-sm border border-[var(--border-subtle)] bg-black p-3 flex-1 min-h-0"
+            : "rounded-sm border border-[var(--border-subtle)] bg-black p-3"}>
+            <div ref={terminalContainerRef} className={isFullscreen ? "h-full w-full" : "h-[68vh] min-h-[460px] w-full"} />
+          </div>
           <div className="flex items-center gap-3 flex-wrap">
             <button onClick={() => ensureLiveSession({ reset: true })} disabled={terminalState === 'connecting'} className="px-3 py-2 rounded-sm border border-[var(--border-subtle)] text-xs font-mono uppercase tracking-wider hover:border-[var(--nvidia-green)] disabled:opacity-50 disabled:cursor-not-allowed">{terminalState === 'connecting' ? 'Connecting…' : 'Reconnect Live Terminal'}</button>
             <button onClick={refreshReadiness} disabled={!sandboxId} className="px-3 py-2 rounded-sm border border-[var(--border-subtle)] text-xs font-mono uppercase tracking-wider hover:border-[var(--nvidia-green)] disabled:opacity-50 disabled:cursor-not-allowed">Refresh Readiness</button>

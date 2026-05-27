@@ -36,7 +36,12 @@ export default function LoginPage() {
       })
       const data = await response.json()
       if (!response.ok) throw new Error(data.error || "Login failed")
-      window.location.href = data.next || "/"
+      // Browsers carry the original URL fragment through a server redirect when
+      // the redirect target has no fragment of its own. Reattach it on the way
+      // back so deep-links like `#token=…` survive a login round-trip.
+      const carryHash = typeof window !== "undefined" ? window.location.hash : ""
+      const nextUrl = data.next || "/"
+      window.location.href = carryHash && !nextUrl.includes("#") ? `${nextUrl}${carryHash}` : nextUrl
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Login failed")
     } finally {

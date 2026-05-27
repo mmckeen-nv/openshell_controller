@@ -204,7 +204,13 @@ export async function middleware(request: NextRequest) {
   }
 
   // 3. Fallback: unauthenticated
-  if (pathname.startsWith("/api/")) {
+  // Dashboard-proxy paths under /api/ are browser navigations (they serve HTML),
+  // so redirect to the login page like any other UI route instead of returning
+  // 401 JSON that the browser cannot recover from.
+  const isDashboardProxyNavigation =
+    pathname.startsWith("/api/openshell/dashboard/proxy") ||
+    /^\/api\/openshell\/instances\/[^/]+\/dashboard\/proxy/.test(pathname)
+  if (pathname.startsWith("/api/") && !isDashboardProxyNavigation) {
     return withSecurityHeaders(NextResponse.json({ ok: false, error: "Authentication required" }, { status: 401 }))
   }
 
