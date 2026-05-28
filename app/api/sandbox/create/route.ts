@@ -349,7 +349,20 @@ async function exportSandboxPolicyToFile(sourceSandboxName: string): Promise<str
       timeout: 15000,
       maxBuffer: 4 * 1024 * 1024,
     })
-    const yaml = String(stdout ?? "").trim()
+    // `openshell policy get <name> --full` prints a human-readable header
+    // (Version/Hash/Status/...), a `---` separator, then the policy YAML.
+    // Strip everything up to and including the document separator so the file
+    // we write is a clean YAML document the create CLI can parse.
+    const raw = String(stdout ?? "")
+    const lines = raw.split(/\r?\n/)
+    let yamlStart = lines.findIndex((line) => /^---\s*$/.test(line))
+    if (yamlStart === -1) {
+      yamlStart = lines.findIndex((line) => /^version\s*:/.test(line))
+    } else {
+      yamlStart += 1 // skip the `---` separator line itself
+    }
+    if (yamlStart === -1) return null
+    const yaml = lines.slice(yamlStart).join("\n").trim()
     if (!yaml || !yaml.includes("filesystem_policy")) return null
     const tmpDir = process.env.TMPDIR || "/tmp"
     const tmpPath = path.join(tmpDir, `openshell-redeploy-policy-${process.pid}-${Date.now()}.yaml`)
