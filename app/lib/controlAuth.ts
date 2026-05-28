@@ -1,5 +1,21 @@
-const COOKIE_NAME = "openshell_control_session"
-const SESSION_TTL_SECONDS = 12 * 60 * 60
+// Thin compatibility layer over app/lib/auth/. Kept so existing callers
+// (route handlers, middleware) keep working with no edits. New code should
+// import directly from `@/app/lib/auth/...` instead.
+//
+// Sandbox access lookup now reads through the file-backed store with a CSV
+// env-var fallback (see app/lib/auth/sandboxAccessStore.ts), so changes to
+// the access list no longer require a controller restart.
+
+import { hmacSign, verifyOperatorSession, mintHS256JWT, verifyOAuthJWT } from "./auth/edge"
+import {
+  base64UrlEncode,
+  COOKIE_NAME,
+  SESSION_TTL_SECONDS,
+  parseSandboxAccessCSV,
+  isEmailAuthorizedForSandbox as _isEmailAuthorizedForSandbox,
+} from "./auth/policy.mjs"
+import { getOperatorSecret, getOAuthSecret as _getOAuthSecret, isAuthDisabled, isAuthConfigured } from "./auth/context"
+import { getSandboxAccessMap as readSandboxAccessMap } from "./auth/sandboxAccessStore"
 
 type CookieSecurityRequest = {
   headers: Pick<Headers, "get">
@@ -12,23 +28,6 @@ type SessionPayload = {
   sub: string
   iat: number
   exp: number
-}
-
-function base64UrlEncode(value: string) {
-  return btoa(value).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "")
-}
-
-function base64UrlDecode(value: string) {
-  const padded = value.replace(/-/g, "+").replace(/_/g, "/").padEnd(Math.ceil(value.length / 4) * 4, "=")
-  return atob(padded)
-}
-
-function getSecret() {
-  return process.env.OPENSHELL_CONTROL_AUTH_SECRET || process.env.OPENSHELL_CONTROL_PASSWORD || ""
-}
-
-function isDisabled() {
-  return /^(1|true|yes|on)$/i.test(process.env.OPENSHELL_CONTROL_AUTH_DISABLED || "")
 }
 
 function envFlag(value: string | undefined) {
@@ -62,34 +61,12 @@ export function shouldUseSecureSessionCookie(request?: CookieSecurityRequest) {
   return publicBaseUsesHttps()
 }
 
-async function hmac(payload: string) {
-  const key = await crypto.subtle.importKey(
-    "raw",
-    new TextEncoder().encode(getSecret()),
-    { name: "HMAC", hash: "SHA-256" },
-    false,
-    ["sign"],
-  )
-  const signature = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(payload))
-  const bytes = Array.from(new Uint8Array(signature), (byte) => String.fromCharCode(byte)).join("")
-  return base64UrlEncode(bytes)
-}
-
-function constantTimeEqual(left: string, right: string) {
-  if (left.length !== right.length) return false
-  let diff = 0
-  for (let index = 0; index < left.length; index += 1) {
-    diff |= left.charCodeAt(index) ^ right.charCodeAt(index)
-  }
-  return diff === 0
-}
-
 export function getAuthSettings() {
   return {
     cookieName: COOKIE_NAME,
     ttlSeconds: SESSION_TTL_SECONDS,
-    disabled: isDisabled(),
-    configured: Boolean(process.env.OPENSHELL_CONTROL_PASSWORD || isDisabled()),
+    disabled: isAuthDisabled(),
+    configured: isAuthConfigured(),
   }
 }
 
@@ -101,25 +78,24 @@ export async function createSessionCookieValue() {
     exp: now + SESSION_TTL_SECONDS,
   }
   const encodedPayload = base64UrlEncode(JSON.stringify(payload))
-  return `${encodedPayload}.${await hmac(encodedPayload)}`
+  const signature = await hmacSign(getOperatorSecret(), encodedPayload)
+  return `${encodedPayload}.${signature}`
 }
 
 export async function verifySessionCookieValue(value: string | undefined) {
-  const settings = getAuthSettings()
-  if (settings.disabled) return true
-  if (!settings.configured || !value) return false
+  if (isAuthDisabled()) return true
+  if (!isAuthConfigured() || !value) return false
+  const payload = await verifyOperatorSession(value, getOperatorSecret())
+  return Boolean(payload)
+}
 
-  const [payload, signature] = value.split(".")
-  if (!payload || !signature) return false
-  const expected = await hmac(payload)
-  if (!constantTimeEqual(signature, expected)) return false
-
-  try {
-    const parsed = JSON.parse(base64UrlDecode(payload)) as Partial<SessionPayload>
-    return typeof parsed.exp === "number" && parsed.exp > Math.floor(Date.now() / 1000)
-  } catch {
-    return false
+function constantTimeEqual(left: string, right: string) {
+  if (left.length !== right.length) return false
+  let diff = 0
+  for (let index = 0; index < left.length; index += 1) {
+    diff |= left.charCodeAt(index) ^ right.charCodeAt(index)
   }
+  return diff === 0
 }
 
 export async function verifyPassword(password: string) {
@@ -149,102 +125,55 @@ export function sessionCookieOptionsForRequest(request: CookieSecurityRequest) {
   }
 }
 
-export function getCFAuthSecret() {
-  return process.env.MCPAUTH_JWT_SECRET || process.env.CF_AUTH_JWT_SECRET || "my-secret-key"
+/**
+ * Returns the OAuth JWT signing secret. Compat alias kept under the historical
+ * `getCFAuthSecret` name for legacy callers; new code should import
+ * `getOAuthSecret` from `@/app/lib/auth/context`.
+ */
+export function getOAuthSecret() {
+  return _getOAuthSecret()
 }
+/** @deprecated use {@link getOAuthSecret} */
+export const getCFAuthSecret = getOAuthSecret
 
-export async function verifyCFAuthorizationJWT(token: string | undefined) {
-  if (!token) return null
-
-  const parts = token.split(".")
-  if (parts.length !== 3) return null
-
-  const [headerB64, payloadB64, signatureB64] = parts
-
-  try {
-    const signingInput = `${headerB64}.${payloadB64}`
-    const secret = getCFAuthSecret()
-    const key = await crypto.subtle.importKey(
-      "raw",
-      new TextEncoder().encode(secret),
-      { name: "HMAC", hash: "SHA-256" },
-      false,
-      ["sign"],
-    )
-    const sigBuffer = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(signingInput))
-    const sigBytes = Array.from(new Uint8Array(sigBuffer), (byte) => String.fromCharCode(byte)).join("")
-    const expectedSignatureB64 = base64UrlEncode(sigBytes)
-
-    if (signatureB64 !== expectedSignatureB64) {
-      return null
-    }
-
-    const payload = JSON.parse(base64UrlDecode(payloadB64))
-    const now = Math.floor(Date.now() / 1000)
-    if (typeof payload.exp === "number" && payload.exp < now) {
-      return null
-    }
-    return payload
-  } catch {
-    return null
-  }
+export async function verifyOAuthSessionJWT(token: string | undefined) {
+  return verifyOAuthJWT(token || "", getOAuthSecret())
 }
+/** @deprecated use {@link verifyOAuthSessionJWT} */
+export const verifyCFAuthorizationJWT = verifyOAuthSessionJWT
 
+/**
+ * Reads the sandbox-access map. Backed by a JSON file when present, with the
+ * SANDBOX_ACCESS_USERS env var as a fallback. Either source is parsed via the
+ * shared policy helpers so the format stays in sync between Edge and Node.
+ */
 export function getSandboxAccessMap(): Map<string, Set<string>> {
-  const map = new Map<string, Set<string>>()
-  const env = process.env.SANDBOX_ACCESS_USERS || ""
-  if (!env) return map
-
-  const pairs = env.split(",")
-  for (const pair of pairs) {
-    const [sandboxName, email] = pair.split(":")
-    if (sandboxName && email) {
-      const trimmedSandbox = sandboxName.trim()
-      const trimmedEmail = email.trim().toLowerCase()
-      if (!map.has(trimmedSandbox)) {
-        map.set(trimmedSandbox, new Set())
-      }
-      map.get(trimmedSandbox)!.add(trimmedEmail)
-    }
-  }
-  return map
+  const fromStore = readSandboxAccessMap()
+  if (fromStore && fromStore.size > 0) return fromStore
+  return parseSandboxAccessCSV(process.env.SANDBOX_ACCESS_USERS || "")
 }
 
 export function isUserAuthorizedForSandbox(email: string, sandboxId: string | null): boolean {
-  if (!sandboxId) return false
-  const map = getSandboxAccessMap()
-  const authorizedEmails = map.get(sandboxId)
-  if (!authorizedEmails) return false
-  return authorizedEmails.has(email.toLowerCase())
+  return _isEmailAuthorizedForSandbox(getSandboxAccessMap(), email, sandboxId)
 }
 
-export async function mintCFAuthorizationJWT(email: string, scopes: string[] = [], ttlSeconds: number = 86400) {
-  const secret = getCFAuthSecret()
+/**
+ * Mints the session JWT we set on the browser as `oauth_session` after a
+ * successful OAuth callback. Payload follows the same shape as the original
+ * `CF_Authorization` cookie so legacy readers (and the file format below)
+ * continue to work.
+ */
+export async function mintOAuthSessionJWT(email: string, scopes: string[] = [], ttlSeconds: number = 86400) {
+  const secret = getOAuthSecret()
   const now = Math.floor(Date.now() / 1000)
   const payload = {
     sub: email,
-    email: email,
-    scopes: scopes,
+    email,
+    scopes,
     iat: now,
     exp: now + ttlSeconds,
   }
-
-  const header = { alg: "HS256", typ: "JWT" }
-  const headerB64 = base64UrlEncode(JSON.stringify(header))
-  const payloadB64 = base64UrlEncode(JSON.stringify(payload))
-  const signingInput = `${headerB64}.${payloadB64}`
-
-  const key = await crypto.subtle.importKey(
-    "raw",
-    new TextEncoder().encode(secret),
-    { name: "HMAC", hash: "SHA-256" },
-    false,
-    ["sign"],
-  )
-  const sigBuffer = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(signingInput))
-  const sigBytes = Array.from(new Uint8Array(sigBuffer), (byte) => String.fromCharCode(byte)).join("")
-  const signatureB64 = base64UrlEncode(sigBytes)
-
-  return `${signingInput}.${signatureB64}`
+  return mintHS256JWT(secret, payload)
 }
-
+/** @deprecated use {@link mintOAuthSessionJWT} */
+export const mintCFAuthorizationJWT = mintOAuthSessionJWT

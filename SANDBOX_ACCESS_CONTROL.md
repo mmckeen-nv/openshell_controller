@@ -1,6 +1,6 @@
-# Per-Sandbox Access Control via MCPAuth
+# Per-Sandbox Access Control via OAuth/IDP
 
-Allows enterprise users to authenticate via the internal IDP (MCPAuth) and access
+Allows enterprise users to authenticate via the internal IDP (OAuth/IDP) and access
 only the sandboxes assigned to them, without needing the operator password.
 
 ## Architecture
@@ -14,14 +14,14 @@ openshell-controller.ag-*.nemoclaw.dpdns.org  (Traefik, no badger@http)
     ▼
 Next.js middleware.ts
     ├── Operator session cookie → full access (all sandboxes, can create/delete)
-    └── CF_Authorization JWT cookie (from MCPAuth) → read-only, own sandboxes only
+    └── `oauth_session` JWT cookie → read-only, own sandboxes only
 ```
 
-The key insight: MCPAuth sets a `CF_Authorization` JWT cookie scoped to
+The key insight: OAuth/IDP sets a `oauth_session` JWT cookie scoped to
 `.ag-*.nemoclaw.dpdns.org`. Once a user logs into the IDP at
 `idp.ag-*.nemoclaw.dpdns.org`, that cookie is automatically sent to the
 openshell controller on the same domain. The controller validates the JWT
-locally (no network call to MCPAuth) and gates per-sandbox access.
+locally (no network call to OAuth/IDP) and gates per-sandbox access.
 
 ## What Was Changed
 
@@ -49,14 +49,20 @@ gates the controller. The controller handles all auth itself.
 ### 2. `.env.local` — New env vars
 
 ```env
-# MCPAuth IDP Configuration for Enterprise Sandbox Access
-MCPAUTH_JWT_SECRET=my-secret-key          # must match MCPAuth server/session.go jwtSecret
+# OAuth IDP Configuration for Enterprise Sandbox Access
+OAUTH_JWT_SECRET=my-secret-key                              # must match the IDP's JWT signing secret
 SANDBOX_ACCESS_USERS=sandbox-name:user@example.com,other-sandbox:other@example.com
-MCPAUTH_LOGIN_URL=https://idp.ag-*.nemoclaw.dpdns.org/internal/login
-MCPAUTH_CLIENT_ID=<oauth-client-id>
-MCPAUTH_CLIENT_SECRET=<oauth-client-secret>
-MCPAUTH_CALLBACK_URL=https://openshell-controller.ag-*.nemoclaw.dpdns.org/api/auth/callback
+OAUTH_LOGIN_URL=https://idp.ag-*.nemoclaw.dpdns.org/internal/login
+OAUTH_CLIENT_ID=<oauth-client-id>
+OAUTH_CLIENT_SECRET=<oauth-client-secret>
+OAUTH_CALLBACK_URL=https://openshell-controller.ag-*.nemoclaw.dpdns.org/api/auth/callback
 ```
+
+> The historical `MCPAUTH_*` and `CF_AUTH_JWT_SECRET` env var names are still
+> read as fallbacks; existing deployments don't need to rename anything to
+> upgrade. Note that `SANDBOX_ACCESS_USERS` is now optional — the access
+> list is preferentially read from `data/sandbox-access.json`, edited via
+> the Security page.
 
 `SANDBOX_ACCESS_USERS` is a comma-separated list of `sandboxName:email` pairs.
 Use the sandbox **name** (not the UUID) — e.g. `my-first-claw:alice@company.com`.
@@ -64,12 +70,13 @@ The name is what appears in the dashboard URL and the instance ID format `sandbo
 A sandbox can have at most one assigned user. Operator (password login) bypasses
 this check and sees all sandboxes.
 
-### 3. `middleware.ts` — CF_Authorization validation
+### 3. `middleware.ts` — oauth_session validation
 
 Added to the existing Next.js middleware:
 
-- Reads `CF_Authorization` cookie on every request
-- Validates the JWT signature (HS256, `MCPAUTH_JWT_SECRET`)
+- Reads `oauth_session` cookie on every request (falls back to the legacy
+  `CF_Authorization` cookie name for sessions issued by an older controller)
+- Validates the JWT signature (HS256, `OAUTH_JWT_SECRET`)
 - Extracts `email` claim
 - If valid email found:
   - GET `/api/sandbox/create` → allowed (template list is read-only)
@@ -77,18 +84,25 @@ Added to the existing Next.js middleware:
   - Any `/api/sandbox/[sandboxId]/...` or `/api/telemetry/sandbox/[sandboxId]/...` → allowed only if `isUserAuthorizedForSandbox(email, sandboxId)` returns true
   - Sets `x-forwarded-user` header for downstream handlers
 
-### 4. `app/lib/controlAuth.ts` — New helper functions
+### 4. `app/lib/auth/` — Shared auth library
 
-**`verifyCFAuthorizationJWT(token)`** — validates HMAC HS256 JWT, returns `{ email, sub, exp }` or null.
+**`verifyOAuthJWT(token, secret)`** (in `edge.ts` / `node.mjs`) — validates HMAC
+HS256 JWT, returns `{ email, sub, exp, … }` or null.
 
-**`isUserAuthorizedForSandbox(email, sandboxId)`** — parses `SANDBOX_ACCESS_USERS` env var and returns true if the email is assigned to that sandbox. Sandbox matching is by sandbox name (not ID — the sandbox ID from the URL is used as the sandbox name in this context).
+**`isUserAuthorizedForSandbox(email, sandboxId)`** (in `controlAuth.ts`) —
+consults the file-backed `SandboxAccessStore` and returns true if the email is
+assigned to that sandbox. Sandbox matching is by sandbox name (not ID — the
+sandbox ID from the URL is used as the sandbox name in this context).
+
+The store is `data/sandbox-access.json`; the legacy `SANDBOX_ACCESS_USERS` CSV
+env var is read as a fallback if the file is absent.
 
 ## User Flows
 
 ### Enterprise user (Alice)
 1. Alice navigates to `https://idp.ag-*.nemoclaw.dpdns.org`
 2. Logs in with email/password via the internal IDP
-3. MCPAuth sets `CF_Authorization` JWT cookie (24h TTL, domain `.ag-*.nemoclaw.dpdns.org`)
+3. OAuth/IDP sets `oauth_session` JWT cookie (24h TTL, domain `.ag-*.nemoclaw.dpdns.org`)
 4. Alice navigates to `https://openshell-controller.ag-*.nemoclaw.dpdns.org`
 5. Controller middleware validates cookie → extracts `alice@company.com`
 6. Only sandboxes assigned to `alice@company.com` in `SANDBOX_ACCESS_USERS` are visible/accessible
@@ -103,35 +117,33 @@ Added to the existing Next.js middleware:
 
 ## Assigning a Sandbox to a User
 
-Edit `.env.local` on the server and add the sandbox **name** and email to `SANDBOX_ACCESS_USERS`.
+Use the Security page (operator login required) at
+`https://openshell-controller.ag-*.nemoclaw.dpdns.org/setup-account` to add
+or remove rows. Changes are persisted to `data/sandbox-access.json` and
+take effect immediately — no controller restart needed.
+
 The sandbox name is the short identifier (e.g. `my-first-claw`), not the UUID.
 Find it with `openshell sandbox list` or from the sandbox URL in the dashboard.
+
+For headless / first-run setup the legacy `SANDBOX_ACCESS_USERS` CSV env var
+in `.env.local` is still read as a fallback when the JSON file is absent:
 
 ```env
 SANDBOX_ACCESS_USERS=alice-sandbox:alice@company.com,bob-sandbox:bob@company.com
 ```
 
-Restart the controller for the change to take effect:
-```bash
-# On the VPS
-cd /opt/openshell-controller && pm2 restart all  # or however it's run
-```
+To create a user in the IDP, use the IDP's own admin surface (e.g. the
+Pangolin admin panel at `https://pangolin.ag-*.nemoclaw.dpdns.org`).
 
-To create a user in MCPAuth's internal IDP, use the Pangolin admin panel at
-`https://pangolin.ag-*.nemoclaw.dpdns.org` or the MCPAuth internal API.
+## JWT Secret
 
-## MCPAuth JWT Secret
+The OAuth `oauth_session` cookie is signed with HMAC HS256 using a shared
+secret that must match the IDP's signing secret. The controller reads it
+from `OAUTH_JWT_SECRET`, falling back to `MCPAUTH_JWT_SECRET` /
+`CF_AUTH_JWT_SECRET` for backwards compatibility.
 
-The JWT is signed with HMAC HS256 using the `jwtSecret` variable in
-`mcpauth/server/session.go` (currently hardcoded as `"my-secret-key"`).
-
-`MCPAUTH_JWT_SECRET` in `.env.local` must match this value. If MCPAuth is ever
-updated to read the key from an env var, update `.env.local` accordingly.
-
-**Security note:** The hardcoded `my-secret-key` in MCPAuth is a known value.
-For production, update `mcpauth/server/session.go` to read the JWT secret from
-an env var (`JWT_SECRET`) and set a strong random value in both MCPAuth and
-`MCPAUTH_JWT_SECRET`.
+If the IDP defaults to a hardcoded development secret (e.g. `"my-secret-key"`),
+override it for production and keep `OAUTH_JWT_SECRET` in sync.
 
 ## Future Enhancements
 
@@ -139,14 +151,14 @@ an env var (`JWT_SECRET`) and set a strong random value in both MCPAuth and
   creation wizard (WizardPanel.tsx) that writes to a JSON config file instead of
   requiring manual `.env.local` edits.
 
-- **User creation in controller**: Add an operator-only UI to create/invite MCPAuth
+- **User creation in controller**: Add an operator-only UI to create/invite OAuth/IDP
   users without needing to use the Pangolin admin panel.
 
-- **Stronger JWT secret**: Move MCPAuth's `jwtSecret` to an env var and generate
+- **Stronger JWT secret**: Move OAuth/IDP's `jwtSecret` to an env var and generate
   a cryptographically random value on first run.
 
 - **Per-sandbox URL**: If direct per-sandbox links are needed (e.g., to email
   Alice a link directly to her sandbox), add a `/sandbox/[sandboxId]` route that
   skips the full dashboard and proxies directly to the OpenClaw dashboard for that
-  sandbox. This requires the browser-redirect flow in MCPAuth (a new
+  sandbox. This requires the browser-redirect flow in OAuth/IDP (a new
   `/auth/browser` endpoint that redirects to login instead of returning 401).

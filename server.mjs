@@ -6,6 +6,17 @@ import net from 'node:net'
 import tls from 'node:tls'
 import next from 'next'
 import { WebSocketServer, WebSocket } from 'ws'
+import {
+  verifyOperatorSession as authVerifyOperatorSession,
+  verifyOAuthJWT as authVerifyOAuthJWT,
+  parseSandboxAccessCSV,
+  isEmailAuthorizedForSandbox,
+  emailFromOAuthPayload,
+  extractSandboxIdFromUrl,
+  parseCookieHeader,
+  OAUTH_COOKIE_NAME,
+  LEGACY_OAUTH_COOKIE_NAME,
+} from './app/lib/auth/node.mjs'
 
 function loadLocalEnvFile(pathname) {
   if (!existsSync(pathname)) return
@@ -91,27 +102,38 @@ function registerManagedChild(child) {
   })
 }
 
+// File-backed sandbox-access store. We re-implement the read path in JS here
+// because server.mjs runs outside the Next.js bundler and cannot import the
+// TypeScript helper directly. The format must stay in sync with
+// app/lib/auth/sandboxAccessStore.ts.
+function readSandboxAccessFromFile() {
+  const file = (process.env.SANDBOX_ACCESS_FILE && process.env.SANDBOX_ACCESS_FILE.trim())
+    || `${process.cwd()}/data/sandbox-access.json`
+  try {
+    if (!existsSync(file)) return null
+    const raw = readFileSync(file, 'utf8')
+    const parsed = JSON.parse(raw)
+    const entries = Array.isArray(parsed?.entries) ? parsed.entries : []
+    const map = new Map()
+    for (const entry of entries) {
+      const sandboxName = typeof entry?.sandboxName === 'string' ? entry.sandboxName.trim() : ''
+      const email = typeof entry?.email === 'string' ? entry.email.trim().toLowerCase() : ''
+      if (!sandboxName || !email) continue
+      if (!map.has(sandboxName)) map.set(sandboxName, new Set())
+      map.get(sandboxName).add(email)
+    }
+    return map
+  } catch {
+    return null
+  }
+}
+
 function isAuthDisabled() {
   return /^(1|true|yes|on)$/i.test(process.env.OPENSHELL_CONTROL_AUTH_DISABLED || '')
 }
 
 function getAuthSecret() {
   return process.env.OPENSHELL_CONTROL_AUTH_SECRET || process.env.OPENSHELL_CONTROL_PASSWORD || ''
-}
-
-function base64UrlDecode(value) {
-  const normalized = value.replace(/-/g, '+').replace(/_/g, '/')
-  return Buffer.from(normalized.padEnd(Math.ceil(normalized.length / 4) * 4, '='), 'base64').toString('utf8')
-}
-
-function hmac(payload) {
-  return crypto.createHmac('sha256', getAuthSecret()).update(payload).digest('base64url')
-}
-
-function safeEqual(left, right) {
-  const leftBuffer = Buffer.from(left || '')
-  const rightBuffer = Buffer.from(right || '')
-  return leftBuffer.length === rightBuffer.length && crypto.timingSafeEqual(leftBuffer, rightBuffer)
 }
 
 function filterCookieHeader(value) {
@@ -123,42 +145,15 @@ function filterCookieHeader(value) {
 }
 
 function readCookieValue(value, name) {
-  for (const part of String(value || '').split(';')) {
-    const trimmed = part.trim()
-    if (!trimmed.startsWith(`${name}=`)) continue
-    try {
-      return decodeURIComponent(trimmed.slice(name.length + 1))
-    } catch {
-      return trimmed.slice(name.length + 1)
-    }
-  }
-  return null
-}
-
-function parseCookies(req) {
-  return String(req.headers.cookie || '')
-    .split(';')
-    .reduce((cookies, part) => {
-      const [rawName, ...rawValue] = part.trim().split('=')
-      if (!rawName) return cookies
-      cookies[rawName] = decodeURIComponent(rawValue.join('=') || '')
-      return cookies
-    }, {})
+  const cookies = parseCookieHeader(value)
+  return cookies[name] || null
 }
 
 function isAuthenticatedUpgrade(req) {
   if (isAuthDisabled()) return true
   if (!process.env.OPENSHELL_CONTROL_PASSWORD) return false
-  const value = parseCookies(req)[authCookieName]
-  if (!value) return false
-  const [payload, signature] = value.split('.')
-  if (!payload || !signature || !safeEqual(signature, hmac(payload))) return false
-  try {
-    const parsed = JSON.parse(base64UrlDecode(payload))
-    return typeof parsed.exp === 'number' && parsed.exp > Math.floor(Date.now() / 1000)
-  } catch {
-    return false
-  }
+  const value = readCookieValue(req.headers.cookie, authCookieName)
+  return Boolean(authVerifyOperatorSession(value, getAuthSecret()))
 }
 
 function rejectUnauthorizedUpgrade(req, socket, path) {
@@ -169,83 +164,53 @@ function rejectUnauthorizedUpgrade(req, socket, path) {
   socket.end('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\nContent-Length: 0\r\n\r\n')
 }
 
-function getCFAuthJWTSecret() {
-  return process.env.MCPAUTH_JWT_SECRET || process.env.CF_AUTH_JWT_SECRET || 'my-secret-key'
+function getOAuthJWTSecret() {
+  // Match the priority order used by the Edge adapter in
+  // app/lib/auth/context.ts so the two sides cannot disagree about which
+  // secret is active.
+  return (
+    process.env.OAUTH_JWT_SECRET
+    || process.env.MCPAUTH_JWT_SECRET
+    || process.env.CF_AUTH_JWT_SECRET
+    || ''
+  )
 }
 
-function cfAuthHmac(payload) {
-  return crypto.createHmac('sha256', getCFAuthJWTSecret()).update(payload).digest('base64url')
-}
-
-function verifyCFAuthorizationJWT(token) {
-  if (!token) return null
-  const parts = token.split('.')
-  if (parts.length !== 3) return null
-  const [headerB64, payloadB64, signatureB64] = parts
-  try {
-    if (!safeEqual(signatureB64, cfAuthHmac(`${headerB64}.${payloadB64}`))) return null
-    const payload = JSON.parse(base64UrlDecode(payloadB64))
-    const now = Math.floor(Date.now() / 1000)
-    if (typeof payload.exp === 'number' && payload.exp < now) return null
-    return payload
-  } catch {
-    return null
-  }
+function verifyOAuthSessionJWT(token) {
+  return authVerifyOAuthJWT(token, getOAuthJWTSecret())
 }
 
 function getSandboxAccessMapForServer() {
-  const map = new Map()
-  const env = process.env.SANDBOX_ACCESS_USERS || ''
-  if (!env) return map
-  for (const pair of env.split(',')) {
-    const trimmed = pair.trim()
-    if (!trimmed) continue
-    const colonIndex = trimmed.indexOf(':')
-    if (colonIndex === -1) continue
-    const sandboxName = trimmed.slice(0, colonIndex).trim()
-    const email = trimmed.slice(colonIndex + 1).trim().toLowerCase()
-    if (sandboxName && email) {
-      if (!map.has(sandboxName)) map.set(sandboxName, new Set())
-      map.get(sandboxName).add(email)
-    }
-  }
-  return map
+  const fromFile = readSandboxAccessFromFile()
+  if (fromFile && fromFile.size > 0) return fromFile
+  return parseSandboxAccessCSV(process.env.SANDBOX_ACCESS_USERS || '')
 }
 
 function getSandboxIdFromUpgradeUrl(url) {
   try {
     const parsed = new URL(url || '/', `http://localhost:${port}`)
-    const { pathname, searchParams } = parsed
-    if (pathname.startsWith(instancesProxyPrefix)) {
-      const suffixIndex = pathname.indexOf(dashboardProxySuffix, instancesProxyPrefix.length)
-      if (suffixIndex !== -1) {
-        const instanceId = decodeURIComponent(pathname.slice(instancesProxyPrefix.length, suffixIndex))
-        const match = instanceId.match(/^sandbox-(\d+)-(.+)$/)
-        if (match) return match[2]
-      }
-    }
-    const querySandboxId = searchParams.get('sandboxId')
-    if (querySandboxId) return querySandboxId
-    return null
+    return extractSandboxIdFromUrl(parsed.pathname, parsed.searchParams)
   } catch {
     return null
   }
 }
 
-function isMCPAuthSandboxUpgradeAuthorized(req) {
-  const cfAuthToken = readCookieValue(req.headers.cookie, 'CF_Authorization')
-  const payload = verifyCFAuthorizationJWT(cfAuthToken)
+function isOAuthSandboxUpgradeAuthorized(req) {
+  // Prefer the new cookie name, fall back to the legacy CF_Authorization
+  // alias for sessions issued by an older controller version.
+  const oauthToken =
+    readCookieValue(req.headers.cookie, OAUTH_COOKIE_NAME)
+    || readCookieValue(req.headers.cookie, LEGACY_OAUTH_COOKIE_NAME)
+  const payload = verifyOAuthSessionJWT(oauthToken)
   if (!payload) return false
-  const email = (String(payload.email || payload.sub || '')).trim()
+  const email = emailFromOAuthPayload(payload)
   if (!email) return false
   const sandboxId = getSandboxIdFromUpgradeUrl(req.url)
   if (!sandboxId) return false
   const map = getSandboxAccessMapForServer()
-  const authorizedEmails = map.get(sandboxId)
-  if (!authorizedEmails) return false
-  const authorized = authorizedEmails.has(email.toLowerCase())
+  const authorized = isEmailAuthorizedForSandbox(map, email, sandboxId)
   if (authorized) {
-    logBridge('ws-upgrade-mcpauth-authorized', {
+    logBridge('ws-upgrade-oauth-authorized', {
       path: req.url || '/',
       sandboxId,
       remoteAddress: req.socket.remoteAddress || 'unknown',
@@ -267,9 +232,11 @@ function copyHeaders(req) {
     if (typeof value === 'undefined') continue
     const lowerKey = key.toLowerCase()
     if (
-      ['connection', 'host', 'upgrade'].includes(lowerKey) ||
+      ['connection', 'host', 'upgrade', 'x-forwarded-user'].includes(lowerKey) ||
       lowerKey.startsWith('sec-websocket-')
     ) {
+      // x-forwarded-user is set only by trusted middleware; never forward a
+      // client-supplied value upstream where downstream services might trust it.
       continue
     }
     headers[key] = Array.isArray(value) ? value.join(', ') : value
@@ -997,7 +964,7 @@ clientWss.on('connection', (client, req) => {
 
 server.on('upgrade', (req, socket, head) => {
   if ((req.url || '').startsWith(terminalProxyPath)) {
-    if (!isAuthenticatedUpgrade(req) && !isMCPAuthSandboxUpgradeAuthorized(req)) {
+    if (!isAuthenticatedUpgrade(req) && !isOAuthSandboxUpgradeAuthorized(req)) {
       rejectUnauthorizedUpgrade(req, socket, req.url || '/')
       return
     }
@@ -1015,7 +982,7 @@ server.on('upgrade', (req, socket, head) => {
     (req.url || '').startsWith(legacyDashboardProxyPrefix) ||
     (req.url || '').startsWith(instancesProxyPrefix)
   ) {
-    if (!isAuthenticatedUpgrade(req) && !isMCPAuthSandboxUpgradeAuthorized(req)) {
+    if (!isAuthenticatedUpgrade(req) && !isOAuthSandboxUpgradeAuthorized(req)) {
       rejectUnauthorizedUpgrade(req, socket, req.url || '/')
       return
     }
@@ -1037,7 +1004,7 @@ server.on('upgrade', (req, socket, head) => {
 if (dashboardWsProxyServer) {
   dashboardWsProxyServer.on('upgrade', (req, socket, head) => {
     if ((req.url || '').startsWith(terminalProxyPath)) {
-      if (!isAuthenticatedUpgrade(req) && !isMCPAuthSandboxUpgradeAuthorized(req)) {
+      if (!isAuthenticatedUpgrade(req) && !isOAuthSandboxUpgradeAuthorized(req)) {
         rejectUnauthorizedUpgrade(req, socket, req.url || '/')
         return
       }
@@ -1055,7 +1022,7 @@ if (dashboardWsProxyServer) {
       (req.url || '').startsWith(legacyDashboardProxyPrefix) ||
       (req.url || '').startsWith(instancesProxyPrefix)
     ) {
-      if (!isAuthenticatedUpgrade(req) && !isMCPAuthSandboxUpgradeAuthorized(req)) {
+      if (!isAuthenticatedUpgrade(req) && !isOAuthSandboxUpgradeAuthorized(req)) {
         rejectUnauthorizedUpgrade(req, socket, req.url || '/')
         return
       }

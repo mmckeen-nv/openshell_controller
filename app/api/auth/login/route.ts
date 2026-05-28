@@ -38,12 +38,19 @@ export async function POST(request: NextRequest) {
   return response
 }
 
+// Read IDP coordinates from OAUTH_* env vars, falling back to the legacy
+// MCPAUTH_* names so existing .env.local files keep working.
+function idpEnv(name: string) {
+  const upper = name.toUpperCase()
+  return process.env[`OAUTH_${upper}`] || process.env[`MCPAUTH_${upper}`] || ""
+}
+
 export async function GET() {
-  const loginBase = process.env.MCPAUTH_LOGIN_URL || ""
-  const clientId = process.env.MCPAUTH_CLIENT_ID || ""
-  const redirectUri = process.env.MCPAUTH_CALLBACK_URL || ""
-  
-  let mcpAuthLoginUrl: string | null = null
+  const loginBase = idpEnv("LOGIN_URL")
+  const clientId = idpEnv("CLIENT_ID")
+  const redirectUri = idpEnv("CALLBACK_URL")
+
+  let oauthLoginUrl: string | null = null
   if (loginBase && clientId && redirectUri) {
     const params = new URLSearchParams({
       client_id: clientId,
@@ -51,11 +58,15 @@ export async function GET() {
       response_type: "code",
       scope: "openid email",
     })
-    mcpAuthLoginUrl = `${loginBase}?${params.toString()}`
+    oauthLoginUrl = `${loginBase}?${params.toString()}`
   }
 
+  // Returns the URL under both names for one release: the new `oauthLoginUrl`
+  // and the historical `mcpAuthLoginUrl`, so a stale cached login page from
+  // a previous deploy keeps working.
   return NextResponse.json({
-    mcpAuthLoginUrl,
+    oauthLoginUrl,
+    mcpAuthLoginUrl: oauthLoginUrl,
   })
 }
 

@@ -6,8 +6,6 @@ import AuthShell from "../components/AuthShell"
 type AccessEntry = { sandboxName: string; email: string }
 type AuthMe = { operator: boolean; configured: boolean }
 
-const RESTART_RELOAD_MS = 6000
-
 export default function SecurityPage() {
   const [me, setMe] = useState<AuthMe | null>(null)
 
@@ -67,13 +65,8 @@ function PasswordSection({ firstRun }: { firstRun: boolean }) {
       })
       const data = await response.json()
       if (!response.ok) throw new Error(data.error || "Could not update account.")
-      if (data.willRestart) {
-        setMessage("Password updated. Applying changes — controller restarting…")
-        window.setTimeout(() => { window.location.href = "/" }, RESTART_RELOAD_MS)
-      } else {
-        setMessage("Password updated. Redirecting…")
-        window.setTimeout(() => { window.location.href = "/" }, 600)
-      }
+      setMessage("Password updated. Redirecting…")
+      window.setTimeout(() => { window.location.href = "/" }, 600)
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Could not update account.")
     } finally {
@@ -221,12 +214,7 @@ function SandboxAccessSection() {
       if (!response.ok) throw new Error(data.error || "Failed to save.")
       setEntries(Array.isArray(data.entries) ? data.entries : entries)
       setDirty(false)
-      if (data.willRestart) {
-        setMessage("Saved. Applying changes — controller restarting…")
-        window.setTimeout(() => window.location.reload(), RESTART_RELOAD_MS)
-      } else {
-        setMessage("Saved.")
-      }
+      setMessage("Saved.")
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Failed to save.")
     } finally {
@@ -249,7 +237,7 @@ function SandboxAccessSection() {
     <section className="space-y-3">
       <h2 className="text-xs uppercase tracking-wider text-[var(--foreground)]">Sandbox Access</h2>
       <p className="text-xs text-[var(--foreground-dim)]">
-        Authorize MCPAuth (company) users for specific sandboxes. Changes apply after the controller restarts.
+        Authorize company (OAuth/IDP) users for specific sandboxes. Changes take effect immediately.
       </p>
 
       {loading ? (

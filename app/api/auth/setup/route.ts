@@ -3,12 +3,12 @@ import {
   createSessionCookieValue,
   getAuthSettings,
   sessionCookieOptionsForRequest,
-  verifyCFAuthorizationJWT,
   verifyPassword,
   verifyRecoveryToken,
   verifySessionCookieValue,
 } from "@/app/lib/controlAuth"
-import { scheduleControllerRestart, updateLocalAuthCredentials } from "@/app/lib/controlAuthConfig"
+import { oauthEmail } from "@/app/lib/auth/context"
+import { updateLocalAuthCredentials } from "@/app/lib/controlAuthConfig"
 import { checkRateLimit, clearRateLimit, rateLimitKey, recordRateLimitFailure } from "@/app/lib/rateLimit"
 
 const SETUP_WINDOW_MS = 15 * 60 * 1000
@@ -39,8 +39,10 @@ export async function POST(request: NextRequest) {
   }
 
   const signedIn = await verifySessionCookieValue(request.cookies.get(settings.cookieName)?.value)
-  const cfAuth = await verifyCFAuthorizationJWT(request.cookies.get("CF_Authorization")?.value)
-  if (cfAuth && !signedIn) {
+  // Block OAuth (IDP) users from elevating to operator via the password
+  // change path. Only the operator session may rotate the operator password.
+  const idpEmail = await oauthEmail(request)
+  if (idpEmail && !signedIn) {
     return NextResponse.json({ ok: false, error: "Operator session required to change the password." }, { status: 403 })
   }
 
@@ -55,12 +57,15 @@ export async function POST(request: NextRequest) {
 
   clearRateLimit(limitKey)
   const result = await updateLocalAuthCredentials(password)
-  const willRestart = scheduleControllerRestart()
+  // Node-runtime middleware reads process.env (and the file-backed access
+  // store) fresh per request, so password rotation no longer requires a
+  // process restart. The response includes willRestart for backwards
+  // compatibility with clients that branched on it.
   const response = NextResponse.json({
     ok: true,
     recoveryToken: result.recoveryToken,
     note: "Password updated. Save the new recovery token from .env.local.",
-    willRestart,
+    willRestart: false,
   })
   response.cookies.set(settings.cookieName, await createSessionCookieValue(), sessionCookieOptionsForRequest(request))
   return response
