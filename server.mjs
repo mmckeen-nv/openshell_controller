@@ -8,12 +8,14 @@ import next from 'next'
 import { WebSocketServer, WebSocket } from 'ws'
 import {
   verifyOperatorSession as authVerifyOperatorSession,
-  verifyCFJWT as authVerifyCFJWT,
+  verifyOAuthJWT as authVerifyOAuthJWT,
   parseSandboxAccessCSV,
   isEmailAuthorizedForSandbox,
-  emailFromCFPayload,
+  emailFromOAuthPayload,
   extractSandboxIdFromUrl,
   parseCookieHeader,
+  OAUTH_COOKIE_NAME,
+  LEGACY_OAUTH_COOKIE_NAME,
 } from './app/lib/auth/node.mjs'
 
 function loadLocalEnvFile(pathname) {
@@ -162,12 +164,20 @@ function rejectUnauthorizedUpgrade(req, socket, path) {
   socket.end('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\nContent-Length: 0\r\n\r\n')
 }
 
-function getCFAuthJWTSecret() {
-  return process.env.MCPAUTH_JWT_SECRET || process.env.CF_AUTH_JWT_SECRET || ''
+function getOAuthJWTSecret() {
+  // Match the priority order used by the Edge adapter in
+  // app/lib/auth/context.ts so the two sides cannot disagree about which
+  // secret is active.
+  return (
+    process.env.OAUTH_JWT_SECRET
+    || process.env.MCPAUTH_JWT_SECRET
+    || process.env.CF_AUTH_JWT_SECRET
+    || ''
+  )
 }
 
-function verifyCFAuthorizationJWT(token) {
-  return authVerifyCFJWT(token, getCFAuthJWTSecret())
+function verifyOAuthSessionJWT(token) {
+  return authVerifyOAuthJWT(token, getOAuthJWTSecret())
 }
 
 function getSandboxAccessMapForServer() {
@@ -185,18 +195,22 @@ function getSandboxIdFromUpgradeUrl(url) {
   }
 }
 
-function isMCPAuthSandboxUpgradeAuthorized(req) {
-  const cfAuthToken = readCookieValue(req.headers.cookie, 'CF_Authorization')
-  const payload = verifyCFAuthorizationJWT(cfAuthToken)
+function isOAuthSandboxUpgradeAuthorized(req) {
+  // Prefer the new cookie name, fall back to the legacy CF_Authorization
+  // alias for sessions issued by an older controller version.
+  const oauthToken =
+    readCookieValue(req.headers.cookie, OAUTH_COOKIE_NAME)
+    || readCookieValue(req.headers.cookie, LEGACY_OAUTH_COOKIE_NAME)
+  const payload = verifyOAuthSessionJWT(oauthToken)
   if (!payload) return false
-  const email = emailFromCFPayload(payload)
+  const email = emailFromOAuthPayload(payload)
   if (!email) return false
   const sandboxId = getSandboxIdFromUpgradeUrl(req.url)
   if (!sandboxId) return false
   const map = getSandboxAccessMapForServer()
   const authorized = isEmailAuthorizedForSandbox(map, email, sandboxId)
   if (authorized) {
-    logBridge('ws-upgrade-mcpauth-authorized', {
+    logBridge('ws-upgrade-oauth-authorized', {
       path: req.url || '/',
       sandboxId,
       remoteAddress: req.socket.remoteAddress || 'unknown',
@@ -950,7 +964,7 @@ clientWss.on('connection', (client, req) => {
 
 server.on('upgrade', (req, socket, head) => {
   if ((req.url || '').startsWith(terminalProxyPath)) {
-    if (!isAuthenticatedUpgrade(req) && !isMCPAuthSandboxUpgradeAuthorized(req)) {
+    if (!isAuthenticatedUpgrade(req) && !isOAuthSandboxUpgradeAuthorized(req)) {
       rejectUnauthorizedUpgrade(req, socket, req.url || '/')
       return
     }
@@ -968,7 +982,7 @@ server.on('upgrade', (req, socket, head) => {
     (req.url || '').startsWith(legacyDashboardProxyPrefix) ||
     (req.url || '').startsWith(instancesProxyPrefix)
   ) {
-    if (!isAuthenticatedUpgrade(req) && !isMCPAuthSandboxUpgradeAuthorized(req)) {
+    if (!isAuthenticatedUpgrade(req) && !isOAuthSandboxUpgradeAuthorized(req)) {
       rejectUnauthorizedUpgrade(req, socket, req.url || '/')
       return
     }
@@ -990,7 +1004,7 @@ server.on('upgrade', (req, socket, head) => {
 if (dashboardWsProxyServer) {
   dashboardWsProxyServer.on('upgrade', (req, socket, head) => {
     if ((req.url || '').startsWith(terminalProxyPath)) {
-      if (!isAuthenticatedUpgrade(req) && !isMCPAuthSandboxUpgradeAuthorized(req)) {
+      if (!isAuthenticatedUpgrade(req) && !isOAuthSandboxUpgradeAuthorized(req)) {
         rejectUnauthorizedUpgrade(req, socket, req.url || '/')
         return
       }
@@ -1008,7 +1022,7 @@ if (dashboardWsProxyServer) {
       (req.url || '').startsWith(legacyDashboardProxyPrefix) ||
       (req.url || '').startsWith(instancesProxyPrefix)
     ) {
-      if (!isAuthenticatedUpgrade(req) && !isMCPAuthSandboxUpgradeAuthorized(req)) {
+      if (!isAuthenticatedUpgrade(req) && !isOAuthSandboxUpgradeAuthorized(req)) {
         rejectUnauthorizedUpgrade(req, socket, req.url || '/')
         return
       }

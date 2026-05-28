@@ -26,7 +26,7 @@ export function verifyOperatorSession(value, secret) {
   return decodeAndValidateSessionPayload(parts.payload)
 }
 
-export function verifyCFJWT(token, secret) {
+export function verifyOAuthJWT(token, secret) {
   if (!secret) return null
   const parts = splitJWT(token || '')
   if (!parts) return null
@@ -40,9 +40,10 @@ export function verifyCFJWT(token, secret) {
 export {
   parseSandboxAccessCSV,
   isEmailAuthorizedForSandbox,
-  emailFromCFPayload,
+  emailFromOAuthPayload,
   extractSandboxIdFromUrl,
   parseCookieHeader,
   COOKIE_NAME,
-  CF_COOKIE_NAME,
+  OAUTH_COOKIE_NAME,
+  LEGACY_OAUTH_COOKIE_NAME,
 } from './policy.mjs'

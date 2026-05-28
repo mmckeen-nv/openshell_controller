@@ -1,5 +1,6 @@
 export const COOKIE_NAME: "openshell_control_session"
-export const CF_COOKIE_NAME: "CF_Authorization"
+export const OAUTH_COOKIE_NAME: "oauth_session"
+export const LEGACY_OAUTH_COOKIE_NAME: "CF_Authorization"
 export const SESSION_TTL_SECONDS: 43200
 
 export function base64UrlEncode(value: string): string
@@ -13,7 +14,7 @@ export function decodeAndValidateSessionPayload(encodedPayload: string): { sub?:
 export type JWTParts = { header: string; payload: string; signature: string; signingInput: string }
 export function splitJWT(token: string | undefined | null): JWTParts | null
 export function decodeAndValidateJWTPayload(encodedPayload: string): Record<string, unknown> | null
-export function emailFromCFPayload(payload: unknown): string | null
+export function emailFromOAuthPayload(payload: unknown): string | null
 
 export type SandboxAccessMap = Map<string, Set<string>>
 export type SandboxAccessEntry = { sandboxName: string; email: string }

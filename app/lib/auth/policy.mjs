@@ -10,7 +10,16 @@
 // adapters; only pure logic (parsing, allowlists, expiry checks) lives here.
 
 export const COOKIE_NAME = 'openshell_control_session'
-export const CF_COOKIE_NAME = 'CF_Authorization'
+// Cookie set by /api/auth/callback after the OAuth handshake. We migrated
+// away from the historical 'CF_Authorization' name (which implied
+// Cloudflare Access semantics — JWKS validation against a CF-managed key)
+// to a neutral name that describes what the cookie actually is: a session
+// minted by our OAuth callback for the verified IDP user.
+export const OAUTH_COOKIE_NAME = 'oauth_session'
+// Legacy alias read for backwards compatibility with sessions issued by an
+// older controller version. New cookies are always written under the new
+// name; once a deployment is fully rolled out this can be removed.
+export const LEGACY_OAUTH_COOKIE_NAME = 'CF_Authorization'
 export const SESSION_TTL_SECONDS = 12 * 60 * 60
 
 // ── base64url helpers (runtime-agnostic) ────────────────────────────────
@@ -80,7 +89,7 @@ export function decodeAndValidateSessionPayload(encodedPayload) {
   }
 }
 
-// ── CF_Authorization JWT (MCPAuth) parsing ──────────────────────────────
+// ── OAuth session JWT parsing ───────────────────────────────────────────
 
 /**
  * Splits a compact JWT into its three encoded segments without verification.
@@ -111,9 +120,9 @@ export function decodeAndValidateJWTPayload(encodedPayload) {
 }
 
 /**
- * Extracts the user email from a verified CF JWT payload. Falls back to `sub`.
+ * Extracts the user email from a verified OAuth JWT payload. Falls back to `sub`.
  */
-export function emailFromCFPayload(payload) {
+export function emailFromOAuthPayload(payload) {
   if (!payload || typeof payload !== 'object') return null
   const value = payload.email || payload.sub
   if (typeof value !== 'string') return null

@@ -210,9 +210,18 @@ pkill -f 'node server.mjs|npm run dev|npm run start' || true
 npm run start
 ```
 
-### Proposed: Delegate auth to the mcpauth IdP via Traefik forwardAuth
+### OAuth / external IDP integration
 
-The shared-password gate above is the only thing standing between a request and the controller's API. For deployments behind Traefik we can replace it with an existing internal IdP (`mcpauth`, repo: `Projects/mcpauth`) using Traefik's `forwardAuth` middleware. This keeps controller code untouched and moves all identity into the IdP.
+> **Superseded.** Earlier drafts of this section proposed delegating auth to
+> an external IdP (the `mcpauth` Go service was one option) via Traefik's
+> `forwardAuth` middleware. The controller now implements OAuth2/OIDC in
+> code via `/api/auth/callback` — see SANDBOX_ACCESS_CONTROL.md for the
+> current architecture. The text below is kept for historical context and
+> for deployments that prefer the proxy-side approach.
+
+#### Historical: Delegate auth to an OAuth IdP via Traefik forwardAuth
+
+The shared-password gate above is the only thing standing between a request and the controller's API. For deployments behind Traefik we can replace it with an existing internal IdP (e.g. `mcpauth`, Authelia, Authentik) using Traefik's `forwardAuth` middleware. This keeps controller code untouched and moves all identity into the IdP.
 
 **Approach (minimal change, no controller code edits):**
 

@@ -11,7 +11,7 @@ import {
   decodeAndValidateSessionPayload,
   splitJWT,
   decodeAndValidateJWTPayload,
-  emailFromCFPayload,
+  emailFromOAuthPayload,
 } from "./policy.mjs"
 
 async function importHmacKey(secret: string) {
@@ -46,10 +46,10 @@ export async function verifyOperatorSession(value: string | undefined | null, se
 }
 
 /**
- * Verify an HS256 JWT (used by MCPAuth's CF_Authorization cookie) and
- * return its payload, or null on any failure (including missing secret).
+ * Verify an HS256 JWT (the OAuth session cookie minted by /api/auth/callback)
+ * and return its payload, or null on any failure (including missing secret).
  */
-export async function verifyCFJWT(token: string | undefined | null, secret: string) {
+export async function verifyOAuthJWT(token: string | undefined | null, secret: string) {
   if (!secret) return null
   const parts = splitJWT(token || "")
   if (!parts) return null
@@ -68,4 +68,4 @@ export async function mintHS256JWT(secret: string, payload: Record<string, unkno
   return `${signingInput}.${signature}`
 }
 
-export { emailFromCFPayload, base64UrlEncode, base64UrlDecode }
+export { emailFromOAuthPayload, base64UrlEncode, base64UrlDecode }

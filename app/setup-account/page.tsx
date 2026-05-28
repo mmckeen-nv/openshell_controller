@@ -237,7 +237,7 @@ function SandboxAccessSection() {
     <section className="space-y-3">
       <h2 className="text-xs uppercase tracking-wider text-[var(--foreground)]">Sandbox Access</h2>
       <p className="text-xs text-[var(--foreground-dim)]">
-        Authorize MCPAuth (company) users for specific sandboxes. Changes apply after the controller restarts.
+        Authorize company (OAuth/IDP) users for specific sandboxes. Changes take effect immediately.
       </p>
 
       {loading ? (

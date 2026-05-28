@@ -3,10 +3,10 @@ import {
   createSessionCookieValue,
   getAuthSettings,
   sessionCookieOptionsForRequest,
-  verifyCFAuthorizationJWT,
   verifyRecoveryToken,
   verifySessionCookieValue,
 } from "@/app/lib/controlAuth"
+import { oauthEmail } from "@/app/lib/auth/context"
 import { updateLocalAuthCredentials } from "@/app/lib/controlAuthConfig"
 import { checkRateLimit, clearRateLimit, rateLimitKey, recordRateLimitFailure } from "@/app/lib/rateLimit"
 
@@ -29,8 +29,9 @@ export async function POST(request: NextRequest) {
 
   const settings = getAuthSettings()
   const signedIn = await verifySessionCookieValue(request.cookies.get(settings.cookieName)?.value)
-  const cfAuth = await verifyCFAuthorizationJWT(request.cookies.get("CF_Authorization")?.value)
-  if (cfAuth && !signedIn) {
+  // Block OAuth (IDP) users from elevating to operator via the recovery path.
+  const idpEmail = await oauthEmail(request)
+  if (idpEmail && !signedIn) {
     return NextResponse.json({ ok: false, error: "Operator session required to reset the password." }, { status: 403 })
   }
 

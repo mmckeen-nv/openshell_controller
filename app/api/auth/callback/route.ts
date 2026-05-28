@@ -1,9 +1,22 @@
 import { NextRequest, NextResponse } from "next/server"
-import { mintCFAuthorizationJWT, sessionCookieOptionsForRequest } from "@/app/lib/controlAuth"
+import { mintOAuthSessionJWT, sessionCookieOptionsForRequest } from "@/app/lib/controlAuth"
+import { OAUTH_COOKIE_NAME } from "@/app/lib/auth/policy.mjs"
 
 function base64UrlDecode(value: string) {
   const padded = value.replace(/-/g, "+").replace(/_/g, "/").padEnd(Math.ceil(value.length / 4) * 4, "=")
   return Buffer.from(padded, "base64").toString("utf-8")
+}
+
+// Generic OAuth2 / OIDC callback handler. Reads IDP coordinates from the
+// OAUTH_* env vars, falling back to the legacy MCPAUTH_* names so existing
+// deployments don't need to rename anything.
+function getIdpEnv(name: string) {
+  const upper = name.toUpperCase()
+  return (
+    process.env[`OAUTH_${upper}`]
+    || process.env[`MCPAUTH_${upper}`]
+    || ""
+  )
 }
 
 export async function GET(request: NextRequest) {
@@ -15,9 +28,10 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ ok: false, error: "Missing authorization code" }, { status: 400 })
   }
 
-  const tokenUrl = `${process.env.MCPAUTH_LOGIN_URL?.replace("/authorize", "") || "http://localhost:11000"}/token`
-  const clientId = process.env.MCPAUTH_CLIENT_ID || ""
-  const redirectUri = process.env.MCPAUTH_CALLBACK_URL || ""
+  const loginUrl = getIdpEnv("LOGIN_URL")
+  const tokenUrl = `${loginUrl ? loginUrl.replace("/authorize", "") : "http://localhost:11000"}/token`
+  const clientId = getIdpEnv("CLIENT_ID")
+  const redirectUri = getIdpEnv("CALLBACK_URL")
 
   try {
     // Exchange authorization code for token
@@ -75,17 +89,19 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ ok: false, error: "User identity could not be retrieved from provider" }, { status: 500 })
     }
 
-    // Mint the CF_Authorization JWT cookie using our shared secret
-    const cfToken = await mintCFAuthorizationJWT(userEmail, scopes)
+    // Mint the OAuth session JWT cookie using our shared secret.
+    const oauthToken = await mintOAuthSessionJWT(userEmail, scopes)
 
-    // Reconstruct target URL using the incoming Host header to ensure we redirect to the correct domain/port (e.g. localhost:3000 instead of 0.0.0.0:3000)
+    // Reconstruct target URL using the incoming Host header to ensure we
+    // redirect to the correct domain/port (e.g. localhost:3000 instead of
+    // 0.0.0.0:3000).
     const host = request.headers.get("host") || "localhost:3000"
     const protocol = request.headers.get("x-forwarded-proto") || request.nextUrl.protocol || "http"
     const cleanProtocol = protocol.endsWith(":") ? protocol.slice(0, -1) : protocol
     const baseUrl = `${cleanProtocol}://${host}`
     const targetUrl = new URL(state.startsWith("/") ? state : "/", baseUrl)
     const redirectResponse = NextResponse.redirect(targetUrl)
-    redirectResponse.cookies.set("CF_Authorization", cfToken, sessionCookieOptionsForRequest(request))
+    redirectResponse.cookies.set(OAUTH_COOKIE_NAME, oauthToken, sessionCookieOptionsForRequest(request))
 
     return redirectResponse
   } catch (error) {

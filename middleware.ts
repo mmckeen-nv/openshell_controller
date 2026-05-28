@@ -21,9 +21,10 @@ const BROKER_PATHS = [
   "/api/mcp/broker",
 ]
 
-// Routes where MCPAuth users may POST. The route handler itself is responsible
-// for verifying the caller is authorized for the specific sandbox.
-const MCPAUTH_WRITE_ALLOWED_PATHS = [
+// Routes where OAuth (IDP-authenticated) users may POST. The route handler
+// itself is responsible for verifying the caller is authorized for the
+// specific sandbox.
+const OAUTH_WRITE_ALLOWED_PATHS = [
   "/api/openshell/terminal/live",
 ]
 
@@ -143,7 +144,7 @@ export async function middleware(request: NextRequest) {
   // Public paths bounce the user away from /login if they already have a session,
   // but otherwise let the request through.
   if (pathMatches(pathname, PUBLIC_PATHS)) {
-    if (pathname === "/login" && (ctx.kind === "operator" || ctx.kind === "mcpauth")) {
+    if (pathname === "/login" && (ctx.kind === "operator" || ctx.kind === "oauth")) {
       return withSecurityHeaders(NextResponse.redirect(new URL("/", baseUrl)))
     }
     return withSecurityHeaders(NextResponse.next({ request: { headers: stripIdentityHeaders(request) } }))
@@ -154,12 +155,12 @@ export async function middleware(request: NextRequest) {
     case "disabled":
       return withSecurityHeaders(NextResponse.next({ request: { headers: stripIdentityHeaders(request) } }))
 
-    case "mcpauth": {
-      // MCPAuth users are read-only by default. A small allowlist of POST
+    case "oauth": {
+      // OAuth (IDP) users are read-only by default. A small allowlist of POST
       // endpoints (e.g. terminal session allocation) lets them through; the
       // route handler then enforces per-sandbox access from the body.
       const isWriteRequest = isStateChangingMethod(request.method)
-      if (isWriteRequest && !pathMatches(pathname, MCPAUTH_WRITE_ALLOWED_PATHS)) {
+      if (isWriteRequest && !pathMatches(pathname, OAUTH_WRITE_ALLOWED_PATHS)) {
         return withSecurityHeaders(NextResponse.json({ ok: false, error: "Forbidden: Operator role required" }, { status: 403 }))
       }
 

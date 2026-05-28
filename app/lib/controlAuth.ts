@@ -6,7 +6,7 @@
 // env-var fallback (see app/lib/auth/sandboxAccessStore.ts), so changes to
 // the access list no longer require a controller restart.
 
-import { hmacSign, verifyOperatorSession, mintHS256JWT, verifyCFJWT } from "./auth/edge"
+import { hmacSign, verifyOperatorSession, mintHS256JWT, verifyOAuthJWT } from "./auth/edge"
 import {
   base64UrlEncode,
   COOKIE_NAME,
@@ -14,7 +14,7 @@ import {
   parseSandboxAccessCSV,
   isEmailAuthorizedForSandbox as _isEmailAuthorizedForSandbox,
 } from "./auth/policy.mjs"
-import { getOperatorSecret, getCFAuthSecret as _getCFAuthSecret, isAuthDisabled, isAuthConfigured } from "./auth/context"
+import { getOperatorSecret, getOAuthSecret as _getOAuthSecret, isAuthDisabled, isAuthConfigured } from "./auth/context"
 import { getSandboxAccessMap as readSandboxAccessMap } from "./auth/sandboxAccessStore"
 
 type CookieSecurityRequest = {
@@ -125,13 +125,22 @@ export function sessionCookieOptionsForRequest(request: CookieSecurityRequest) {
   }
 }
 
-export function getCFAuthSecret() {
-  return _getCFAuthSecret()
+/**
+ * Returns the OAuth JWT signing secret. Compat alias kept under the historical
+ * `getCFAuthSecret` name for legacy callers; new code should import
+ * `getOAuthSecret` from `@/app/lib/auth/context`.
+ */
+export function getOAuthSecret() {
+  return _getOAuthSecret()
 }
+/** @deprecated use {@link getOAuthSecret} */
+export const getCFAuthSecret = getOAuthSecret
 
-export async function verifyCFAuthorizationJWT(token: string | undefined) {
-  return verifyCFJWT(token || "", getCFAuthSecret())
+export async function verifyOAuthSessionJWT(token: string | undefined) {
+  return verifyOAuthJWT(token || "", getOAuthSecret())
 }
+/** @deprecated use {@link verifyOAuthSessionJWT} */
+export const verifyCFAuthorizationJWT = verifyOAuthSessionJWT
 
 /**
  * Reads the sandbox-access map. Backed by a JSON file when present, with the
@@ -148,8 +157,14 @@ export function isUserAuthorizedForSandbox(email: string, sandboxId: string | nu
   return _isEmailAuthorizedForSandbox(getSandboxAccessMap(), email, sandboxId)
 }
 
-export async function mintCFAuthorizationJWT(email: string, scopes: string[] = [], ttlSeconds: number = 86400) {
-  const secret = getCFAuthSecret()
+/**
+ * Mints the session JWT we set on the browser as `oauth_session` after a
+ * successful OAuth callback. Payload follows the same shape as the original
+ * `CF_Authorization` cookie so legacy readers (and the file format below)
+ * continue to work.
+ */
+export async function mintOAuthSessionJWT(email: string, scopes: string[] = [], ttlSeconds: number = 86400) {
+  const secret = getOAuthSecret()
   const now = Math.floor(Date.now() / 1000)
   const payload = {
     sub: email,
@@ -160,3 +175,5 @@ export async function mintCFAuthorizationJWT(email: string, scopes: string[] = [
   }
   return mintHS256JWT(secret, payload)
 }
+/** @deprecated use {@link mintOAuthSessionJWT} */
+export const mintCFAuthorizationJWT = mintOAuthSessionJWT

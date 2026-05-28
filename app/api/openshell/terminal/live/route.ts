@@ -106,12 +106,12 @@ export async function POST(request: Request) {
       ? body.dashboardSessionId.trim()
       : 'dashboard-host'
 
-    // MCPAuth users are gated by SANDBOX_ACCESS_USERS. The middleware sets
-    // x-forwarded-user only for verified MCPAuth callers (it strips any
+    // OAuth (IDP) users are gated by SANDBOX_ACCESS_USERS. The middleware
+    // sets x-forwarded-user only for verified IDP callers (it strips any
     // client-supplied value in other paths) so trusting it here is safe.
-    const mcpAuthUser = request.headers.get('x-forwarded-user')?.trim().toLowerCase()
-    if (mcpAuthUser) {
-      if (!sandboxId || !isUserAuthorizedForSandbox(mcpAuthUser, sandboxId)) {
+    const idpUser = request.headers.get('x-forwarded-user')?.trim().toLowerCase()
+    if (idpUser) {
+      if (!sandboxId || !isUserAuthorizedForSandbox(idpUser, sandboxId)) {
         return NextResponse.json(
           { ok: false, error: `Forbidden: no access to sandbox ${sandboxId || '(none)'}` },
           { status: 403 },
