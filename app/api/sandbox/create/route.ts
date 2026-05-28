@@ -310,7 +310,7 @@ async function resolveSourcePodImage(
   const agentFilter = requestedAgent === "hermes" || requestedAgent === "openclaw" ? requestedAgent : null
   const agentForName = (name: string): "match" | "mismatch" | "unknown" => {
     if (!agentFilter) return "match"
-    const entry = (registry.sandboxes ?? {})[name]
+    const entry = (registry.sandboxes ?? {})[name] as { agent?: string } | undefined
     const value = typeof entry?.agent === "string" ? entry.agent.trim() : ""
     if (!value) return "unknown"
     return value === agentFilter ? "match" : "mismatch"
