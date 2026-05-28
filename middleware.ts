@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server"
-import { getAuthSettings, verifySessionCookieValue, verifyCFAuthorizationJWT, isUserAuthorizedForSandbox } from "./app/lib/controlAuth"
+import { resolveAuthContext, isAuthDisabled, isAuthConfigured } from "./app/lib/auth/context"
+import { isUserAuthorizedForSandbox } from "./app/lib/controlAuth"
+import { extractSandboxIdFromUrl } from "./app/lib/auth/policy.mjs"
 
 const PUBLIC_PATHS = [
   "/login",
@@ -25,16 +27,8 @@ const MCPAUTH_WRITE_ALLOWED_PATHS = [
   "/api/openshell/terminal/live",
 ]
 
-function isPublicPath(pathname: string) {
-  return PUBLIC_PATHS.some((path) => pathname === path || pathname.startsWith(`${path}/`))
-}
-
-function isBrokerPath(pathname: string) {
-  return BROKER_PATHS.some((path) => pathname === path || pathname.startsWith(`${path}/`))
-}
-
-function isMcpAuthAllowedWritePath(pathname: string) {
-  return MCPAUTH_WRITE_ALLOWED_PATHS.some((path) => pathname === path || pathname.startsWith(`${path}/`))
+function pathMatches(pathname: string, prefixes: string[]) {
+  return prefixes.some((path) => pathname === path || pathname.startsWith(`${path}/`))
 }
 
 function isAssetPath(pathname: string) {
@@ -93,7 +87,6 @@ function trustedRequestOrigins(request: NextRequest) {
 function hasTrustedOrigin(request: NextRequest) {
   const origin = request.headers.get("origin")
   if (!origin) return true
-
   try {
     return trustedRequestOrigins(request).has(new URL(origin).origin)
   } catch {
@@ -101,31 +94,27 @@ function hasTrustedOrigin(request: NextRequest) {
   }
 }
 
-function getSandboxIdFromRequest(request: NextRequest): string | null {
-  const { pathname, searchParams } = request.nextUrl
+function stripIdentityHeaders(request: NextRequest) {
+  const headers = new Headers(request.headers)
+  headers.delete("x-forwarded-user")
+  return headers
+}
 
-  // Gate dashboard proxy access by sandbox name (extracted from instance ID format: sandbox-{port}-{name})
-  if (pathname.startsWith("/api/openshell/instances/")) {
-    const parts = pathname.split("/")
-    const instanceId = parts[4]
-    if (instanceId) {
-      const decodedInstanceId = decodeURIComponent(instanceId)
-      const match = decodedInstanceId.match(/^sandbox-(\d+)-(.+)$/)
-      if (match) return match[2]
-    }
-  }
+function withForwardedUser(request: NextRequest, email: string) {
+  const headers = stripIdentityHeaders(request)
+  headers.set("x-forwarded-user", email)
+  return headers
+}
 
-  const querySandboxId = searchParams.get("sandboxId")
-  if (querySandboxId) {
-    return querySandboxId
-  }
-
-  return null
+function isDashboardProxyNavigation(pathname: string) {
+  return (
+    pathname.startsWith("/api/openshell/dashboard/proxy") ||
+    /^\/api\/openshell\/instances\/[^/]+\/dashboard\/proxy/.test(pathname)
+  )
 }
 
 export async function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl
-  const settings = getAuthSettings()
 
   const host = request.headers.get("host") || "localhost:3000"
   const protocol = request.headers.get("x-forwarded-proto") || request.nextUrl.protocol || "http"
@@ -136,90 +125,74 @@ export async function middleware(request: NextRequest) {
     return withSecurityHeaders(NextResponse.json({ ok: false, error: "Untrusted request origin" }, { status: 403 }))
   }
 
-  if (settings.disabled || isAssetPath(pathname)) {
+  // Fast path: auth disabled (dev) or static asset — let through with cleaned headers.
+  if (isAuthDisabled() || isAssetPath(pathname)) {
     if (pathname === "/login") {
       return withSecurityHeaders(NextResponse.redirect(new URL("/", baseUrl)))
     }
-    return withSecurityHeaders(NextResponse.next())
+    return withSecurityHeaders(NextResponse.next({ request: { headers: stripIdentityHeaders(request) } }))
   }
 
-  if (isBrokerPath(pathname)) {
-    return withSecurityHeaders(NextResponse.next())
+  if (pathMatches(pathname, BROKER_PATHS)) {
+    return withSecurityHeaders(NextResponse.next({ request: { headers: stripIdentityHeaders(request) } }))
   }
 
-  // Intercept and validate the MCPAuth CF_Authorization JWT cookie
-  const cfAuthCookie = request.cookies.get("CF_Authorization")?.value
-  const cfAuthPayload = await verifyCFAuthorizationJWT(cfAuthCookie)
-  const cfUserEmail = cfAuthPayload?.email || cfAuthPayload?.sub || null
+  // Resolve identity once, then dispatch on it.
+  const ctx = await resolveAuthContext(request)
 
-  if (isPublicPath(pathname)) {
-    if (pathname === "/login") {
-      const hasOperatorSession = await verifySessionCookieValue(request.cookies.get(settings.cookieName)?.value)
-      if (hasOperatorSession || cfUserEmail) {
-        return withSecurityHeaders(NextResponse.redirect(new URL("/", baseUrl)))
-      }
+  // Public paths bounce the user away from /login if they already have a session,
+  // but otherwise let the request through.
+  if (pathMatches(pathname, PUBLIC_PATHS)) {
+    if (pathname === "/login" && (ctx.kind === "operator" || ctx.kind === "mcpauth")) {
+      return withSecurityHeaders(NextResponse.redirect(new URL("/", baseUrl)))
     }
-    return withSecurityHeaders(NextResponse.next())
+    return withSecurityHeaders(NextResponse.next({ request: { headers: stripIdentityHeaders(request) } }))
   }
 
-  // 1. Operator Auth Check
-  const authenticated = await verifySessionCookieValue(request.cookies.get(settings.cookieName)?.value)
-  if (authenticated) {
-    // Strip any client-supplied x-forwarded-user so downstream routes only see it
-    // when the MCPAuth path below populates it.
-    const requestHeaders = new Headers(request.headers)
-    requestHeaders.delete("x-forwarded-user")
-    return withSecurityHeaders(NextResponse.next({ request: { headers: requestHeaders } }))
-  }
+  switch (ctx.kind) {
+    case "operator":
+    case "disabled":
+      return withSecurityHeaders(NextResponse.next({ request: { headers: stripIdentityHeaders(request) } }))
 
-  // 2. MCPAuth Auth Check
-  if (cfUserEmail) {
-    // MCPAuth enterprise users are read-only by default. A small allowlist of
-    // POST endpoints (e.g. terminal session allocation) lets them through; the
-    // route handler then enforces per-sandbox access.
-    const isWriteRequest = !["GET", "HEAD", "OPTIONS"].includes(request.method.toUpperCase())
-    if (isWriteRequest && !isMcpAuthAllowedWritePath(pathname)) {
-      return withSecurityHeaders(NextResponse.json({ ok: false, error: "Forbidden: Operator role required" }, { status: 403 }))
-    }
-
-    // Gate access to sandbox resources whose ID is encoded in the URL. (Routes
-    // whose sandboxId is in the request body must do their own gating using the
-    // x-forwarded-user header.)
-    const sandboxId = getSandboxIdFromRequest(request)
-    if (sandboxId && !isUserAuthorizedForSandbox(cfUserEmail, sandboxId)) {
-      if (pathname.startsWith("/api/")) {
-        return withSecurityHeaders(NextResponse.json({ ok: false, error: `Forbidden: No access to sandbox ${sandboxId}` }, { status: 403 }))
+    case "mcpauth": {
+      // MCPAuth users are read-only by default. A small allowlist of POST
+      // endpoints (e.g. terminal session allocation) lets them through; the
+      // route handler then enforces per-sandbox access from the body.
+      const isWriteRequest = isStateChangingMethod(request.method)
+      if (isWriteRequest && !pathMatches(pathname, MCPAUTH_WRITE_ALLOWED_PATHS)) {
+        return withSecurityHeaders(NextResponse.json({ ok: false, error: "Forbidden: Operator role required" }, { status: 403 }))
       }
-      return new NextResponse("Forbidden: Access denied to this sandbox", { status: 403 })
+
+      // Gate URL-identifiable sandbox resources.
+      const sandboxId = extractSandboxIdFromUrl(pathname, request.nextUrl.searchParams)
+      if (sandboxId && !isUserAuthorizedForSandbox(ctx.email, sandboxId)) {
+        if (pathname.startsWith("/api/")) {
+          return withSecurityHeaders(NextResponse.json({ ok: false, error: `Forbidden: No access to sandbox ${sandboxId}` }, { status: 403 }))
+        }
+        return new NextResponse("Forbidden: Access denied to this sandbox", { status: 403 })
+      }
+
+      return withSecurityHeaders(NextResponse.next({ request: { headers: withForwardedUser(request, ctx.email) } }))
     }
 
-    // Forward the authenticated email identity downstream
-    const requestHeaders = new Headers(request.headers)
-    requestHeaders.set("x-forwarded-user", cfUserEmail)
-    return withSecurityHeaders(NextResponse.next({
-      request: {
-        headers: requestHeaders,
+    case "anonymous":
+    default: {
+      // Dashboard-proxy paths under /api/ are browser navigations (they serve HTML),
+      // so redirect to login like any other UI route instead of returning 401 JSON.
+      if (pathname.startsWith("/api/") && !isDashboardProxyNavigation(pathname)) {
+        return withSecurityHeaders(NextResponse.json({ ok: false, error: "Authentication required" }, { status: 401 }))
       }
-    }))
+      const loginUrl = new URL("/login", baseUrl)
+      loginUrl.searchParams.set("next", `${pathname}${request.nextUrl.search}`)
+      return withSecurityHeaders(NextResponse.redirect(loginUrl))
+    }
   }
-
-  // 3. Fallback: unauthenticated
-  // Dashboard-proxy paths under /api/ are browser navigations (they serve HTML),
-  // so redirect to the login page like any other UI route instead of returning
-  // 401 JSON that the browser cannot recover from.
-  const isDashboardProxyNavigation =
-    pathname.startsWith("/api/openshell/dashboard/proxy") ||
-    /^\/api\/openshell\/instances\/[^/]+\/dashboard\/proxy/.test(pathname)
-  if (pathname.startsWith("/api/") && !isDashboardProxyNavigation) {
-    return withSecurityHeaders(NextResponse.json({ ok: false, error: "Authentication required" }, { status: 401 }))
-  }
-
-  const loginUrl = new URL("/login", baseUrl)
-  loginUrl.searchParams.set("next", `${pathname}${request.nextUrl.search}`)
-  return withSecurityHeaders(NextResponse.redirect(loginUrl))
 }
 
 export const config = {
+  // Node runtime so the middleware can read the file-backed sandbox-access store
+  // and rotate config without a process restart. Edge would force us to keep
+  // sandbox access in a process.env snapshot, which only refreshes on restart.
+  runtime: "nodejs",
   matcher: ["/((?!_next/static|_next/image).*)"],
 }
-

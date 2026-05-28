@@ -1,41 +1,23 @@
 import { NextRequest, NextResponse } from "next/server"
-import { getAuthSettings, getSandboxAccessMap, verifySessionCookieValue } from "@/app/lib/controlAuth"
+import { isOperator } from "@/app/lib/auth/context"
 import {
-  SandboxAccessEntry,
-  scheduleControllerRestart,
-  updateSandboxAccessUsers,
-} from "@/app/lib/controlAuthConfig"
+  listSandboxAccessEntries,
+  replaceSandboxAccessEntries,
+  type SandboxAccessEntry,
+} from "@/app/lib/auth/sandboxAccessStore"
 
 const EMAIL_RE = /^[^\s,:@]+@[^\s,:@]+\.[^\s,:@]+$/
 const SANDBOX_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$/
 
-async function requireOperator(request: NextRequest) {
-  const settings = getAuthSettings()
-  const ok = await verifySessionCookieValue(request.cookies.get(settings.cookieName)?.value)
-  return ok
-}
-
-function listEntries(): SandboxAccessEntry[] {
-  const map = getSandboxAccessMap()
-  const entries: SandboxAccessEntry[] = []
-  for (const [sandboxName, emails] of map.entries()) {
-    for (const email of emails) {
-      entries.push({ sandboxName, email })
-    }
-  }
-  entries.sort((a, b) => a.sandboxName.localeCompare(b.sandboxName) || a.email.localeCompare(b.email))
-  return entries
-}
-
 export async function GET(request: NextRequest) {
-  if (!(await requireOperator(request))) {
+  if (!(await isOperator(request))) {
     return NextResponse.json({ ok: false, error: "Operator session required." }, { status: 401 })
   }
-  return NextResponse.json({ ok: true, entries: listEntries() })
+  return NextResponse.json({ ok: true, entries: listSandboxAccessEntries() })
 }
 
 export async function POST(request: NextRequest) {
-  if (!(await requireOperator(request))) {
+  if (!(await isOperator(request))) {
     return NextResponse.json({ ok: false, error: "Operator session required." }, { status: 401 })
   }
 
@@ -65,7 +47,9 @@ export async function POST(request: NextRequest) {
     normalized.push({ sandboxName, email })
   }
 
-  await updateSandboxAccessUsers(normalized)
-  const willRestart = scheduleControllerRestart()
-  return NextResponse.json({ ok: true, entries: normalized, willRestart })
+  // File-backed, atomic write. The middleware (Node runtime) reads this file
+  // fresh on every request, so the change takes effect immediately — no
+  // process restart required.
+  const result = replaceSandboxAccessEntries(normalized)
+  return NextResponse.json({ ok: true, entries: normalized, storePath: result.path, willRestart: false })
 }

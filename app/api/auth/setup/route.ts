@@ -8,7 +8,7 @@ import {
   verifyRecoveryToken,
   verifySessionCookieValue,
 } from "@/app/lib/controlAuth"
-import { scheduleControllerRestart, updateLocalAuthCredentials } from "@/app/lib/controlAuthConfig"
+import { updateLocalAuthCredentials } from "@/app/lib/controlAuthConfig"
 import { checkRateLimit, clearRateLimit, rateLimitKey, recordRateLimitFailure } from "@/app/lib/rateLimit"
 
 const SETUP_WINDOW_MS = 15 * 60 * 1000
@@ -55,12 +55,15 @@ export async function POST(request: NextRequest) {
 
   clearRateLimit(limitKey)
   const result = await updateLocalAuthCredentials(password)
-  const willRestart = scheduleControllerRestart()
+  // Node-runtime middleware reads process.env (and the file-backed access
+  // store) fresh per request, so password rotation no longer requires a
+  // process restart. The response includes willRestart for backwards
+  // compatibility with clients that branched on it.
   const response = NextResponse.json({
     ok: true,
     recoveryToken: result.recoveryToken,
     note: "Password updated. Save the new recovery token from .env.local.",
-    willRestart,
+    willRestart: false,
   })
   response.cookies.set(settings.cookieName, await createSessionCookieValue(), sessionCookieOptionsForRequest(request))
   return response

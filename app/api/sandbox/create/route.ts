@@ -5,6 +5,12 @@ import path from "node:path"
 import { promisify } from "node:util"
 import { inspectSandbox, prebuildHermesDashboardWebUi, resolveSandboxRef } from "@/app/lib/openshellHost"
 import { repairOpenClawExecApprovalsFile } from "@/app/lib/sandboxPrivilegedFiles"
+import { exportSandboxPolicyToFile as exportPolicy } from "@/app/lib/sandboxCreate/policy"
+import {
+  bucketCandidatesByAgent,
+  type NemoClawAgent as NemoClawAgentT,
+  type RegistryShape,
+} from "@/app/lib/sandboxCreate/agentFilter"
 import {
   commandExists,
   HOST_PATH,
@@ -307,15 +313,8 @@ async function resolveSourcePodImage(
   const registeredEntries = Object.entries(registry.sandboxes ?? {})
     .sort(([, a], [, b]) => String(b?.createdAt ?? "").localeCompare(String(a?.createdAt ?? "")))
 
-  const agentFilter = requestedAgent === "hermes" || requestedAgent === "openclaw" ? requestedAgent : null
-  const agentForName = (name: string): "match" | "mismatch" | "unknown" => {
-    if (!agentFilter) return "match"
-    const entry = (registry.sandboxes ?? {})[name] as { agent?: string } | undefined
-    const value = typeof entry?.agent === "string" ? entry.agent.trim() : ""
-    if (!value) return "unknown"
-    return value === agentFilter ? "match" : "mismatch"
-  }
-
+  const agentFilter: NemoClawAgentT | null =
+    requestedAgent === "hermes" || requestedAgent === "openclaw" ? requestedAgent : null
   const liveNames = await listOpenShellSandboxNames()
   const seeds = [
     registry.defaultSandbox || undefined,
@@ -323,20 +322,7 @@ async function resolveSourcePodImage(
     ...liveNames,
   ].filter((candidate): candidate is string => Boolean(candidate && candidate !== targetSandboxName))
 
-  // Deduplicate while preserving first-seen order, then bucket by agent match.
-  const seen = new Set<string>()
-  const ordered: string[] = []
-  for (const name of seeds) {
-    if (seen.has(name)) continue
-    seen.add(name)
-    ordered.push(name)
-  }
-  const matched = ordered.filter((n) => agentForName(n) === "match")
-  const unknown = ordered.filter((n) => agentForName(n) === "unknown")
-  // Mismatched candidates are intentionally excluded when an agent filter is
-  // active — using a hermes image to satisfy an openclaw request (or vice
-  // versa) lands the wrong runtime in the new sandbox.
-  const candidates = agentFilter ? [...matched, ...unknown] : ordered
+  const { candidates } = bucketCandidatesByAgent(seeds, registry as RegistryShape, agentFilter)
 
   for (const candidate of candidates) {
     try {
@@ -354,35 +340,11 @@ async function resolveSourcePodImage(
 }
 
 async function exportSandboxPolicyToFile(sourceSandboxName: string): Promise<string | null> {
-  try {
-    const env = hostCommandEnv({ OPENSHELL_GATEWAY: process.env.OPENSHELL_GATEWAY || "nemoclaw" })
-    const { stdout } = await execFileAsync(OPENSHELL_BIN, ["policy", "get", sourceSandboxName, "--full"], {
-      env,
-      timeout: 15000,
-      maxBuffer: 4 * 1024 * 1024,
-    })
-    // `openshell policy get <name> --full` prints a human-readable header
-    // (Version/Hash/Status/...), a `---` separator, then the policy YAML.
-    // Strip everything up to and including the document separator so the file
-    // we write is a clean YAML document the create CLI can parse.
-    const raw = String(stdout ?? "")
-    const lines = raw.split(/\r?\n/)
-    let yamlStart = lines.findIndex((line) => /^---\s*$/.test(line))
-    if (yamlStart === -1) {
-      yamlStart = lines.findIndex((line) => /^version\s*:/.test(line))
-    } else {
-      yamlStart += 1 // skip the `---` separator line itself
-    }
-    if (yamlStart === -1) return null
-    const yaml = lines.slice(yamlStart).join("\n").trim()
-    if (!yaml || !yaml.includes("filesystem_policy")) return null
-    const tmpDir = process.env.TMPDIR || "/tmp"
-    const tmpPath = path.join(tmpDir, `openshell-redeploy-policy-${process.pid}-${Date.now()}.yaml`)
-    writeFileSync(tmpPath, `${yaml}\n`, { mode: 0o600 })
-    return tmpPath
-  } catch {
-    return null
-  }
+  return exportPolicy(
+    sourceSandboxName,
+    OPENSHELL_BIN,
+    hostCommandEnv({ OPENSHELL_GATEWAY: process.env.OPENSHELL_GATEWAY || "nemoclaw" }),
+  )
 }
 
 function registerNemoClawImageRedeploy(sourceName: string, sandboxName: string) {
