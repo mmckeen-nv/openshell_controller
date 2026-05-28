@@ -308,23 +308,35 @@ async function resolveSourcePodImage(
     .sort(([, a], [, b]) => String(b?.createdAt ?? "").localeCompare(String(a?.createdAt ?? "")))
 
   const agentFilter = requestedAgent === "hermes" || requestedAgent === "openclaw" ? requestedAgent : null
-  const matchesAgent = ([, entry]: [string, any]) => {
-    if (!agentFilter) return true
-    const agent = typeof entry?.agent === "string" ? entry.agent.trim() : "openclaw"
-    return (agent || "openclaw") === agentFilter
+  const agentForName = (name: string): "match" | "mismatch" | "unknown" => {
+    if (!agentFilter) return "match"
+    const entry = (registry.sandboxes ?? {})[name]
+    const value = typeof entry?.agent === "string" ? entry.agent.trim() : ""
+    if (!value) return "unknown"
+    return value === agentFilter ? "match" : "mismatch"
   }
-  const orderedRegisteredEntries = agentFilter
-    ? [...registeredEntries.filter(matchesAgent), ...registeredEntries.filter((e) => !matchesAgent(e))]
-    : registeredEntries
-  const orderedRegisteredNames = orderedRegisteredEntries.map(([key, value]) => value?.name || key)
 
   const liveNames = await listOpenShellSandboxNames()
-  const candidates = Array.from(new Set([
-    ...(agentFilter ? [] : (registry.defaultSandbox ? [registry.defaultSandbox] : [])),
-    ...orderedRegisteredNames,
+  const seeds = [
+    registry.defaultSandbox || undefined,
+    ...registeredEntries.map(([key, value]) => value?.name || key),
     ...liveNames,
-    ...(agentFilter && registry.defaultSandbox ? [registry.defaultSandbox] : []),
-  ].filter((candidate): candidate is string => Boolean(candidate && candidate !== targetSandboxName))))
+  ].filter((candidate): candidate is string => Boolean(candidate && candidate !== targetSandboxName))
+
+  // Deduplicate while preserving first-seen order, then bucket by agent match.
+  const seen = new Set<string>()
+  const ordered: string[] = []
+  for (const name of seeds) {
+    if (seen.has(name)) continue
+    seen.add(name)
+    ordered.push(name)
+  }
+  const matched = ordered.filter((n) => agentForName(n) === "match")
+  const unknown = ordered.filter((n) => agentForName(n) === "unknown")
+  // Mismatched candidates are intentionally excluded when an agent filter is
+  // active — using a hermes image to satisfy an openclaw request (or vice
+  // versa) lands the wrong runtime in the new sandbox.
+  const candidates = agentFilter ? [...matched, ...unknown] : ordered
 
   for (const candidate of candidates) {
     try {
