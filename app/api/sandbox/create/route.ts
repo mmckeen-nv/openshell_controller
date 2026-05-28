@@ -294,21 +294,36 @@ async function resolveSourcePodImageFromRef(sourceSandboxRef: string) {
   }
 }
 
-async function resolveSourcePodImage(sourceSandboxRef: string | null | undefined, targetSandboxName: string) {
+async function resolveSourcePodImage(
+  sourceSandboxRef: string | null | undefined,
+  targetSandboxName: string,
+  requestedAgent?: NemoClawAgent | null,
+) {
   if (sourceSandboxRef && typeof sourceSandboxRef === "string" && sourceSandboxRef.trim()) {
     return await resolveSourcePodImageFromRef(sourceSandboxRef)
   }
 
   const registry = readNemoClawRegistry()
   const registeredEntries = Object.entries(registry.sandboxes ?? {})
-  const newestRegisteredNames = registeredEntries
     .sort(([, a], [, b]) => String(b?.createdAt ?? "").localeCompare(String(a?.createdAt ?? "")))
-    .map(([key, value]) => value?.name || key)
+
+  const agentFilter = requestedAgent === "hermes" || requestedAgent === "openclaw" ? requestedAgent : null
+  const matchesAgent = ([, entry]: [string, any]) => {
+    if (!agentFilter) return true
+    const agent = typeof entry?.agent === "string" ? entry.agent.trim() : "openclaw"
+    return (agent || "openclaw") === agentFilter
+  }
+  const orderedRegisteredEntries = agentFilter
+    ? [...registeredEntries.filter(matchesAgent), ...registeredEntries.filter((e) => !matchesAgent(e))]
+    : registeredEntries
+  const orderedRegisteredNames = orderedRegisteredEntries.map(([key, value]) => value?.name || key)
+
   const liveNames = await listOpenShellSandboxNames()
   const candidates = Array.from(new Set([
-    registry.defaultSandbox || undefined,
-    ...newestRegisteredNames,
+    ...(agentFilter ? [] : (registry.defaultSandbox ? [registry.defaultSandbox] : [])),
+    ...orderedRegisteredNames,
     ...liveNames,
+    ...(agentFilter && registry.defaultSandbox ? [registry.defaultSandbox] : []),
   ].filter((candidate): candidate is string => Boolean(candidate && candidate !== targetSandboxName))))
 
   for (const candidate of candidates) {
@@ -319,7 +334,30 @@ async function resolveSourcePodImage(sourceSandboxRef: string | null | undefined
     }
   }
 
-  throw new Error("No running NemoClaw sandbox image was found for quick deploy. Create one Fresh NemoClaw Image first, or pass sourceSandboxName explicitly.")
+  throw new Error(
+    agentFilter
+      ? `No running ${agentFilter === "hermes" ? "Hermes" : "OpenClaw"} sandbox image was found for quick deploy. Create a Fresh ${agentFilter === "hermes" ? "Hermes" : "OpenClaw"} sandbox first, or pass sourceSandboxName explicitly.`
+      : "No running NemoClaw sandbox image was found for quick deploy. Create one Fresh NemoClaw Image first, or pass sourceSandboxName explicitly.",
+  )
+}
+
+async function exportSandboxPolicyToFile(sourceSandboxName: string): Promise<string | null> {
+  try {
+    const env = hostCommandEnv({ OPENSHELL_GATEWAY: process.env.OPENSHELL_GATEWAY || "nemoclaw" })
+    const { stdout } = await execFileAsync(OPENSHELL_BIN, ["policy", "get", sourceSandboxName, "--full"], {
+      env,
+      timeout: 15000,
+      maxBuffer: 4 * 1024 * 1024,
+    })
+    const yaml = String(stdout ?? "").trim()
+    if (!yaml || !yaml.includes("filesystem_policy")) return null
+    const tmpDir = process.env.TMPDIR || "/tmp"
+    const tmpPath = path.join(tmpDir, `openshell-redeploy-policy-${process.pid}-${Date.now()}.yaml`)
+    writeFileSync(tmpPath, `${yaml}\n`, { mode: 0o600 })
+    return tmpPath
+  } catch {
+    return null
+  }
 }
 
 function registerNemoClawImageRedeploy(sourceName: string, sandboxName: string) {
@@ -1048,9 +1086,17 @@ export async function POST(request: Request) {
 
     if (blueprint === "redeploy-image") {
       const sourceSandboxName = typeof body?.sourceSandboxName === "string" ? body.sourceSandboxName.trim() : ""
-      const source = await resolveSourcePodImage(sourceSandboxName, sandboxName)
+      const requestedAgentRaw = typeof body?.agent === "string" ? body.agent.trim().toLowerCase() : ""
+      const requestedAgent: NemoClawAgent | null = requestedAgentRaw === "hermes" ? "hermes" : requestedAgentRaw === "openclaw" ? "openclaw" : null
+      const source = await resolveSourcePodImage(sourceSandboxName, sandboxName, requestedAgent)
       const sourceImage = source.image
-      const basePolicyPath = resolveNemoClawBasePolicyPath()
+      // Inherit the source's effective policy. Hermes sandboxes need /opt/hermes
+      // in the read_only set (which the static openclaw-sandbox.yaml template
+      // lacks); without this, Landlock denies execute on the hermes binary in
+      // the redeployed sandbox. Fall back to the static policy if export fails.
+      const inheritedPolicyPath = await exportSandboxPolicyToFile(source.name)
+      const basePolicyPath = inheritedPolicyPath ?? resolveNemoClawBasePolicyPath()
+      const policySource: "source-sandbox" | "base-template" = inheritedPolicyPath ? "source-sandbox" : "base-template"
       const env: NodeJS.ProcessEnv = hostCommandEnv({
         OPENSHELL_GATEWAY: process.env.OPENSHELL_GATEWAY || "nemoclaw",
       })
@@ -1078,15 +1124,23 @@ export async function POST(request: Request) {
       }
       const created = readiness.verified
       const registry = created ? registerNemoClawImageRedeploy(source.name, sandboxName) : null
-      const execApprovalsRepair = created ? await repairOpenClawExecApprovalsFile(sandboxName).catch((error) => ({
+      const sourceAgent: NemoClawAgent = (() => {
+        const map = readNemoClawRegistry().sandboxes ?? {}
+        const entry = (map[source.name] ?? map[source.id ?? ""]) as { agent?: string } | undefined
+        const value = typeof entry?.agent === "string" ? entry.agent.trim() : ""
+        return value === "hermes" ? "hermes" : "openclaw"
+      })()
+      const effectiveAgent: NemoClawAgent = requestedAgent ?? sourceAgent
+      const isOpenClawAgent = effectiveAgent === "openclaw"
+      const execApprovalsRepair = created && isOpenClawAgent ? await repairOpenClawExecApprovalsFile(sandboxName).catch((error) => ({
         sandboxName,
         path: "/sandbox/.openclaw/exec-approvals.json",
         error: error instanceof Error ? error.message : "Failed to repair OpenClaw exec approvals file",
       })) : null
-      const deviceApproval = created ? await approveOpenClawDeviceRequests(sandboxName) : null
-      const gatewayToken = created ? await ensureOpenClawGatewayToken(sandboxName).catch(() => null) : null
+      const deviceApproval = created && isOpenClawAgent ? await approveOpenClawDeviceRequests(sandboxName) : null
+      const gatewayToken = created && isOpenClawAgent ? await ensureOpenClawGatewayToken(sandboxName).catch(() => null) : null
       console.log(
-        `[sandbox/create] request:complete sandbox=${sandboxName} created=${created} mode=redeploy-image createTimedOut=${createAttempt.timedOut} readinessAttempts=${readiness.attempts} deviceApproval=${deviceApproval?.approved ?? false} gatewayTokenPresent=${gatewayToken?.tokenPresent ?? false} elapsedMs=${elapsedMs(requestStartedAt)}`,
+        `[sandbox/create] request:complete sandbox=${sandboxName} created=${created} mode=redeploy-image agent=${effectiveAgent} policySource=${policySource} createTimedOut=${createAttempt.timedOut} readinessAttempts=${readiness.attempts} deviceApproval=${deviceApproval?.approved ?? false} gatewayTokenPresent=${gatewayToken?.tokenPresent ?? false} elapsedMs=${elapsedMs(requestStartedAt)}`,
       )
 
       const createFailed = createAttempt.completed && createAttempt.exitCode !== 0 && !created
@@ -1098,6 +1152,8 @@ export async function POST(request: Request) {
         sourceSandboxId: source.id,
         sourceImage,
         basePolicyPath,
+        policySource,
+        agent: effectiveAgent,
         created,
         verified: verification.verified,
         verification,
