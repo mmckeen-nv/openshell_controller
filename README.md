@@ -1,7 +1,7 @@
 
 # OpenShell Control
 
-THIS IS VERSION LOCKED TO OpenShell v0.0.36, NemoClaw v0.0.37, and OpenClaw 2026.4.27.
+THIS IS VERSION LOCKED TO OpenShell v0.0.36, NemoClaw v0.0.56, and OpenClaw 2026.5.20.
 
 OpenShell Control is a local, development-stage dashboard for operating OpenShell sandboxes and their OpenClaw gateway dashboards.
 
@@ -52,8 +52,8 @@ This dashboard is validated against the following runtime/toolchain versions:
 - npm `10.9.7`
 - Docker `29.1.3`
 - OpenShell CLI and gateway `v0.0.36`
-- NemoClaw CLI `v0.0.37`
-- OpenClaw `2026.4.27`
+- NemoClaw CLI `v0.0.56`
+- OpenClaw `2026.5.20`
 
 Minimum expected versions:
 
@@ -61,7 +61,7 @@ Minimum expected versions:
 - npm `10+`
 - Docker `24+`
 - OpenShell CLI and gateway compatible with `v0.0.36`
-- NemoClaw CLI compatible with `v0.0.37`
+- NemoClaw CLI compatible with `v0.0.56`
 
 Use `./install_versioned_nemoclaw_openshell.sh` to install or refresh the locked OpenShell/NemoClaw pair. Override the versions only when intentionally testing a newer pair.
 
@@ -101,7 +101,7 @@ Install or refresh the locked OpenShell/NemoClaw pair first:
 ./install_versioned_nemoclaw_openshell.sh
 ```
 
-That helper defaults to `OPENSHELL_VERSION=v0.0.36`, `NEMOCLAW_INSTALL_TAG=v0.0.37`, and `OPENCLAW_VERSION=2026.4.27`.
+That helper defaults to `OPENSHELL_VERSION=v0.0.36`, `NEMOCLAW_INSTALL_TAG=v0.0.56`, and `OPENCLAW_VERSION=2026.5.20`.
 
 Then install the dashboard from the repository root:
 
@@ -291,7 +291,7 @@ Behind a reverse proxy, route WebSocket upgrades for the dashboard proxy paths t
 
 ## Hermes Notes
 
-With NemoClaw `v0.0.37`, the create flow includes a Fresh Hermes Sandbox option. It uses NemoClaw onboard with `--agent hermes`; the existing Fresh NemoClaw Image and Quick Deploy paths remain OpenClaw-oriented.
+With NemoClaw `v0.0.56`, the create flow includes a Fresh Hermes Sandbox option. It uses NemoClaw onboard with `--agent hermes`; the existing Fresh NemoClaw Image and Quick Deploy paths remain OpenClaw-oriented.
 
 ## Remote Controller Nodes
 
