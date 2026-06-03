@@ -48,6 +48,8 @@ Environment overrides:
   OPENSHELL_INSTALL_URL
   NEMOCLAW_INSTALL_REF
   NEMOCLAW_INSTALL_TAG (legacy alias for NEMOCLAW_INSTALL_REF)
+    In curl pipes, set this on bash or export it first. Example:
+    curl -fsSL https://www.nvidia.com/nemoclaw.sh | NEMOCLAW_INSTALL_TAG=v0.0.56 bash
   NEMOCLAW_SOURCE_URL
   OPENCLAW_VERSION
   NEMOCLAW_BASE_IMAGE
@@ -126,7 +128,9 @@ install_nemoclaw() {
   log "Cloning NemoClaw $NEMOCLAW_INSTALL_REF"
   git init --quiet "$source_dir"
   git -C "$source_dir" remote add origin "$NEMOCLAW_SOURCE_URL"
-  git -C "$source_dir" fetch --quiet --depth 1 origin "$NEMOCLAW_INSTALL_REF"
+  if ! git -C "$source_dir" fetch --quiet --depth 1 origin "$NEMOCLAW_INSTALL_REF"; then
+    fail "Requested NemoClaw install ref '$NEMOCLAW_INSTALL_REF' is not available from $NEMOCLAW_SOURCE_URL. Check NEMOCLAW_INSTALL_REF/NEMOCLAW_INSTALL_TAG and try again."
+  fi
   git -C "$source_dir" -c advice.detachedHead=false checkout --quiet --detach FETCH_HEAD
   [[ -n "$source_dir" && -f "$source_dir/install.sh" ]] || fail "Could not find NemoClaw install.sh in source checkout."
 
