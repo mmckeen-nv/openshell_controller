@@ -12,10 +12,11 @@ const terminalReadinessPath = path.join(root, 'app/api/openshell/terminal/readin
 const telemetryPath = path.join(root, 'app/api/telemetry/real/route.ts')
 const openshellHostPath = path.join(root, 'app/lib/openshellHost.ts')
 const sandboxHealthPath = path.join(root, 'app/api/sandbox/[sandboxId]/health/route.ts')
+const openshellConfigPath = path.join(root, 'app/api/config/openshell/route.ts')
 const packageJsonPath = path.join(root, 'package.json')
 const serverPath = path.join(root, 'server.mjs')
 
-const [runtimeAuthoritySource, dashboardOpenSource, dashboardProxySource, terminalLiveSource, terminalReadinessSource, telemetrySource, openshellHostSource, sandboxHealthSource, packageJsonSource, serverSource] = await Promise.all([
+const [runtimeAuthoritySource, dashboardOpenSource, dashboardProxySource, terminalLiveSource, terminalReadinessSource, telemetrySource, openshellHostSource, sandboxHealthSource, openshellConfigSource, packageJsonSource, serverSource] = await Promise.all([
   readFile(runtimeAuthorityPath, 'utf8'),
   readFile(dashboardOpenPath, 'utf8'),
   readFile(dashboardProxySharedPath, 'utf8'),
@@ -24,6 +25,7 @@ const [runtimeAuthoritySource, dashboardOpenSource, dashboardProxySource, termin
   readFile(telemetryPath, 'utf8'),
   readFile(openshellHostPath, 'utf8'),
   readFile(sandboxHealthPath, 'utf8'),
+  readFile(openshellConfigPath, 'utf8'),
   readFile(packageJsonPath, 'utf8'),
   readFile(serverPath, 'utf8'),
 ])
@@ -60,6 +62,9 @@ assert.match(openshellHostSource, /const canMintBootstrapFromCli = instance\.id 
 assert.match(openshellHostSource, /readSandboxOpenClawDashboardToken/, 'sandbox dashboard bootstrap must fall back to the sandbox OpenClaw token when CLI output is bare')
 assert.match(openshellHostSource, /openclaw dashboard', 15000\)\.catch/, 'sandbox dashboard bootstrap should let OpenClaw initialize before reading the fallback token')
 assert.match(openshellHostSource, /withDashboardToken\(tokenizedBootstrapUrl, token\)/, 'sandbox dashboard bootstrap should synthesize a tokenized launch URL from the fallback token')
+assert.match(openshellConfigSource, /openshellGatewayAddressEnv/, 'OpenShell config route must expose controller gateway override diagnostics')
+assert.match(openshellConfigSource, /gatewayOverrideActive/, 'OpenShell config route must report whether gateway overrides are active')
+assert.match(openshellConfigSource, /Upstream CLIs must still honor them/, 'OpenShell config route must make the upstream dependency explicit')
 assert.match(packageJsonSource, /"dev": "NODE_ENV=development node server\.mjs"/, 'development script must run through the custom server so websocket proxy bridges are active')
 assert.match(packageJsonSource, /"start": "NODE_ENV=production node server\.mjs"/, 'production start must run the custom server without Next dev-mode heap growth')
 assert.match(serverSource, /const dashboardWsProxyPort = parseOptionalPort\(process\.env\.OPENCLAW_DASHBOARD_WS_PROXY_PORT/, 'custom server must make the dedicated dashboard websocket sidecar opt-in')

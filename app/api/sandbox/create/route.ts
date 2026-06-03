@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "
 import path from "node:path"
 import { promisify } from "node:util"
 import { inspectSandbox, resolveSandboxRef } from "@/app/lib/openshellHost"
+import { recordActivity } from "@/app/lib/activityLog"
 import { repairOpenClawExecApprovalsFile } from "@/app/lib/sandboxPrivilegedFiles"
 import {
   commandExists,
@@ -57,6 +58,15 @@ function elapsedMs(start: number) {
 
 function appendNote(...parts: Array<string | false | null | undefined>) {
   return parts.filter(Boolean).join(" ")
+}
+
+async function recordCreateActivity(entry: Parameters<typeof recordActivity>[0]) {
+  try {
+    await recordActivity(entry)
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error ?? "activity log write failed")
+    console.warn(`[sandbox/create] activity-log:error message=${message}`)
+  }
 }
 
 type NemoClawCreateCommand = {
@@ -755,6 +765,14 @@ export async function POST(request: Request) {
       return NextResponse.json({ ok: false, error: "blueprint is required" }, { status: 400 })
     }
 
+    await recordCreateActivity({
+      type: "sandbox.create.start",
+      status: "info",
+      sandboxName,
+      message: `Sandbox creation started for ${sandboxName} using ${blueprint}.`,
+      metadata: { blueprint, gpuMode, inferenceMode: createInference.mode },
+    })
+
     if (isNemoClawOnboardBlueprint(blueprint)) {
       const agent = nemoClawAgentForBlueprint(blueprint)
       const isOpenClawAgent = agent === "openclaw"
@@ -782,6 +800,13 @@ export async function POST(request: Request) {
       )
 
       if (!result.ok) {
+        await recordCreateActivity({
+          type: "sandbox.create.error",
+          status: "error",
+          sandboxName,
+          message: `Sandbox creation command failed for ${sandboxName}.`,
+          metadata: { blueprint, agent, gpuMode, inferenceMode: createInference.mode, elapsedMs: elapsedMs(requestStartedAt), error: result.error },
+        })
         return NextResponse.json({
           ok: false,
           error: result.error,
@@ -812,6 +837,16 @@ export async function POST(request: Request) {
       console.log(
         `[sandbox/create] request:complete sandbox=${sandboxName} created=${created} agent=${agent} readinessAttempts=${readiness.attempts} deviceApproval=${deviceApproval?.approved ?? false} elapsedMs=${elapsedMs(requestStartedAt)}`,
       )
+      await recordCreateActivity({
+        type: created ? "sandbox.create.success" : "sandbox.create.warning",
+        status: created ? "success" : "warning",
+        sandboxId: verification.details?.id || undefined,
+        sandboxName,
+        message: created
+          ? `Sandbox ${sandboxName} is ready after ${readiness.attempts} readiness checks.`
+          : `Sandbox creation command finished for ${sandboxName}, but readiness was not verified.`,
+        metadata: { blueprint, agent, gpuMode, inferenceMode: createInference.mode, readinessAttempts: readiness.attempts, elapsedMs: elapsedMs(requestStartedAt) },
+      })
 
       return NextResponse.json({
         ok: created,
@@ -865,6 +900,13 @@ export async function POST(request: Request) {
       const createAttempt = await runCreateCommandBounded(OPENSHELL_BIN, ["sandbox", "create", "--name", sandboxName, ...openShellGpuArgs(gpuMode)], env, 15000)
 
       if (createAttempt.completed && createAttempt.exitCode !== 0) {
+        await recordCreateActivity({
+          type: "sandbox.create.error",
+          status: "error",
+          sandboxName,
+          message: `Custom sandbox creation command failed for ${sandboxName}.`,
+          metadata: { blueprint, gpuMode, elapsedMs: elapsedMs(requestStartedAt), error: createAttempt.error, exitCode: createAttempt.exitCode },
+        })
         return NextResponse.json({
           ok: false,
           error: createAttempt.error ?? `create command failed with exit code ${createAttempt.exitCode}`,
@@ -893,6 +935,16 @@ export async function POST(request: Request) {
       console.log(
         `[sandbox/create] request:complete sandbox=${sandboxName} created=${created} createTimedOut=${createAttempt.timedOut} readinessAttempts=${readiness.attempts} deviceApproval=${deviceApproval?.approved ?? false} elapsedMs=${elapsedMs(requestStartedAt)}`,
       )
+      await recordCreateActivity({
+        type: created ? "sandbox.create.success" : "sandbox.create.warning",
+        status: created ? "success" : "warning",
+        sandboxId: verification.details?.id || undefined,
+        sandboxName,
+        message: created
+          ? `Custom sandbox ${sandboxName} is ready after ${readiness.attempts} readiness checks.`
+          : `Custom sandbox creation finished for ${sandboxName}, but readiness was not verified.`,
+        metadata: { blueprint, gpuMode, readinessAttempts: readiness.attempts, elapsedMs: elapsedMs(requestStartedAt), createTimedOut: createAttempt.timedOut },
+      })
       return NextResponse.json({
         ok: created,
         blueprint,
@@ -979,6 +1031,18 @@ export async function POST(request: Request) {
       )
 
       const createFailed = createAttempt.completed && createAttempt.exitCode !== 0 && !created
+      await recordCreateActivity({
+        type: created ? "sandbox.create.success" : createFailed ? "sandbox.create.error" : "sandbox.create.warning",
+        status: created ? "success" : createFailed ? "error" : "warning",
+        sandboxId: verification.details?.id || undefined,
+        sandboxName,
+        message: created
+          ? `Quick deploy sandbox ${sandboxName} is ready after ${readiness.attempts} readiness checks.`
+          : createFailed
+            ? `Quick deploy command failed for ${sandboxName}.`
+            : `Quick deploy started for ${sandboxName}, but readiness was not verified.`,
+        metadata: { blueprint, gpuMode, sourceSandboxName: source.name, readinessAttempts: readiness.attempts, elapsedMs: elapsedMs(requestStartedAt), createTimedOut: createAttempt.timedOut, forcedReady: createAttempt.forcedReady, error: createAttempt.error },
+      })
       return NextResponse.json({
         ok: created,
         blueprint,
@@ -1032,9 +1096,22 @@ export async function POST(request: Request) {
       }, { status: created ? 200 : createFailed ? 500 : 502 })
     }
 
+    await recordCreateActivity({
+      type: "sandbox.create.error",
+      status: "error",
+      sandboxName,
+      message: `Sandbox creation failed for ${sandboxName}: unknown blueprint ${blueprint}.`,
+      metadata: { blueprint, gpuMode, elapsedMs: elapsedMs(requestStartedAt) },
+    })
     return NextResponse.json({ ok: false, error: `unknown blueprint: ${blueprint}` }, { status: 400 })
   } catch (error) {
     const message = error instanceof Error ? error.message : "Sandbox creation failed"
+    await recordCreateActivity({
+      type: "sandbox.create.error",
+      status: "error",
+      message: `Sandbox creation failed: ${message}`,
+      metadata: { elapsedMs: elapsedMs(requestStartedAt) },
+    })
     const status = /required|must be|too long|unknown blueprint/.test(message) ? 400 : 500
     console.log(`[sandbox/create] request:error elapsedMs=${elapsedMs(requestStartedAt)} message=${message}`)
     return NextResponse.json({ ok: false, error: message }, { status })

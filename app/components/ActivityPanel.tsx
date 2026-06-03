@@ -42,7 +42,7 @@ export default function ActivityPanel() {
       <div className="flex items-start justify-between gap-4 max-md:flex-col">
         <div>
           <h2 className="text-sm font-semibold uppercase tracking-wider text-[var(--foreground)]">Activity Log</h2>
-          <p className="mt-1 text-xs text-[var(--foreground-dim)]">Recent backup, restore, catalog, and support actions recorded by the controller.</p>
+          <p className="mt-1 text-xs text-[var(--foreground-dim)]">Recent sandbox creation, backup, restore, catalog, and support actions recorded by the controller.</p>
         </div>
         <div className="flex items-center gap-2">
           <button type="button" onClick={loadActivity} disabled={loading} className="action-button px-3 py-2">

@@ -1,32 +1,35 @@
 import { NextResponse } from 'next/server'
-
-// Mock OpenShell configuration
-// In production, this would call OpenShell API
-const mockOpenshellConfig = {
-  enabled: true,
-  port: 8080,
-  policies: ['resource-control', 'network-isolation', 'audit-logging']
-}
+import {
+  OPENSHELL_BIN,
+  OPENSHELL_HOME,
+  OPENSHELL_XDG_CONFIG_HOME,
+  openshellGatewayAddressEnv,
+} from '@/app/lib/hostCommands'
 
 export async function GET() {
   try {
-    return NextResponse.json(mockOpenshellConfig)
+    const gatewayAddressEnv = openshellGatewayAddressEnv()
+    return NextResponse.json({
+      ok: true,
+      enabled: true,
+      openshellBin: OPENSHELL_BIN,
+      openshellHome: OPENSHELL_HOME,
+      xdgConfigHome: OPENSHELL_XDG_CONFIG_HOME,
+      gatewayAddressEnv,
+      gatewayOverrideActive: Boolean(gatewayAddressEnv.OPENSHELL_GATEWAY_URL || gatewayAddressEnv.OPENSHELL_GATEWAY_HOST),
+      note: 'These values are passed to controller-launched OpenShell/NemoClaw child processes. Upstream CLIs must still honor them for full gateway override support.',
+    })
   } catch (error) {
     return NextResponse.json(
-      { error: 'Failed to fetch OpenShell config' },
+      { ok: false, error: error instanceof Error ? error.message : 'Failed to fetch OpenShell config' },
       { status: 500 }
     )
   }
 }
 
-export async function POST(request: Request) {
-  try {
-    const body = await request.json()
-    return NextResponse.json({ ...mockOpenshellConfig, ...body })
-  } catch (error) {
-    return NextResponse.json(
-      { error: 'Failed to update OpenShell config' },
-      { status: 500 }
-    )
-  }
+export async function POST() {
+  return NextResponse.json(
+    { ok: false, error: 'OpenShell config is read from environment variables or ~/.config/openshell/*.json; update those files and restart the controller.' },
+    { status: 405 }
+  )
 }
