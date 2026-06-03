@@ -3,7 +3,7 @@ import { execFile } from "node:child_process"
 import { existsSync, statSync } from "node:fs"
 import { readdir, readFile } from "node:fs/promises"
 import { isIP } from "node:net"
-import { release } from "node:os"
+import { platform, release } from "node:os"
 import { promisify } from "node:util"
 
 const DEFAULT_OLLAMA_URL = "http://127.0.0.1:11434"
@@ -127,7 +127,7 @@ function formatBytes(size: unknown) {
 
 function modelRowsFromTags(data: any, origin: OllamaProbeCandidate): OllamaModelRow[] {
   return Array.isArray(data?.models)
-    ? data.models.map((item: OllamaTag) => {
+    ? data.models.filter((item: OllamaTag) => isChatModelName(item.model || item.name || "")).map((item: OllamaTag) => {
         const name = item.model || item.name || ""
         return {
           id: `${origin.hostKind}:${name}`,
@@ -148,6 +148,10 @@ function modelRowsFromTags(data: any, origin: OllamaProbeCandidate): OllamaModel
         }
       }).filter((item: { name: string }) => item.name)
     : []
+}
+
+function isChatModelName(name: string) {
+  return !/(^|[-_:/.])(embed|embedding|rerank|bge|nomic-embed)([-_:/.]|$)/i.test(name)
 }
 
 async function isWslRuntime() {
@@ -253,6 +257,8 @@ function customHostUrl(host: string) {
 async function buildProbeCandidates() {
   const candidates: OllamaProbeCandidate[] = []
   const wsl = await isWslRuntime()
+  const localHostLabel = platform() === "darwin" ? "MAC" : "LINUX"
+  const localSource = platform() === "darwin" ? "mac-localhost" : "localhost"
 
   addFetchCandidate(candidates, process.env.OPENSHELL_OLLAMA_BASE_URL, "OPENSHELL_OLLAMA_BASE_URL", "custom", "CUSTOM")
   addFetchCandidate(candidates, process.env.OLLAMA_BASE_URL, "OLLAMA_BASE_URL", "custom", "CUSTOM")
@@ -260,7 +266,7 @@ async function buildProbeCandidates() {
   for (const host of customHostCandidates()) {
     addFetchCandidate(candidates, customHostUrl(host), "OPENSHELL_OLLAMA_HOSTS", "custom", "CUSTOM")
   }
-  addFetchCandidate(candidates, DEFAULT_OLLAMA_URL, wsl ? "wsl-localhost" : "localhost", wsl ? "wsl2" : "linux", wsl ? "WSL2" : "LINUX")
+  addFetchCandidate(candidates, DEFAULT_OLLAMA_URL, wsl ? "wsl-localhost" : localSource, wsl ? "wsl2" : "linux", wsl ? "WSL2" : localHostLabel)
 
   if (wsl) {
     for (const host of await readWslHostCandidates()) {
