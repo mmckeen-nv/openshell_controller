@@ -1,7 +1,7 @@
 
 # OpenShell Control
 
-THIS IS VERSION LOCKED TO OpenShell v0.0.36, NemoClaw v0.0.37, and OpenClaw 2026.4.27.
+THIS IS TRACKING current NVIDIA NemoClaw `main` with the OpenShell version declared compatible by NemoClaw's blueprint.
 
 OpenShell Control is a local, development-stage dashboard for operating OpenShell sandboxes and their OpenClaw gateway dashboards.
 
@@ -43,29 +43,26 @@ It is currently built for active development and lab use. It includes a simple p
 <img width="2117" height="1873" alt="Screenshot 2026-04-27 at 3 42 37 PM" src="https://github.com/user-attachments/assets/405ae79c-59e9-4c71-afb7-779eccb7ece7" />
 
 
-## Version Lock
+## Compatibility Targets
 
-This dashboard is validated against the following runtime/toolchain versions:
+This dashboard is validated against the current NVIDIA NemoClaw repo and the OpenShell version range declared in NemoClaw's `nemoclaw-blueprint/blueprint.yaml`, not the older April 2026 point releases. Current NemoClaw `main` pins OpenShell exactly to `0.0.44`, so the bundled refresh helper defaults to:
+
+- OpenShell installer release: `v0.0.44` (`OPENSHELL_VERSION=v0.0.44`)
+- NemoClaw source ref: `main` (`NEMOCLAW_INSTALL_REF=main`)
+- OpenClaw base-image build arg: `2026.5.22` unless overridden by `OPENCLAW_VERSION`
+
+Runtime/toolchain versions used during development:
 
 - Ubuntu/Linux host
-- Node.js `v22.22.2`
-- npm `10.9.7`
-- Docker `29.1.3`
-- OpenShell CLI and gateway `v0.0.36`
-- NemoClaw CLI `v0.0.37`
-- OpenClaw `2026.4.27`
-
-Minimum expected versions:
-
-- Node.js `20+`
+- Node.js `20+` (Node `22.x` recommended for parity with NemoClaw)
 - npm `10+`
 - Docker `24+`
-- OpenShell CLI and gateway compatible with `v0.0.36`
-- NemoClaw CLI compatible with `v0.0.37`
+- OpenShell CLI and gateway compatible with current `NVIDIA/NemoClaw` blueprint constraints
+- NemoClaw CLI compatible with the current `NVIDIA/NemoClaw` repo
 
-Use `./install_versioned_nemoclaw_openshell.sh` to install or refresh the locked OpenShell/NemoClaw pair. Override the versions only when intentionally testing a newer pair.
+Use `./install_versioned_nemoclaw_openshell.sh` to install or refresh the OpenShell/NemoClaw pair. Override `OPENSHELL_VERSION`, `NEMOCLAW_INSTALL_REF`, or `OPENCLAW_VERSION` only when intentionally testing a different pair.
 
-The app uses Next.js `14.2.35`, React `18.3.1`, TypeScript, Tailwind CSS, `ws`, `node-pty`, and the official MCP TypeScript SDK.
+The app uses Next.js `15.5.15`, React `18.3.1`, TypeScript, Tailwind CSS, `ws`, `node-pty`, and the official MCP TypeScript SDK.
 
 ## Prerequisites
 
@@ -101,7 +98,7 @@ Install or refresh the locked OpenShell/NemoClaw pair first:
 ./install_versioned_nemoclaw_openshell.sh
 ```
 
-That helper defaults to `OPENSHELL_VERSION=v0.0.36`, `NEMOCLAW_INSTALL_TAG=v0.0.37`, and `OPENCLAW_VERSION=2026.4.27`.
+That helper defaults to `OPENSHELL_VERSION=v0.0.44`, `NEMOCLAW_INSTALL_REF=main`, and `OPENCLAW_VERSION=2026.5.22`.
 
 Then install the dashboard from the repository root:
 
@@ -165,6 +162,8 @@ Default ports:
 - `3000`: dashboard HTTP server
 - `3011`: operator terminal upstream
 
+If you set `OPENSHELL_TERMINAL_ATTACH_TEMPLATE`, leave `{sandboxId}` and `{alias}` unquoted in the template. The terminal bridge validates sandbox IDs and shell-quotes those placeholder values before executing the template.
+
 The dashboard WebSocket proxy is served on the same listener by default, using `/api/openshell/dashboard/proxy` or `/api/openshell/instances/[instanceId]/dashboard/proxy`. Set `OPENCLAW_DASHBOARD_WS_PROXY_PORT=3001` only if you intentionally want the legacy dedicated sidecar listener.
 
 ## Ollama Inference
@@ -217,9 +216,10 @@ The dashboard shells out to the OpenShell CLI for several operations:
 - `openshell list`
 - `openshell sandbox exec`
 - `openshell sandbox delete`
-- `openshell rule get`
-- `openshell rule approve`
-- `openshell rule reject`
+- `openshell policy get`
+- `openshell policy update`
+- `openshell provider create/update/delete/list`
+- `openshell inference set/get/update`
 
 OpenClaw dashboard access is loopback-only inside the host/sandbox context, so the UI uses local proxy routes:
 
