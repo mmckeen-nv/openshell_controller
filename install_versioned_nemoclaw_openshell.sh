@@ -146,6 +146,22 @@ install_nemoclaw() {
   source_dir="$(find "$work_dir" -maxdepth 1 -type d -name 'NemoClaw-*' | head -n 1)"
   [[ -n "$source_dir" && -f "$source_dir/install.sh" ]] || fail "Could not find NemoClaw install.sh in downloaded archive."
 
+  # NemoClaw upstream Dockerfile/Dockerfile.base pin Debian package versions
+  # (procps=2:4.0.4-9, e2fsprogs=1.47.2-3+b11, tmux=3.5a-3) even though the
+  # base image is Ubuntu 24.04 noble, where those exact versions don't exist.
+  # The pinned `apt-get install` then fails with exit 100, breaking every
+  # `nemoclaw onboard` on a freshly-deployed VPS. Unpin them so apt picks
+  # whatever's available in noble.
+  for _dockerfile in "$source_dir/Dockerfile" "$source_dir/Dockerfile.base"; do
+    if [[ -f "$_dockerfile" ]]; then
+      sed -i.bak \
+        -e 's/procps=2:4\.0\.4-9/procps/g' \
+        -e 's/e2fsprogs=1\.47\.2-3+b11/e2fsprogs/g' \
+        -e 's/tmux=3\.5a-3/tmux/g' \
+        "$_dockerfile" && rm -f "${_dockerfile}.bak"
+    fi
+  done
+
   if [[ -z "${NVIDIA_API_KEY:-}" ]]; then
     warn "NVIDIA_API_KEY is not set. NemoClaw may require it for non-local provider setup."
   fi
