@@ -31,6 +31,16 @@ const OPENSHELL_CLUSTER_CONTAINER = process.env.OPENSHELL_CLUSTER_CONTAINER || "
 const OPENSHELL_NAMESPACE = process.env.OPENSHELL_SANDBOX_NAMESPACE || "openshell"
 const NEMOCLAW_REGISTRY_FILE = path.join(process.env.HOME || "/tmp", ".nemoclaw", "sandboxes.json")
 
+// Prebuilt baseline sandboxes. Produced once per VPS by manidae-cloud's install
+// scripts (one `nemoclaw onboard` per agent) and left running. The existing
+// `redeploy-image` blueprint flow finds them via `openshell sandbox list`, so
+// the first Quick Deploy on a fresh box can clone from a baseline instead of
+// waiting 12-15 min for the in-image docker build.
+const BASELINE_SANDBOX_NAMES = {
+  openclaw: "openclaw-baseline",
+  hermes: "hermes-baseline",
+} as const
+
 function validateSandboxName(name: string) {
   if (!name || typeof name !== "string") throw new Error("sandbox name is required")
   if (name.length > 63) throw new Error("sandbox name too long (max 63 chars)")
@@ -280,6 +290,15 @@ async function listOpenShellSandboxNames() {
   } catch {
     return []
   }
+}
+
+async function getBaselineSandboxesStatus() {
+  const liveNames = new Set(await listOpenShellSandboxNames())
+  const agents: NemoClawAgent[] = ["openclaw", "hermes"]
+  return Object.fromEntries(agents.map((agent) => {
+    const name = BASELINE_SANDBOX_NAMES[agent]
+    return [agent, { name, available: liveNames.has(name) }]
+  })) as Record<NemoClawAgent, { name: string; available: boolean }>
 }
 
 async function resolveSourceDockerImage(sandboxName: string): Promise<string | null> {
@@ -792,8 +811,10 @@ async function waitForSandboxReady(sandboxName: string, timeoutMs: number, inter
 }
 
 export async function GET() {
+  const baselineStatus = await getBaselineSandboxesStatus()
   return NextResponse.json({
     ok: true,
+    baselineSandboxes: baselineStatus,
     blueprints: [
       {
         id: "nemoclaw-blueprint",
@@ -802,6 +823,7 @@ export async function GET() {
         type: "blueprint",
         source: "~/NemoClaw/nemoclaw-blueprint/blueprint.yaml",
         supportsTailscale: true,
+        baseline: baselineStatus.openclaw,
       },
       {
         id: "nemoclaw-hermes",
@@ -810,6 +832,7 @@ export async function GET() {
         type: "blueprint",
         source: "~/NemoClaw/agents/hermes/Dockerfile",
         supportsTailscale: false,
+        baseline: baselineStatus.hermes,
       },
       {
         id: "custom-sandbox",

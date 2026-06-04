@@ -9,6 +9,7 @@ type BlueprintOption = {
   description: string
   type?: "blueprint" | "custom" | "image"
   supportsTailscale?: boolean
+  baseline?: { name: string; available: boolean }
 }
 
 type WizardStep = "source" | "target" | "options" | "review" | "run"
@@ -616,8 +617,20 @@ export default function WizardPanel({
                     onClick={() => setSelectedBlueprint(blueprint.id)}
                     className={`rounded-sm border p-4 text-left ${selectedBlueprint === blueprint.id ? "border-[var(--nvidia-green)] bg-[var(--surface-hover)]" : "border-[var(--border-subtle)] bg-[var(--background-tertiary)]"}`}
                   >
-                    <span className="text-sm font-semibold uppercase tracking-wider text-[var(--foreground)]">{blueprint.label}</span>
+                    <div className="flex items-start justify-between gap-2">
+                      <span className="text-sm font-semibold uppercase tracking-wider text-[var(--foreground)]">{blueprint.label}</span>
+                      {blueprint.baseline && (
+                        <span className={`shrink-0 px-2 py-0.5 rounded text-[10px] font-mono uppercase ${blueprint.baseline.available ? "bg-[var(--status-running-bg)] text-[var(--status-running)] border border-[var(--status-running)]/40" : "bg-[var(--status-pending-bg)] text-[var(--status-pending)] border border-[var(--status-pending)]/40"}`}>
+                          {blueprint.baseline.available ? "Baseline Ready" : "Baseline Missing"}
+                        </span>
+                      )}
+                    </div>
                     <p className="mt-2 text-xs text-[var(--foreground-dim)]">{blueprint.description}</p>
+                    {blueprint.baseline && (
+                      <p className="mt-1 text-[10px] font-mono text-[var(--foreground-dim)]">
+                        Baseline: {blueprint.baseline.name}
+                      </p>
+                    )}
                   </button>
                 ))}
               </div>
