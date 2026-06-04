@@ -894,14 +894,23 @@ export async function POST(request: Request) {
       const createCommandArgs = createCommand.mode === "legacy-setup"
         ? [...createCommand.args, sandboxName]
         : createCommand.args
+      // First-time NemoClaw image builds are slow — the in-image docker build is
+      // 80+ steps including a full NPM install and OpenClaw npm install/build.
+      // On under-provisioned VPSs (4 vCPU / 8 GiB, no swap) this routinely
+      // takes 12-15 minutes. The previous 10 / 15 min ceilings caused our
+      // bounded command to SIGTERM the onboard mid-build, leaving the sandbox
+      // in a half-baked state. Bump both paths to 20 minutes. Subsequent
+      // builds reuse the cached layers and finish in ~30 seconds — the cap
+      // only matters for the very first sandbox on a fresh box.
+      const FIRST_BUILD_TIMEOUT_MS = 20 * 60 * 1000
       const result = agent === "hermes"
-        ? await runCreateCommandBounded(createCommand.file, createCommandArgs, env, 900000)
+        ? await runCreateCommandBounded(createCommand.file, createCommandArgs, env, FIRST_BUILD_TIMEOUT_MS)
         : await runCreateCommandUntilReady(
             createCommand.file,
             createCommandArgs,
             env,
             sandboxName,
-            600000,
+            FIRST_BUILD_TIMEOUT_MS,
             5000,
             NEMOCLAW_CWD,
           )
