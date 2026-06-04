@@ -1,7 +1,7 @@
 
 # OpenShell Control
 
-THIS IS VERSION LOCKED TO OpenShell v0.0.36, NemoClaw v0.0.56, and OpenClaw 2026.5.20.
+THIS IS TRACKING current NVIDIA NemoClaw `main` with the OpenShell version declared compatible by NemoClaw's blueprint.
 
 OpenShell Control is a local, development-stage dashboard for operating OpenShell sandboxes and their OpenClaw gateway dashboards.
 
@@ -43,29 +43,26 @@ It is currently built for active development and lab use. It includes a simple p
 <img width="2117" height="1873" alt="Screenshot 2026-04-27 at 3 42 37 PM" src="https://github.com/user-attachments/assets/405ae79c-59e9-4c71-afb7-779eccb7ece7" />
 
 
-## Version Lock
+## Compatibility Targets
 
-This dashboard is validated against the following runtime/toolchain versions:
+This dashboard is validated against the current NVIDIA NemoClaw repo and the OpenShell version range declared in NemoClaw's `nemoclaw-blueprint/blueprint.yaml`, not the older April 2026 point releases. Current NemoClaw `main` pins OpenShell exactly to `0.0.44`, so the bundled refresh helper defaults to:
+
+- OpenShell installer release: `v0.0.44` (`OPENSHELL_VERSION=v0.0.44`)
+- NemoClaw source ref: `main` (`NEMOCLAW_INSTALL_REF=main`)
+- OpenClaw base-image build arg: `2026.5.22` unless overridden by `OPENCLAW_VERSION`
+
+Runtime/toolchain versions used during development:
 
 - Ubuntu/Linux host
-- Node.js `v22.22.2`
-- npm `10.9.7`
-- Docker `29.1.3`
-- OpenShell CLI and gateway `v0.0.36`
-- NemoClaw CLI `v0.0.56`
-- OpenClaw `2026.5.20`
-
-Minimum expected versions:
-
-- Node.js `20+`
+- Node.js `20+` (Node `22.x` recommended for parity with NemoClaw)
 - npm `10+`
 - Docker `24+`
-- OpenShell CLI and gateway compatible with `v0.0.36`
-- NemoClaw CLI compatible with `v0.0.56`
+- OpenShell CLI and gateway compatible with current `NVIDIA/NemoClaw` blueprint constraints
+- NemoClaw CLI compatible with the current `NVIDIA/NemoClaw` repo
 
-Use `./install_versioned_nemoclaw_openshell.sh` to install or refresh the locked OpenShell/NemoClaw pair. Override the versions only when intentionally testing a newer pair.
+Use `./install_versioned_nemoclaw_openshell.sh` to install or refresh the OpenShell/NemoClaw pair. Override `OPENSHELL_VERSION`, `NEMOCLAW_INSTALL_REF`, or `OPENCLAW_VERSION` only when intentionally testing a different pair.
 
-The app uses Next.js `14.2.35`, React `18.3.1`, TypeScript, Tailwind CSS, `ws`, `node-pty`, and the official MCP TypeScript SDK.
+The app uses Next.js `15.5.15`, React `18.3.1`, TypeScript, Tailwind CSS, `ws`, `node-pty`, and the official MCP TypeScript SDK.
 
 ## Prerequisites
 
@@ -101,7 +98,7 @@ Install or refresh the locked OpenShell/NemoClaw pair first:
 ./install_versioned_nemoclaw_openshell.sh
 ```
 
-That helper defaults to `OPENSHELL_VERSION=v0.0.36`, `NEMOCLAW_INSTALL_TAG=v0.0.56`, and `OPENCLAW_VERSION=2026.5.20`.
+That helper defaults to `OPENSHELL_VERSION=v0.0.44`, `NEMOCLAW_INSTALL_REF=main`, and `OPENCLAW_VERSION=2026.5.22`.
 
 Then install the dashboard from the repository root:
 
@@ -165,6 +162,8 @@ Default ports:
 - `3000`: dashboard HTTP server
 - `3011`: operator terminal upstream
 
+If you set `OPENSHELL_TERMINAL_ATTACH_TEMPLATE`, leave `{sandboxId}` and `{alias}` unquoted in the template. The terminal bridge validates sandbox IDs and shell-quotes those placeholder values before executing the template.
+
 The dashboard WebSocket proxy is served on the same listener by default, using `/api/openshell/dashboard/proxy` or `/api/openshell/instances/[instanceId]/dashboard/proxy`. Set `OPENCLAW_DASHBOARD_WS_PROXY_PORT=3001` only if you intentionally want the legacy dedicated sidecar listener.
 
 ## Ollama Inference
@@ -210,61 +209,6 @@ pkill -f 'node server.mjs|npm run dev|npm run start' || true
 npm run start
 ```
 
-### OAuth / external IDP integration
-
-> **Superseded.** Earlier drafts of this section proposed delegating auth to
-> an external IdP (the `mcpauth` Go service was one option) via Traefik's
-> `forwardAuth` middleware. The controller now implements OAuth2/OIDC in
-> code via `/api/auth/callback` — see SANDBOX_ACCESS_CONTROL.md for the
-> current architecture. The text below is kept for historical context and
-> for deployments that prefer the proxy-side approach.
-
-#### Historical: Delegate auth to an OAuth IdP via Traefik forwardAuth
-
-The shared-password gate above is the only thing standing between a request and the controller's API. For deployments behind Traefik we can replace it with an existing internal IdP (e.g. `mcpauth`, Authelia, Authentik) using Traefik's `forwardAuth` middleware. This keeps controller code untouched and moves all identity into the IdP.
-
-**Approach (minimal change, no controller code edits):**
-
-1. Define a Traefik middleware that points at mcpauth's forward-auth endpoint, and attach it to both controller routers — the HTTP router and the WebSocket router (`8-openshell-controller-router-auth@file` and `8-openshell-controller-ws-router@file` in the current Pangolin-managed config). The middleware must be set on the WS router too, because the dashboard WebSocket upgrade currently relies on the controller's own cookie check (`server.mjs:149 isAuthenticatedUpgrade`).
-2. Set `OPENSHELL_CONTROL_AUTH_DISABLED=true` in `.env.local` so the controller trusts whatever mcpauth has already approved. The `/login`, `/setup-account`, `/forgot-password` pages become inert.
-3. Decide whether to leave Pangolin's `badger@http` middleware in place (defence in depth) or remove it so mcpauth is the sole gate. If both are kept, the user logs in twice.
-
-Example Traefik dynamic config (sketch — adjust paths and headers to match mcpauth's actual forwardAuth endpoint and cookie names):
-
-```yaml
-http:
-  middlewares:
-    mcpauth-forward:
-      forwardAuth:
-        address: "http://mcpauth:11000/auth/forward"
-        trustForwardHeader: true
-        authResponseHeaders:
-          - "Remote-Email"
-          - "Remote-User"
-  routers:
-    8-openshell-controller-router-auth:
-      middlewares:
-        - mcpauth-forward
-        # - badger@http   # optional: remove once mcpauth is verified
-    8-openshell-controller-ws-router:
-      middlewares:
-        - mcpauth-forward
-```
-
-**Trade-off — identity vs zero code change:** with `OPENSHELL_CONTROL_AUTH_DISABLED=true` the controller no longer knows *who* the caller is — every authenticated user becomes "operator". That is fine for shared-team use but loses per-user audit, sandbox ownership, and the `sub` claim baked into the session cookie. If per-user identity matters later, swap the password cookie for header-based identity:
-
-- Wire `controlAuth.ts` and `server.mjs:isAuthenticatedUpgrade` to read `Remote-Email` (or whichever header mcpauth forwards) instead of decoding the password JWT.
-- Stop minting the local session cookie; treat the absence of the forwarded identity header as unauthenticated.
-- Drop the `/login`, `/setup-account`, `/forgot-password` routes (or have them no-op when auth is delegated).
-
-**Items to nail down when implementing:**
-
-- Confirm the exact mcpauth forwardAuth path and which cookie / header it consumes (Cloudflare-style `CF_Authorization`? OAuth2 PKCE cookie? See `mcpauth/server/edge_auth.go`).
-- Verify mcpauth's forward-auth endpoint returns 401 (not a 302 redirect) for unauthenticated WebSocket upgrade requests — WebSocket clients cannot follow redirects, so mcpauth must surface its own login flow on a separate HTTP route, the way Pangolin's `badger` already does.
-- Decide whether the redirect target on 401 lives on the controller subdomain or on a dedicated `auth.…` subdomain (cleaner cookie scoping).
-- Register the controller's host as an authorised redirect URI in whichever OAuth provider mcpauth fronts.
-- Audit any controller endpoints that should remain reachable without auth (health checks, etc.) and add a Traefik `priority` override or path exclusion for them.
-
 ## OpenShell And OpenClaw Notes
 
 The dashboard shells out to the OpenShell CLI for several operations:
@@ -272,9 +216,10 @@ The dashboard shells out to the OpenShell CLI for several operations:
 - `openshell list`
 - `openshell sandbox exec`
 - `openshell sandbox delete`
-- `openshell rule get`
-- `openshell rule approve`
-- `openshell rule reject`
+- `openshell policy get`
+- `openshell policy update`
+- `openshell provider create/update/delete/list`
+- `openshell inference set/get/update`
 
 OpenClaw dashboard access is loopback-only inside the host/sandbox context, so the UI uses local proxy routes:
 
@@ -291,7 +236,7 @@ Behind a reverse proxy, route WebSocket upgrades for the dashboard proxy paths t
 
 ## Hermes Notes
 
-With NemoClaw `v0.0.56`, the create flow includes a Fresh Hermes Sandbox option. It uses NemoClaw onboard with `--agent hermes`; the existing Fresh NemoClaw Image and Quick Deploy paths remain OpenClaw-oriented.
+With NemoClaw `v0.0.37`, the create flow includes a Fresh Hermes Sandbox option. It uses NemoClaw onboard with `--agent hermes`; the existing Fresh NemoClaw Image and Quick Deploy paths remain OpenClaw-oriented.
 
 ## Remote Controller Nodes
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Install the OpenShell/NemoClaw versions this dashboard is validated against.
+# Install the OpenShell/NemoClaw revisions this dashboard is validated against.
 
 set -euo pipefail
 
@@ -8,11 +8,11 @@ YELLOW='\033[1;33m'
 RED='\033[0;31m'
 NC='\033[0m'
 
-OPENSHELL_VERSION="${OPENSHELL_VERSION:-v0.0.36}"
+OPENSHELL_VERSION="${OPENSHELL_VERSION:-v0.0.44}"
 OPENSHELL_INSTALL_URL="${OPENSHELL_INSTALL_URL:-https://raw.githubusercontent.com/NVIDIA/OpenShell/main/install.sh}"
-NEMOCLAW_INSTALL_TAG="${NEMOCLAW_INSTALL_TAG:-v0.0.56}"
-NEMOCLAW_ZIP_URL="${NEMOCLAW_ZIP_URL:-https://github.com/NVIDIA/NemoClaw/archive/refs/tags/${NEMOCLAW_INSTALL_TAG}.zip}"
-OPENCLAW_VERSION="${OPENCLAW_VERSION:-2026.5.20}"
+NEMOCLAW_INSTALL_REF="${NEMOCLAW_INSTALL_REF:-${NEMOCLAW_INSTALL_TAG:-main}}"
+NEMOCLAW_SOURCE_URL="${NEMOCLAW_SOURCE_URL:-https://github.com/NVIDIA/NemoClaw.git}"
+OPENCLAW_VERSION="${OPENCLAW_VERSION:-2026.5.22}"
 NEMOCLAW_BASE_IMAGE="${NEMOCLAW_BASE_IMAGE:-ghcr.io/nvidia/nemoclaw/sandbox-base:latest}"
 NEMOCLAW_ACCEPT_THIRD_PARTY_SOFTWARE="${NEMOCLAW_ACCEPT_THIRD_PARTY_SOFTWARE:-1}"
 NEMOCLAW_NON_INTERACTIVE="${NEMOCLAW_NON_INTERACTIVE:-1}"
@@ -37,7 +37,7 @@ Options:
 
 Defaults:
   OPENSHELL_VERSION=$OPENSHELL_VERSION
-  NEMOCLAW_INSTALL_TAG=$NEMOCLAW_INSTALL_TAG
+  NEMOCLAW_INSTALL_REF=$NEMOCLAW_INSTALL_REF
   OPENCLAW_VERSION=$OPENCLAW_VERSION
   NEMOCLAW_BASE_IMAGE=$NEMOCLAW_BASE_IMAGE
   NEMOCLAW_EXPERIMENTAL=$NEMOCLAW_EXPERIMENTAL
@@ -46,8 +46,11 @@ Defaults:
 Environment overrides:
   OPENSHELL_VERSION
   OPENSHELL_INSTALL_URL
-  NEMOCLAW_INSTALL_TAG
-  NEMOCLAW_ZIP_URL
+  NEMOCLAW_INSTALL_REF
+  NEMOCLAW_INSTALL_TAG (legacy alias for NEMOCLAW_INSTALL_REF)
+    In curl pipes, set this on bash or export it first. Example:
+    curl -fsSL https://www.nvidia.com/nemoclaw.sh | NEMOCLAW_INSTALL_TAG=v0.0.56 bash
+  NEMOCLAW_SOURCE_URL
   OPENCLAW_VERSION
   NEMOCLAW_BASE_IMAGE
   NEMOCLAW_ACCEPT_THIRD_PARTY_SOFTWARE
@@ -105,23 +108,6 @@ require_command() {
   command -v "$1" >/dev/null 2>&1 || fail "$1 is required but was not found."
 }
 
-extract_zip() {
-  local zip_path="$1"
-  local dest_dir="$2"
-
-  if command -v unzip >/dev/null 2>&1; then
-    unzip -q "$zip_path" -d "$dest_dir"
-    return
-  fi
-
-  if command -v python3 >/dev/null 2>&1; then
-    python3 -m zipfile -e "$zip_path" "$dest_dir"
-    return
-  fi
-
-  fail "unzip or python3 is required to extract NemoClaw."
-}
-
 install_openshell() {
   require_command curl
   require_command sh
@@ -130,46 +116,33 @@ install_openshell() {
 }
 
 install_nemoclaw() {
-  require_command curl
   require_command sh
+  require_command git
   require_command docker
 
-  local work_dir zip_path source_dir
+  local work_dir source_dir
   work_dir="$(mktemp -d)"
-  zip_path="$work_dir/nemoclaw-${NEMOCLAW_INSTALL_TAG}.zip"
   trap 'rm -rf "$work_dir"' RETURN
+  source_dir="$work_dir/NemoClaw"
 
-  log "Downloading NemoClaw $NEMOCLAW_INSTALL_TAG"
-  curl -LsSf "$NEMOCLAW_ZIP_URL" -o "$zip_path"
-  extract_zip "$zip_path" "$work_dir"
-
-  source_dir="$(find "$work_dir" -maxdepth 1 -type d -name 'NemoClaw-*' | head -n 1)"
-  [[ -n "$source_dir" && -f "$source_dir/install.sh" ]] || fail "Could not find NemoClaw install.sh in downloaded archive."
-
-  # NemoClaw upstream Dockerfile/Dockerfile.base pin Debian package versions
-  # (procps=2:4.0.4-9, e2fsprogs=1.47.2-3+b11, tmux=3.5a-3) even though the
-  # base image is Ubuntu 24.04 noble, where those exact versions don't exist.
-  # The pinned `apt-get install` then fails with exit 100, breaking every
-  # `nemoclaw onboard` on a freshly-deployed VPS. Unpin them so apt picks
-  # whatever's available in noble.
-  for _dockerfile in "$source_dir/Dockerfile" "$source_dir/Dockerfile.base"; do
-    if [[ -f "$_dockerfile" ]]; then
-      sed -i.bak \
-        -e 's/procps=2:4\.0\.4-9/procps/g' \
-        -e 's/e2fsprogs=1\.47\.2-3+b11/e2fsprogs/g' \
-        -e 's/tmux=3\.5a-3/tmux/g' \
-        "$_dockerfile" && rm -f "${_dockerfile}.bak"
-    fi
-  done
+  log "Cloning NemoClaw $NEMOCLAW_INSTALL_REF"
+  git init --quiet "$source_dir"
+  git -C "$source_dir" remote add origin "$NEMOCLAW_SOURCE_URL"
+  if ! git -C "$source_dir" fetch --quiet --depth 1 origin "$NEMOCLAW_INSTALL_REF"; then
+    fail "Requested NemoClaw install ref '$NEMOCLAW_INSTALL_REF' is not available from $NEMOCLAW_SOURCE_URL. Check NEMOCLAW_INSTALL_REF/NEMOCLAW_INSTALL_TAG and try again."
+  fi
+  git -C "$source_dir" -c advice.detachedHead=false checkout --quiet --detach FETCH_HEAD
+  [[ -n "$source_dir" && -f "$source_dir/install.sh" ]] || fail "Could not find NemoClaw install.sh in source checkout."
 
   if [[ -z "${NVIDIA_API_KEY:-}" ]]; then
     warn "NVIDIA_API_KEY is not set. NemoClaw may require it for non-local provider setup."
   fi
 
-  log "Installing NemoClaw $NEMOCLAW_INSTALL_TAG"
+  log "Installing NemoClaw $NEMOCLAW_INSTALL_REF"
   (
     cd "$source_dir"
-    NEMOCLAW_INSTALL_TAG="$NEMOCLAW_INSTALL_TAG" \
+    NEMOCLAW_INSTALL_REF="$NEMOCLAW_INSTALL_REF" \
+      NEMOCLAW_INSTALL_TAG="$NEMOCLAW_INSTALL_REF" \
       NEMOCLAW_ACCEPT_THIRD_PARTY_SOFTWARE="$NEMOCLAW_ACCEPT_THIRD_PARTY_SOFTWARE" \
       NEMOCLAW_NON_INTERACTIVE="$NEMOCLAW_NON_INTERACTIVE" \
       NEMOCLAW_EXPERIMENTAL="$NEMOCLAW_EXPERIMENTAL" \
@@ -188,7 +161,7 @@ install_nemoclaw() {
 
 echo -e "${GREEN}=== Versioned OpenShell/NemoClaw Installer ===${NC}"
 echo "OpenShell: $OPENSHELL_VERSION"
-echo "NemoClaw:  $NEMOCLAW_INSTALL_TAG"
+echo "NemoClaw:  $NEMOCLAW_INSTALL_REF"
 echo "OpenClaw:  $OPENCLAW_VERSION"
 echo "Base image: $NEMOCLAW_BASE_IMAGE"
 echo "Provider:   $NEMOCLAW_PROVIDER (experimental=$NEMOCLAW_EXPERIMENTAL)"

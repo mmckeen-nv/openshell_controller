@@ -46,7 +46,7 @@ const providerTypeOptions = [
 ]
 
 const OLLAMA_PROVIDER_NAME = "ollama-local"
-const OLLAMA_BASE_URL = "http://host.docker.internal:11434/v1"
+const OLLAMA_BASE_URL = "http://127.0.0.1:11434/v1"
 const DEFAULT_VLLM_CONTAINER = "vllm-bigboy"
 const DEFAULT_VLLM_IMAGE = "nvcr.io/nvidia/vllm:26.03.post1-py3"
 const DEFAULT_VLLM_MODEL = "vllm-local"
@@ -467,6 +467,11 @@ export default function InferenceEndpointPanel() {
       setProviders(Array.isArray(data.providers) ? data.providers : [])
       if (data.gateway?.provider) setName(data.gateway.provider)
       if (data.gateway?.model) setModel(data.gateway.model)
+      if (data.gateway?.provider?.toLowerCase().includes("ollama")) {
+        setType("openai")
+        setBaseUrl(OLLAMA_BASE_URL)
+        setCredentialKey("OLLAMA_API_KEY")
+      }
       if (data.gateway?.provider && isVllmEndpoint(data.gateway.provider, "")) setType("vllm")
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Failed to load inference configuration")
@@ -516,7 +521,7 @@ export default function InferenceEndpointPanel() {
     setType("openai")
     setModel(modelName)
     setBaseUrl(ollamaOpenAiBaseUrl(item))
-    setCredentialKey("OPENAI_API_KEY")
+    setCredentialKey("OLLAMA_API_KEY")
     setApiKey("")
     setRoute("gateway")
     setNoVerify(true)
@@ -530,6 +535,7 @@ export default function InferenceEndpointPanel() {
     setCredentialKey(provider.credentialKeys[0] || "OPENAI_API_KEY")
     if (provider.name.toLowerCase().includes("ollama")) {
       setBaseUrl(OLLAMA_BASE_URL)
+      setCredentialKey(provider.credentialKeys[0] || "OLLAMA_API_KEY")
       setApiKey("")
     }
     setMessage(`Loaded ${provider.name}. Enter a model and save to make it active.`)

@@ -4,7 +4,7 @@ import { HOST_PATH, OPENCLAW_BIN, OPENSHELL_BIN, hostCommandEnv } from "./hostCo
 import { getDefaultOpenClawInstance, getOpenClawDashboardPortForSandbox, resolveOpenClawInstance } from "./openclawInstances"
 
 const execFileAsync = promisify(execFile)
-const OPENSHELL_GATEWAY = process.env.OPENSHELL_GATEWAY || "openshell"
+const OPENSHELL_GATEWAY = process.env.OPENSHELL_GATEWAY?.trim() || undefined
 const OPENSHELL_NAMESPACE = "agent-sandbox-system"
 const SANDBOX_DASHBOARD_REMOTE_PORT = Number.parseInt(process.env.OPENCLAW_SANDBOX_DASHBOARD_REMOTE_PORT || "18789", 10)
 

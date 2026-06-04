@@ -44,6 +44,7 @@ interface LiveTerminalSession {
   sandboxId: string
   dashboardSessionId: string
   replay?: string
+  transport?: string
   websocketUrl: string
   sshHostAlias?: string
   reconnectKey?: string
@@ -199,6 +200,7 @@ function OperatorTerminalInner() {
         sandboxId: result.sandboxId,
         dashboardSessionId: result.dashboardSessionId || dashboardSessionId,
         replay: result.replay,
+        transport: result.transport,
         websocketUrl: result.websocketUrl,
         sshHostAlias: result.sshHostAlias,
         reconnectKey: String(reconnectCounterRef.current),
@@ -307,9 +309,10 @@ function OperatorTerminalInner() {
 
     socket.addEventListener('open', () => {
       setTerminalState('connected')
+      const transportLabel = liveSession.transport ? ` via ${liveSession.transport}` : ''
       setTerminalStatus(shouldLaunchHermes
-        ? `Live terminal connected for ${liveSession.sandboxId}; launching Hermes…`
-        : `Live terminal connected for ${liveSession.sandboxId}.`)
+        ? `Live terminal connected for ${liveSession.sandboxId}${transportLabel}; launching Hermes…`
+        : `Live terminal connected for ${liveSession.sandboxId}${transportLabel}.`)
       try {
         fitAddonRef.current?.fit()
       } catch {

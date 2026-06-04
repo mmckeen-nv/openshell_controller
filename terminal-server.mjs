@@ -87,24 +87,49 @@ function shellEscape(value) {
   return `'${String(value).replace(/'/g, `'"'"'`)}'`
 }
 
+function normalizeSandboxId(value) {
+  const sandboxId = String(value || '').trim() || 'host'
+  if (!/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/.test(sandboxId)) {
+    throw new Error('Invalid sandboxId. Use letters, numbers, dot, underscore, or dash only.')
+  }
+  return sandboxId
+}
+
 function openshellBin() {
   return process.env.OPENSHELL_BIN || 'openshell'
 }
 
 function buildAttachCommand(sandboxId) {
   if (process.env.OPENSHELL_TERMINAL_ATTACH_TEMPLATE) {
-    const alias = `openshell-${sandboxId}`
-    return process.env.OPENSHELL_TERMINAL_ATTACH_TEMPLATE.replaceAll('{sandboxId}', sandboxId).replaceAll('{alias}', alias)
+    const safeSandboxId = shellEscape(normalizeSandboxId(sandboxId))
+    const safeAlias = shellEscape(`openshell-${normalizeSandboxId(sandboxId)}`)
+    return process.env.OPENSHELL_TERMINAL_ATTACH_TEMPLATE.replaceAll('{sandboxId}', safeSandboxId).replaceAll('{alias}', safeAlias)
   }
   return shellForPlatform()
 }
 
+function buildSessionCommand(sandboxId) {
+  if (sandboxId && sandboxId !== 'host' && process.env.OPENSHELL_TERMINAL_ATTACH_TEMPLATE) {
+    return buildAttachCommand(sandboxId)
+  }
+  return `${shellForPlatform()} -i`
+}
+
+function buildSessionExec(sandboxId) {
+  const sessionCommand = buildSessionCommand(sandboxId)
+  if (sandboxId && sandboxId !== 'host' && process.env.OPENSHELL_TERMINAL_ATTACH_TEMPLATE) {
+    return `exec ${shellForPlatform()} -lc ${shellEscape(sessionCommand)}`
+  }
+  return `exec ${sessionCommand}`
+}
+
 function buildBootstrapShell(sandboxId) {
+  const sessionExec = buildSessionExec(sandboxId)
   return [
     `export PATH=${shellEscape(effectivePath())}`,
     `export OPENSHELL_SANDBOX_ID=${shellEscape(sandboxId)}`,
     `export PS1='[operator:${sandboxId || 'host'}] \\u@\\h:\\w\\$ '`,
-    `exec ${shellForPlatform()} -i`,
+    sessionExec,
   ].join('; ')
 }
 
@@ -261,12 +286,23 @@ function createStreamTransport(sandboxId) {
 }
 
 function createTransport(sandboxId) {
-  return runtime.mode === 'pty' ? createPtyTransport(sandboxId) : createStreamTransport(sandboxId)
+  if (runtime.mode !== 'pty') return createStreamTransport(sandboxId)
+
+  try {
+    return createPtyTransport(sandboxId)
+  } catch (error) {
+    if ((process.env.TERMINAL_TRANSPORT || 'auto').trim().toLowerCase() === 'pty') {
+      throw error
+    }
+
+    console.warn(`terminal pty spawn failed; falling back to stream transport: ${error instanceof Error ? error.message : String(error)}`)
+    return createStreamTransport(sandboxId)
+  }
 }
 
 function createSessionIdentity(sandboxId, dashboardSessionId) {
   return {
-    sandboxId,
+    sandboxId: normalizeSandboxId(sandboxId),
     dashboardSessionId: dashboardSessionId && dashboardSessionId.trim() ? dashboardSessionId.trim() : 'dashboard-host',
   }
 }
@@ -280,7 +316,7 @@ function createSession(identity) {
     id,
     sandboxId: identity.sandboxId,
     dashboardSessionId: identity.dashboardSessionId,
-    attachCommand: buildAttachCommand(identity.sandboxId),
+    attachCommand: buildSessionCommand(identity.sandboxId),
     transport,
     createdAt: Date.now(),
     updatedAt: Date.now(),
@@ -330,7 +366,7 @@ function serializeSession(session) {
     dashboardSessionId: session.dashboardSessionId,
     attachCommand: session.attachCommand,
     replay: session.buffer,
-    transport: runtime.mode,
+    transport: session.transport.kind,
     clientReady: session.clientReady,
     initialStreamSettled: session.initialStreamSettled,
   }
@@ -356,7 +392,7 @@ const server = http.createServer((req, res) => {
     req.on('end', () => {
       try {
         const parsed = body ? JSON.parse(body) : {}
-        const sandboxId = typeof parsed.sandboxId === 'string' && parsed.sandboxId.trim() ? parsed.sandboxId.trim() : 'host'
+        const sandboxId = normalizeSandboxId(parsed.sandboxId)
         const requestedSessionId = typeof parsed.sessionId === 'string' ? parsed.sessionId.trim() : ''
         const dashboardSessionId = typeof parsed.dashboardSessionId === 'string' ? parsed.dashboardSessionId.trim() : 'dashboard-host'
         const identity = createSessionIdentity(sandboxId, dashboardSessionId)
@@ -364,7 +400,9 @@ const server = http.createServer((req, res) => {
         res.writeHead(200, { 'Content-Type': 'application/json' })
         res.end(JSON.stringify(serializeSession(session)))
       } catch (error) {
-        res.writeHead(500, { 'Content-Type': 'application/json' })
+        const message = error instanceof Error ? error.message : 'session init failed'
+        const statusCode = message.startsWith('Invalid sandboxId') ? 400 : 500
+        res.writeHead(statusCode, { 'Content-Type': 'application/json' })
         res.end(JSON.stringify({ ok: false, error: error instanceof Error ? error.message : 'session init failed' }))
       }
     })
@@ -380,9 +418,15 @@ const wss = new WebSocketServer({ server, path: '/ws' })
 wss.on('connection', (socket, req) => {
   const url = new URL(req.url || '/', `http://${req.headers.host || `${HOST}:${PORT}`}`)
   const sessionId = url.searchParams.get('sessionId') || ''
-  const sandboxId = url.searchParams.get('sandboxId') || 'host'
   const dashboardSessionId = url.searchParams.get('dashboardSessionId') || 'dashboard-host'
-  const identity = createSessionIdentity(sandboxId, dashboardSessionId)
+  let identity
+  try {
+    identity = createSessionIdentity(url.searchParams.get('sandboxId') || 'host', dashboardSessionId)
+  } catch (error) {
+    socket.send(JSON.stringify({ type: 'error', error: error instanceof Error ? error.message : 'invalid sandboxId' }))
+    socket.close()
+    return
+  }
   const session = getOrCreateSession(sessionId, identity)
   session.sockets.add(socket)
   session.updatedAt = Date.now()
@@ -394,7 +438,7 @@ wss.on('connection', (socket, req) => {
     dashboardSessionId: session.dashboardSessionId,
     attachCommand: session.attachCommand,
     replay: session.buffer,
-    transport: runtime.mode,
+    transport: session.transport.kind,
     clientReady: session.clientReady,
     initialStreamSettled: session.initialStreamSettled,
   }))

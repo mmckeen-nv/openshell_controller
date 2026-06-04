@@ -3,11 +3,15 @@ import { execOpenShell, normalizeSandboxPhase, resolveSandboxRef } from "@/app/l
 import { listBackupCatalog } from "@/app/lib/backupCatalog"
 import { getNemoClawDoctorReport } from "@/app/lib/nemoclawCli"
 
+function stripAnsi(value: string) {
+  return value.replace(/\u001b\[[0-9;]*m/g, "")
+}
+
 function parseField(output: string, label: string) {
   const normalizedLabel = label.toLowerCase()
   const line = output
     .split(/\r?\n/)
-    .map((entry) => entry.trim())
+    .map((entry) => stripAnsi(entry).trim())
     .find((entry) => entry.toLowerCase().startsWith(`${normalizedLabel}:`))
 
   return line ? line.slice(label.length + 1).trim() : null

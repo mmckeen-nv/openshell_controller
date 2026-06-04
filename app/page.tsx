@@ -8,6 +8,7 @@ import HelpPanel from './components/HelpPanel'
 import WizardPanel from './components/WizardPanel'
 import McpConfigurationPanel from './components/McpConfigurationPanel'
 import LiveTelemetryBar from './components/LiveTelemetryBar'
+import ActivityPanel from './components/ActivityPanel'
 import { useSandboxInventory } from './hooks/useSandboxInventory'
 import {
   createHydrationSafeDashboardSessionState,
@@ -292,6 +293,7 @@ export default function Dashboard() {
                   </p>
                 </div>
                 <ConfigurationPanel sandboxId="new-sandbox" mode="create" onCreateSuccess={handleCreateSuccess} />
+                <ActivityPanel />
               </div>
             ) : isDestroyMode ? (
               <div className="space-y-6">
@@ -399,6 +401,10 @@ export default function Dashboard() {
                     {lifecycleMessage}
                   </div>
                 )}
+
+                <div className="mb-6">
+                  <ActivityPanel />
+                </div>
 
                 {inventoryEnabled && loading ? (
                   <div className="flex items-center justify-center h-64" data-testid="inventory-loading-state">
