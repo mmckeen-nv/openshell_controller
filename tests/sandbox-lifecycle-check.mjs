@@ -112,7 +112,7 @@ assert.match(createRouteSource, /NEMOCLAW_PROVIDER = "nim-local"/, 'blueprint cr
 assert.match(createRouteSource, /NEMOCLAW_PROVIDER_KEY = apiKey/, 'blueprint create must pass NVIDIA API keys through provider env without changing NemoClaw')
 assert.match(versionedInstallerSource, /OPENSHELL_VERSION="\$\{OPENSHELL_VERSION:-v0\.0\.44\}"/, 'versioned installer must default to the OpenShell release supported by current NemoClaw main')
 assert.match(versionedInstallerSource, /NEMOCLAW_INSTALL_REF="\$\{NEMOCLAW_INSTALL_REF:-\$\{NEMOCLAW_INSTALL_TAG:-main\}\}"/, 'versioned installer must track the current NemoClaw main ref by default while preserving the legacy tag override')
-assert.match(versionedInstallerSource, /OPENCLAW_VERSION="\$\{OPENCLAW_VERSION:-2026\.5\.22\}"/, 'versioned installer must pin the current NemoClaw-compatible OpenClaw base image version')
+assert.match(versionedInstallerSource, /OPENCLAW_VERSION="\$\{OPENCLAW_VERSION:-2026\.5\.27\}"/, 'versioned installer must pin the current NemoClaw-compatible OpenClaw base image version')
 assert.match(versionedInstallerSource, /git -C "\$source_dir" fetch[\s\S]*"\$NEMOCLAW_INSTALL_REF"/, 'versioned installer must fetch NemoClaw by git ref so branch heads and tags both work')
 assert.match(versionedInstallerSource, /docker build[\s\S]*Dockerfile\.base[\s\S]*--build-arg "OPENCLAW_VERSION=\$OPENCLAW_VERSION"[\s\S]*"\$source_dir"/, 'versioned installer must rebuild the stock NemoClaw base image with the pinned OpenClaw version')
 assert.doesNotMatch(createRouteSource, /repairOpenClawRuntimePolicy|runtimePolicyRepair/, 'sandbox create must not mutate OpenShell filesystem policy for OpenClaw')
