@@ -403,6 +403,8 @@ The controller also accepts an OpenShell config-file form at `~/.config/openshel
 
 Those values are translated into `OPENSHELL_GATEWAY_HOST`, `OPENSHELL_GATEWAY_PORT`, and `OPENSHELL_GATEWAY_URL` for controller-launched OpenShell/NemoClaw child processes.
 
+When the host shell has `HTTP_PROXY`/`HTTPS_PROXY` set, controller-launched OpenShell/NemoClaw commands also augment `NO_PROXY`/`no_proxy` for loopback, container-host aliases, and `inference.local`. This mirrors NemoClaw's current host-subprocess proxy bypass behavior and avoids routing local gateway or managed inference traffic through a workstation proxy.
+
 ## Security Limitations
 
 This is not production hardened.

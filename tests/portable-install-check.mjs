@@ -75,6 +75,9 @@ assert.match(versionedInstallSource, /NVIDIA_API_KEY="\$\{NVIDIA_API_KEY:-\}"/, 
 
 assert.match(hostCommandsSource, /export const HOST_PATH/, 'host command resolution must centralize PATH construction')
 assert.match(hostCommandsSource, /OPENSHELL_CONTROL_VENV/, 'host command resolution must include the installer-managed virtual environment')
+assert.match(hostCommandsSource, /function proxyBypassEnv\(\)/, 'host command env must augment NO_PROXY for controller-launched OpenShell/NemoClaw subprocesses')
+assert.match(hostCommandsSource, /"inference\.local"/, 'host command env must bypass host HTTP proxies for OpenShell-managed inference.local')
+assert.match(hostCommandsSource, /\.\.\.proxyBypassEnv\(\)/, 'host command env must apply proxy bypasses before launching host commands')
 assert.match(hostCommandsSource, /\.venv\/bin/, 'host command resolution must include the default project virtual environment')
 assert.match(hostCommandsSource, /\.nemoclaw\/source\/bin\/nemoclaw\.js/, 'host command resolution must support standard ~/.nemoclaw installs')
 assert.match(hostCommandsSource, /\.nemoclaw\/source\/scripts\/setup\.sh/, 'host command resolution must support legacy ~/.nemoclaw setup workflows')
