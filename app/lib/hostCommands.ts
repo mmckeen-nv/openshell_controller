@@ -124,6 +124,39 @@ function stringConfigValue(value: unknown) {
   return undefined
 }
 
+function proxyBypassEnv() {
+  const hasProxy = Boolean(process.env.HTTP_PROXY || process.env.HTTPS_PROXY || process.env.http_proxy || process.env.https_proxy)
+  if (!hasProxy) return {}
+
+  const requiredBypasses = [
+    "localhost",
+    "127.0.0.1",
+    "host.docker.internal",
+    "host.containers.internal",
+    "::1",
+    "0.0.0.0",
+    "inference.local",
+  ]
+
+  const extend = (value: string | undefined) => {
+    const parts = (value || "")
+      .split(",")
+      .map((entry) => entry.trim())
+      .filter(Boolean)
+
+    for (const host of requiredBypasses) {
+      if (!parts.includes(host)) parts.push(host)
+    }
+
+    return parts.join(",")
+  }
+
+  return {
+    NO_PROXY: extend(process.env.NO_PROXY),
+    no_proxy: extend(process.env.no_proxy),
+  }
+}
+
 function readOpenShellGatewayAddressConfig() {
   const configDir = OPENSHELL_XDG_CONFIG_HOME ? path.join(OPENSHELL_XDG_CONFIG_HOME, "openshell") : ""
   const candidates = unique([
@@ -173,6 +206,7 @@ export function hostCommandEnv(extra: Record<string, string | undefined> = {}) {
     ...(OPENSHELL_HOME ? { HOME: OPENSHELL_HOME } : {}),
     ...(OPENSHELL_XDG_CONFIG_HOME ? { XDG_CONFIG_HOME: OPENSHELL_XDG_CONFIG_HOME } : {}),
     ...openshellGatewayAddressEnv(),
+    ...proxyBypassEnv(),
     PATH: HOST_PATH,
     NO_COLOR: "1",
     CLICOLOR: "0",
