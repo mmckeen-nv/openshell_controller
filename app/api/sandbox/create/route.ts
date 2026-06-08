@@ -528,6 +528,7 @@ async function runCreateCommandUntilReady(file: string, args: string[], env: Nod
     completed: boolean
     timedOut: boolean
     forcedReady: boolean
+    readyVerification?: SandboxVerification
     exitCode: number | null
     signal: NodeJS.Signals | null
     stdout: string
@@ -548,6 +549,7 @@ async function runCreateCommandUntilReady(file: string, args: string[], env: Nod
       completed: boolean
       timedOut: boolean
       forcedReady: boolean
+      readyVerification?: SandboxVerification
       exitCode: number | null
       signal: NodeJS.Signals | null
       stdout: string
@@ -610,6 +612,7 @@ async function runCreateCommandUntilReady(file: string, args: string[], env: Nod
               completed: false,
               timedOut: false,
               forcedReady: true,
+              readyVerification: verification,
               exitCode: null,
               signal: "SIGTERM",
               stdout: stdout.trim(),
@@ -1012,7 +1015,14 @@ export async function POST(request: Request) {
         "nemoclaw-start",
       ], env, sandboxName, 120000, 2000)
 
-      const readiness = await waitForSandboxReady(sandboxName, 90000, 2000)
+      const readiness = createAttempt.readyVerification?.verified
+        ? {
+            verified: true as const,
+            verification: createAttempt.readyVerification,
+            attempts: 0,
+            elapsedMs: 0,
+          }
+        : await waitForSandboxReady(sandboxName, 90000, 2000)
       const verification = readiness.verification ?? {
         verified: false,
         summary: "Sandbox readiness polling produced no verification result.",
