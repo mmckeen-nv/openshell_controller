@@ -2,6 +2,7 @@
 import { useEffect, useState } from 'react'
 import type { ReactNode } from 'react'
 import ConfigurationPanel from './ConfigurationPanel'
+import HermesRemotePanel from './HermesRemotePanel'
 import SandboxArchivePanel from './SandboxArchivePanel'
 import SandboxFilesPanel from './SandboxFilesPanel'
 import SandboxInferencePanel from './SandboxInferencePanel'
@@ -29,7 +30,7 @@ interface SandboxListProps {
   dashboardSessionId: string
 }
 
-type DrawerKey = 'operations' | 'files' | 'inference' | 'policy' | 'archive' | 'mcp'
+type DrawerKey = 'operations' | 'files' | 'inference' | 'policy' | 'archive' | 'mcp' | 'hermesRemote'
 type McpServerAccess = {
   id: string
   name: string
@@ -239,6 +240,7 @@ const [restartInProgress, setRestartInProgress] = useState(false)
     policy: false,
     archive: false,
     mcp: false,
+    hermesRemote: false,
   })
   const [telemetry, setTelemetry] = useState<TelemetryData>({
     cpu: 0, memory: 0, disk: 0, timestamp: new Date().toISOString()
@@ -771,6 +773,17 @@ const [restartInProgress, setRestartInProgress] = useState(false)
                   </div>
                 </div>
               </DrawerSection>
+
+              {selectedSandboxIsHermes && (
+                <DrawerSection
+                  title="Remote Desktop Access"
+                  summary="Connect the Hermes Desktop app to this sandbox over a public URL."
+                  open={openDrawers.hermesRemote}
+                  onToggle={() => toggleDrawer('hermesRemote')}
+                >
+                  <HermesRemotePanel sandboxName={selectedSandbox.name} />
+                </DrawerSection>
+              )}
 
               <DrawerSection
                 title="File Transfer"

@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "
 import path from "node:path"
 import { promisify } from "node:util"
 import { inspectSandbox, prebuildHermesDashboardWebUi, resolveSandboxRef } from "@/app/lib/openshellHost"
+import { exposeHermesRemote, hermesRemoteMode } from "@/app/lib/hermesRemote"
 import { recordActivity } from "@/app/lib/activityLog"
 import { repairOpenClawExecApprovalsFile } from "@/app/lib/sandboxPrivilegedFiles"
 import { exportSandboxPolicyToFile as exportPolicy } from "@/app/lib/sandboxCreate/policy"
@@ -997,6 +998,12 @@ export async function POST(request: Request) {
             error: error instanceof Error ? error.message : "Hermes dashboard web UI pre-build failed",
           }))
         : null
+      // Expose the dashboard for the Hermes Desktop app (HERMES_REMOTE_MODE
+      // gates this; non-fatal so a proxy/Traefik hiccup never fails creation —
+      // the UI offers a retry via POST /api/sandbox/<name>/hermes-remote).
+      const hermesRemote = created && agent === "hermes" && hermesRemoteMode() !== "off"
+        ? await exposeHermesRemote(sandboxName)
+        : null
       const forcedReady = "forcedReady" in result ? result.forcedReady : false
       console.log(
         `[sandbox/create] request:complete sandbox=${sandboxName} created=${created} agent=${agent} forcedReady=${forcedReady} readinessAttempts=${readiness.attempts} deviceApproval=${deviceApproval?.approved ?? false} elapsedMs=${elapsedMs(requestStartedAt)}`,
@@ -1040,6 +1047,7 @@ export async function POST(request: Request) {
         deviceApproval,
         gatewayToken,
         hermesDashboardBuild,
+        hermesRemote,
         stdout: result.stdout,
         stderr: result.stderr,
         note: created
