@@ -35,6 +35,18 @@ if nsenter_sandbox "$CONTAINER" "$GW_PID" curl -sf -m 4 "http://127.0.0.1:${PORT
   exit 0
 fi
 
+# ── Hermes >=0.16 required (HERMES_DASHBOARD_SESSION_TOKEN pinning) ─
+# NemoClaw's base image ships 0.14.x; upgrade in place (proven recipe in
+# upgrade-hermes.sh). Re-resolve the gateway PID afterwards — the upgrade
+# restarts the gateway, which changes its PID and netns identity.
+current=$(docker exec "$CONTAINER" /opt/hermes/.venv/bin/hermes --version 2>/dev/null | head -1 | grep -oE 'v[0-9]+\.[0-9]+' | tr -d v)
+if [ -z "$current" ] || ! python3 -c "import sys; sys.exit(0 if tuple(map(int,'$current'.split('.'))) >= (0,16) else 1)"; then
+  log "hermes ${current:-unknown} < 0.16 — upgrading in-sandbox"
+  "$SCRIPT_DIR/upgrade-hermes.sh" "$SANDBOX" || die "hermes upgrade failed"
+  GW_PID=$(find_gateway_pid "$CONTAINER")
+  [ -n "$GW_PID" ] || die "gateway missing after hermes upgrade"
+fi
+
 # ── Hermes >=0.16 requires API_SERVER_KEY for the gateway api_server ─
 # (0.14 starts without it; the key is harmless there.) The config dir is
 # integrity-hash-pinned, so after editing .env we re-pin the hash exactly the
