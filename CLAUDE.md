@@ -162,6 +162,8 @@ git push origin --delete "sync/upstream-$DATE"
 | Upstream added activity/telemetry calls inside our refactored sections | Keep upstream's call but place it inside our refactored control flow (e.g. inside our readiness re-poll check, not before it) |
 | Upstream changed `middleware.ts` to add a new public path | Add it to our `PUBLIC_PATHS` array; keep our dual-auth dispatch |
 | Upstream changed cookie names | Don't follow them — our cookie is `oauth_session`. Keep the legacy fallback. |
+| Upstream changed `app/api/sandbox/create/route.ts` or `delete/route.ts` near our hermes-remote hooks | Take upstream's changes, then re-apply our hooks: in create, the `hermesRemote` block (after `hermesDashboardBuild`) + import + response field; in delete, the `unexposeHermesRemote` teardown block (before `deleteSandbox`) + import + response field. All hermes-remote logic lives in `app/lib/hermesRemote.ts` + `scripts/hermes-remote/` (ours only, never conflict). |
+| Upstream changed `app/components/SandboxList.tsx` | Keep upstream; re-apply our 4 additions: `HermesRemotePanel` import, `'hermesRemote'` in `DrawerKey` + state init, and the "Remote Desktop Access" `<DrawerSection>` before File Transfer. |
 
 ---
 
