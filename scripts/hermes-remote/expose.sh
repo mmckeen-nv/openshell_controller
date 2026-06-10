@@ -196,9 +196,12 @@ code=$(curl -s -m 12 -o /dev/null -w '%{http_code}' -H "X-Hermes-Session-Token: 
 code=$(curl -s -m 12 -o /dev/null -w '%{http_code}' -H "X-Hermes-Session-Token: bogus" "${PUBLIC_URL}/api/config")
 [ "$code" = "401" ] || die "bogus token returned $code (expected 401) — auth gate not engaged"
 if [ "$MODE" = "desktop" ]; then
-  # The SPA shell must NOT be reachable (it leaks the session token).
-  code=$(curl -s -m 12 -o /dev/null -w '%{http_code}' "${PUBLIC_URL}/")
-  [ "$code" = "404" ] || die "SPA shell reachable in desktop mode (got $code, expected 404) — token would leak"
+  # The SPA shell must NOT be served (its HTML embeds the session token).
+  # Non-API paths fall through to other routers (typically the controller's
+  # login redirect) — any response is fine as long as no token appears.
+  if curl -sL -m 12 "${PUBLIC_URL}/" | grep -q "__HERMES_SESSION_TOKEN__"; then
+    die "SPA shell reachable in desktop mode — session token leaks in HTML"
+  fi
 fi
 
 log "exposed '$SANDBOX' (${MODE}) at ${PUBLIC_URL}"
