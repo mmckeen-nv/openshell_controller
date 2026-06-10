@@ -162,6 +162,8 @@ git push origin --delete "sync/upstream-$DATE"
 | Upstream added activity/telemetry calls inside our refactored sections | Keep upstream's call but place it inside our refactored control flow (e.g. inside our readiness re-poll check, not before it) |
 | Upstream changed `middleware.ts` to add a new public path | Add it to our `PUBLIC_PATHS` array; keep our dual-auth dispatch |
 | Upstream changed cookie names | Don't follow them — our cookie is `oauth_session`. Keep the legacy fallback. |
+| Upstream changed `app/api/sandbox/create/route.ts` or `delete/route.ts` near our hermes-remote hooks | Take upstream's changes, then re-apply our hooks: in create, the `hermesRemote` block (after `hermesDashboardBuild`) + import + response field; in delete, the `unexposeHermesRemote` teardown block (before `deleteSandbox`) + import + response field. All hermes-remote logic lives in `app/lib/hermesRemote.ts` + `scripts/hermes-remote/` (ours only, never conflict). |
+| Upstream changed `app/components/SandboxList.tsx` | Keep upstream; re-apply our 4 additions: `HermesRemotePanel` import, `'hermesRemote'` in `DrawerKey` + state init, and the "Remote Desktop Access" `<DrawerSection>` before File Transfer. |
 
 ---
 
@@ -453,7 +455,50 @@ before declaring the bump done.**
 
 ---
 
-## 9. Useful one-liners
+## 9. Hermes Desktop remote-gateway exposure (multi-tenant)
+
+Hermes sandboxes can be driven by the Hermes Desktop app over a public
+URL: `https://<controller-host>/hermes/<sandbox>`. Implemented in
+`scripts/hermes-remote/` + `app/lib/hermesRemote.ts`; wired into sandbox
+create/delete and surfaced in the UI ("Remote Desktop Access" drawer).
+
+Mode is `HERMES_REMOTE_MODE` in `.env.local`: `desktop` (default), `web`,
+or `off`.
+
+Architecture facts (validated 2026-06-10; full detail in
+`memory/project_hermes_remote_desktop_poc.md`):
+
+- **Ports**: in-sandbox dashboard port == host bind port == `21000 +
+  hash(name) % 2000` (same hash as `server.mjs` `hashSandboxId`; OpenClaw
+  owns 19000–20999). `openshell forward` cannot remap ports, hence the
+  shared value.
+- **Bind IP**: forwards bind on Traefik's compose-bridge gateway
+  (discovered via `docker inspect`, typically `172.18.0.1`) — NOT docker0,
+  and `host.docker.internal` does not resolve in this stack's Traefik.
+- **Auth**: Hermes' session-token gate, pinned per sandbox via
+  `HERMES_DASHBOARD_SESSION_TOKEN` (>=0.16). In `desktop` mode the Traefik
+  rule forwards only `/hermes/<sb>/api/*` so the token-embedding SPA HTML
+  is never public; the token is distributed via the controller UI/API
+  (`GET/POST /api/sandbox/<sb>/hermes-remote`, OAuth users gated by
+  sandbox access). The route intentionally bypasses Pangolin — the
+  desktop's `/api/status` probe cannot follow SSO redirects.
+- **Supervision**: `hermes-remote-forward@<sb>.service` (systemd,
+  Restart=always) owns the forward; `hermes-remote-watchdog.timer` re-runs
+  `launch.sh` every 2 min (sandbox restarts change the gateway PID/netns,
+  killing the dashboard). All units are self-installed by `expose.sh`.
+- **Version rule**: Hermes Desktop and the in-sandbox `hermes-agent` MUST
+  be the same minor version (the desktop calls endpoints that older
+  backends lack, and old gateways reject new TUIs). Hermes >=0.16 also
+  requires `API_SERVER_KEY` in the sandbox `.env`; `launch.sh` provisions
+  it and re-pins the NemoClaw config-integrity hash.
+
+Don'ts: don't hand-edit `/etc/komodo/.../rules/hermes-remote-*.yml` (owned
+by `expose.sh`); don't serve the SPA shell publicly in `desktop` mode (the
+expose script hard-fails if `GET /` returns non-404).
+
+---
+
+## 10. Useful one-liners
 
 ```bash
 # How divergent are we from upstream?
