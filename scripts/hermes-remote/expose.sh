@@ -114,7 +114,10 @@ Environment=HOME=/root
 EnvironmentFile=/etc/openshell/hermes-remote/%i.env
 ExecStart=/usr/bin/openshell forward start ${HERMES_FORWARD_BIND}:${HERMES_FORWARD_PORT} %i
 Restart=always
-RestartSec=5
+# 30s, not 5s: when the sandbox is unrecoverable (e.g. plaintext-era
+# supervisor orphaned by an mTLS flip) a 5s loop hammers the gateway
+# and floods the journal indefinitely (StartLimitIntervalSec=0).
+RestartSec=30
 StartLimitIntervalSec=0
 
 [Install]

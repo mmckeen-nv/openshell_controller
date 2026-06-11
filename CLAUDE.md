@@ -524,6 +524,12 @@ when the sandbox is in Provisioning state. This happens after a
 controller restart re-arms mTLS on the openshell-gateway (the
 ensure-mtls hook runs on every service start). Only fix: recreate the
 sandbox. Fresh deployments are immune (sandbox created after mTLS armed).
+Since 2026-06-11 the ensure-mtls script (`/usr/local/sbin/
+openshell-gateway-ensure-mtls.sh`, VPS-only) **skips the mTLS flip when
+any `openshell-*` containers are running** and logs a WARNING instead —
+flipping with live sandboxes orphans their plaintext supervisors
+permanently. To complete the migration: delete all sandboxes, restart
+the controller, recreate.
 
 **4. Hermes gateway not running (#2478)**
 `launch.sh` dies with "no 'hermes gateway run' process". Root cause:
@@ -616,6 +622,30 @@ After NemoClaw onboard, the gateway runs in plaintext with
 `OPENSHELL_DISABLE_GATEWAY_AUTH=true`. The ensure-mtls script detects the
 mismatch by checking the CLI **registration URL** (https:// vs http://),
 not gateway.env flags — because NVIDIA's install.sh sets the same flags.
+
+Since 2026-06-11 the script refuses to flip while `openshell-*`
+containers are running (see §9 troubleshooting item 3) — the flip used
+to silently brick every live sandbox.
+
+### needrestart vs the controller (incident 2026-06-11)
+
+Ubuntu's `unattended-upgrades` + `needrestart` restarts every service
+linked against an upgraded library — **once per upgraded package**. A
+systemd/libssl upgrade restarted `openshell-controller` 5+ times in
+60 s, tripping `StartLimitBurst=5` and leaving the service permanently
+`failed` (and the restarts triggered the ensure-mtls flip that bricked
+the sandboxes above). Every controller VPS needs:
+
+```bash
+cat > /etc/needrestart/conf.d/openshell-controller.conf <<'EOF'
+$nrconf{override_rc}{qr(^openshell-controller\.service$)} = 0;
+EOF
+```
+
+After an unattended upgrade, restart the controller manually
+(`systemctl restart openshell-controller`). Recovery from the failed
+state is `systemctl reset-failed openshell-controller && systemctl
+start openshell-controller`.
 
 ---
 
