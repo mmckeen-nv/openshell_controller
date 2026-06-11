@@ -3,6 +3,28 @@
 #
 # Usage: upgrade-hermes.sh <sandbox-name>
 #
+# ── TEMPORARY SHIM — remove when NemoClaw base image ships Hermes >=0.16 ──
+#
+# This script exists solely because NemoClaw's hermes sandbox base image
+# (`openshell/sandbox-base-u24`) currently ships Hermes 0.14.x, while the
+# remote-desktop feature requires >=0.16 (HERMES_DASHBOARD_SESSION_TOKEN
+# pinning + Hermes Desktop API compatibility).
+#
+# HOW TO REMOVE:
+#   1. Confirm the NemoClaw base image bundles Hermes >=0.16 by default.
+#      Check by creating a fresh Hermes sandbox and running:
+#        docker exec openshell-<name>-* /opt/hermes/.venv/bin/hermes --version
+#      If it prints 0.16.x or higher, the shim is no longer needed.
+#   2. Delete this file (upgrade-hermes.sh).
+#   3. In launch.sh, remove the version check block that calls this script
+#      (the "Hermes >=0.16 required" section and the upgrade-hermes.sh call).
+#      Keep the API_SERVER_KEY provisioning block — that's still needed
+#      for any sandbox that was created before it was introduced.
+#   4. In expose.sh, if it references upgrade-hermes.sh directly, remove
+#      that reference too (grep for "upgrade-hermes").
+#   5. Update CLAUDE.md section 9 to remove the version-match caveat once
+#      fresh deployments no longer need the in-place pip upgrade.
+#
 # Why: NemoClaw's hermes base image ships 0.14.x, but the remote-desktop
 # feature needs >=0.16 (HERMES_DASHBOARD_SESSION_TOKEN pinning, plus the
 # endpoints current Hermes Desktop builds call). The desktop and backend
