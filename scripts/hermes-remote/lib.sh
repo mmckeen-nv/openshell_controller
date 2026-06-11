@@ -65,15 +65,25 @@ find_traefik_container() {
 # stack Traefik sits on a compose bridge and host.docker.internal does not
 # resolve. We bind tunnels on Traefik's default-gateway IP.
 traefik_bridge_ip() {
-  local tc ip net_id
+  local tc inspect_id net_mode ip net_id
   tc=$(find_traefik_container) || true
   [ -n "$tc" ] || { warn "no traefik container found; falling back to 172.18.0.1"; echo "172.18.0.1"; return; }
+
+  # BYOVPS Komodo stacks run Traefik with --network container:gerbil, so
+  # Traefik's own NetworkSettings is empty. Resolve the real network owner.
+  net_mode=$(docker inspect "$tc" --format '{{.HostConfig.NetworkMode}}' 2>/dev/null)
+  if [[ "$net_mode" == container:* ]]; then
+    inspect_id="${net_mode#container:}"
+  else
+    inspect_id="$tc"
+  fi
+
   # First try: gateway stored directly in the container's NetworkSettings.
-  ip=$(docker inspect "$tc" --format '{{range .NetworkSettings.Networks}}{{.Gateway}}{{"\n"}}{{end}}' 2>/dev/null | grep -v '^$' | head -1)
-  # Second try (BYOVPS): the compose bridge may not populate Gateway in
-  # NetworkSettings. Inspect each attached network's IPAM config instead.
+  ip=$(docker inspect "$inspect_id" --format '{{range .NetworkSettings.Networks}}{{.Gateway}}{{"\n"}}{{end}}' 2>/dev/null | grep -v '^$' | head -1)
+  # Second try: the compose bridge may not populate Gateway in NetworkSettings.
+  # Inspect each attached network's IPAM config instead.
   if [ -z "$ip" ]; then
-    for net_id in $(docker inspect "$tc" --format '{{range .NetworkSettings.Networks}}{{.NetworkID}} {{end}}' 2>/dev/null); do
+    for net_id in $(docker inspect "$inspect_id" --format '{{range .NetworkSettings.Networks}}{{.NetworkID}} {{end}}' 2>/dev/null); do
       ip=$(docker network inspect "$net_id" --format '{{range .IPAM.Config}}{{.Gateway}}{{"\n"}}{{end}}' 2>/dev/null | grep -v '^$' | head -1)
       [ -n "$ip" ] && break
     done
