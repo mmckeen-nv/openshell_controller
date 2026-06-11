@@ -625,7 +625,15 @@ not gateway.env flags — because NVIDIA's install.sh sets the same flags.
 
 Since 2026-06-11 the script refuses to flip while `openshell-*`
 containers are running (see §9 troubleshooting item 3) — the flip used
-to silently brick every live sandbox.
+to silently brick every live sandbox. It also now registers the CLI to
+**match the gateway's actual scheme** (http:// while plaintext is
+deferred, https:// otherwise). The old version always registered
+https://, which combined with a deferred flip left the CLI speaking TLS
+to a plaintext gateway — every `openshell` command then fails with
+`transport error: received corrupt message of type InvalidContentType`
+("Inventory Unavailable" in the UI). If you ever see that error, check
+`gateway.env` `OPENSHELL_DISABLE_TLS` vs `openshell gateway list`'s
+scheme; re-register to match.
 
 ### needrestart vs the controller (incident 2026-06-11)
 
