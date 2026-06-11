@@ -52,7 +52,9 @@ find_sandbox_container() {
 
 find_gateway_pid() {
   local container="$1"
-  docker exec "$container" pgrep -f 'hermes gateway run' 2>/dev/null | head -1
+  # Match both "hermes gateway run" (older installs) and "hermes.real gateway run"
+  # (newer NemoClaw base where hermes is a bash wrapper that execs hermes.real).
+  docker exec "$container" pgrep -f 'hermes[^ ]* gateway run' 2>/dev/null | head -1
 }
 
 find_traefik_container() {
@@ -63,10 +65,19 @@ find_traefik_container() {
 # stack Traefik sits on a compose bridge and host.docker.internal does not
 # resolve. We bind tunnels on Traefik's default-gateway IP.
 traefik_bridge_ip() {
-  local tc ip
+  local tc ip net_id
   tc=$(find_traefik_container) || true
   [ -n "$tc" ] || { warn "no traefik container found; falling back to 172.18.0.1"; echo "172.18.0.1"; return; }
+  # First try: gateway stored directly in the container's NetworkSettings.
   ip=$(docker inspect "$tc" --format '{{range .NetworkSettings.Networks}}{{.Gateway}}{{"\n"}}{{end}}' 2>/dev/null | grep -v '^$' | head -1)
+  # Second try (BYOVPS): the compose bridge may not populate Gateway in
+  # NetworkSettings. Inspect each attached network's IPAM config instead.
+  if [ -z "$ip" ]; then
+    for net_id in $(docker inspect "$tc" --format '{{range .NetworkSettings.Networks}}{{.NetworkID}} {{end}}' 2>/dev/null); do
+      ip=$(docker network inspect "$net_id" --format '{{range .IPAM.Config}}{{.Gateway}}{{"\n"}}{{end}}' 2>/dev/null | grep -v '^$' | head -1)
+      [ -n "$ip" ] && break
+    done
+  fi
   [ -n "$ip" ] || { warn "could not read traefik gateway IP; falling back to 172.18.0.1"; ip="172.18.0.1"; }
   echo "$ip"
 }
