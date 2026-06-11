@@ -496,6 +496,77 @@ Don'ts: don't hand-edit `/etc/komodo/.../rules/hermes-remote-*.yml` (owned
 by `expose.sh`); don't serve the SPA shell publicly in `desktop` mode (the
 expose script hard-fails if `GET /` returns non-404).
 
+### Troubleshooting "Unreachable" or "returned 000"
+
+When the drawer shows Unreachable / `expose.sh` ends with `returned 000`:
+
+**1. UFW not opened (most common on fresh installs)**
+The controller's systemd PATH omits `/usr/sbin`, so `command -v ufw`
+silently fails. Fixed in expose.sh to use `/usr/sbin/ufw` directly, but
+worth checking on any deployment:
+```bash
+/usr/sbin/ufw status numbered | grep <port>
+# If missing:
+/usr/sbin/ufw allow from 172.0.0.0/8 to any port <port> proto tcp
+```
+
+**2. Traefik cannot reach the upstream (UFW present but still 000)**
+Confirm from inside the Traefik container:
+```bash
+docker exec <traefik-container> wget -qO- http://172.18.0.1:<port>/api/status
+```
+If that times out, check UFW INPUT chain — Docker bridge traffic must
+be allowed through INPUT (not just FORWARD).
+
+**3. Forward dead / "sandbox is not ready"**
+`openshell forward` returns `FailedPrecondition: sandbox is not ready`
+when the sandbox is in Provisioning state. This happens after a
+controller restart re-arms mTLS on the openshell-gateway (the
+ensure-mtls hook runs on every service start). Only fix: recreate the
+sandbox. Fresh deployments are immune (sandbox created after mTLS armed).
+
+**4. Hermes gateway not running (#2478)**
+`launch.sh` dies with "no 'hermes gateway run' process". Root cause:
+`nemoclaw-proxy-env.sh` lacks `NODE_OPTIONS`, so gateway-recovery refuses
+to relaunch. Workaround:
+```bash
+docker exec <container> mv /tmp/nemoclaw-proxy-env.sh /tmp/nemoclaw-proxy-env.sh.bak
+# wait ~10s for the gateway to restart
+docker exec <container> pgrep -fa "hermes gateway run"
+docker exec <container> mv /tmp/nemoclaw-proxy-env.sh.bak /tmp/nemoclaw-proxy-env.sh
+```
+If the gateway then fails with "API_SERVER_KEY required", check that
+`/sandbox/.hermes/.env` has `API_SERVER_KEY=...` and the config hash
+at `/etc/nemoclaw/hermes.config-hash` covers it.
+
+**5. expose.sh timeout (180 s) kills during Hermes upgrade**
+`hermesRemote.ts` runs expose.sh with a 180 s timeout, but the in-sandbox
+Hermes upgrade (pip install) takes 3–5 min. The upgrade continues as an
+orphan after the timeout. The first expose call may leave the UI showing
+"Unreachable" or a stale v0.14.0 version in the drawer; clicking "Retry
+Exposure" after ~5 min will succeed once the upgrade has finished.
+The UFW rule and access file are written before launch.sh (and the upgrade),
+so they survive the timeout.
+
+**6. hermesVersion shows v0.14.0 after upgrade**
+The `hermesVersion` field in the access file is written when expose.sh
+first runs (before upgrade). It only updates when expose.sh completes
+successfully. After the upgrade finishes, click "Retry Exposure" to
+refresh it.
+
+### Version alignment and upgrade-hermes.sh
+
+`scripts/hermes-remote/upgrade-hermes.sh` is a **temporary shim** that
+upgrades the in-sandbox Hermes from 0.14 (NemoClaw base image) to >=0.16
+at expose time. See the top of that file for exact removal steps. In brief:
+once `docker exec openshell-<name>-* /opt/hermes/.venv/bin/hermes --version`
+reports >=0.16 on a fresh sandbox, the shim and the version-check block
+in `launch.sh` can both be deleted.
+
+Until then: the Hermes Desktop app version MUST match the in-sandbox
+backend minor version. Mismatches show up as broken UI tabs or WebSocket
+failures, not a clear version error.
+
 ---
 
 ## 10. Useful one-liners
