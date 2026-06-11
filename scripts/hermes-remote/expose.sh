@@ -86,6 +86,13 @@ cat > "$(access_file "$SANDBOX")" <<EOF
 }
 EOF
 
+# ── UFW: open the dashboard port for Traefik (Docker bridge) ───────
+# Done here — before launch.sh — so the rule exists even if a later
+# step fails and the script exits early.
+if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q '^Status: active'; then
+  ufw allow from 172.0.0.0/8 to any port "$PORT" proto tcp >/dev/null 2>&1 || true
+fi
+
 # ── Dashboard ──────────────────────────────────────────────────────
 "$SCRIPT_DIR/launch.sh" "$SANDBOX" || die "dashboard launch failed"
 
@@ -122,12 +129,6 @@ EOF
 openshell forward stop "$PORT" "$SANDBOX" >/dev/null 2>&1
 systemctl enable --now "hermes-remote-forward@${SANDBOX}.service" >/dev/null 2>&1
 systemctl restart "hermes-remote-forward@${SANDBOX}.service"
-
-# ── UFW ────────────────────────────────────────────────────────────
-if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q '^Status: active'; then
-  ufw status | grep -qE "^${PORT}/tcp\s+ALLOW\s+172\.0\.0\.0/8" \
-    || ufw allow from 172.0.0.0/8 to any port "$PORT" proto tcp >/dev/null
-fi
 
 # ── Traefik rule ───────────────────────────────────────────────────
 PATH_RULE="PathPrefix(\`/hermes/${SANDBOX}/api\`)"
