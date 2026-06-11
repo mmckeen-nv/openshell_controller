@@ -569,7 +569,57 @@ failures, not a clear version error.
 
 ---
 
-## 10. Useful one-liners
+## 10. BYOVPS vs cloud VPS — architecture differences that affect scripts
+
+When a script works on cloud VPS but breaks on BYOVPS, check these first:
+
+### Traefik network mode
+
+Cloud VPS: Traefik has its own Docker network entry → `docker inspect traefik`
+returns `.NetworkSettings.Networks` with a populated `.Gateway` field.
+
+BYOVPS (Komodo stack): Traefik runs with `--network container:gerbil` so it
+shares Gerbil's network namespace. Its own `NetworkSettings.Networks` is
+**empty**. `traefik_bridge_ip()` in `lib.sh` detects this by reading
+`HostConfig.NetworkMode` — if it starts with `container:`, it inspects the
+referenced container (Gerbil) instead. Never assume `docker inspect traefik`
+has network data on a BYOVPS.
+
+### hermes gateway process name
+
+Older NemoClaw base images: `hermes` is the Python entry-point.
+Cmdline: `/opt/hermes/.venv/bin/python /usr/local/bin/hermes gateway run`
+
+Newer base images (≥ v0.16 era): `hermes` is a bash wrapper that `exec`s
+`hermes.real`. Cmdline: `/opt/hermes/.venv/bin/python /usr/local/bin/hermes.real gateway run`
+
+`pgrep -f 'hermes gateway run'` misses the newer form. Always use:
+`pgrep -f 'hermes[^ ]* gateway run'`  (in `find_gateway_pid()` in `lib.sh`).
+
+### Hermes first sandbox creation time
+
+The first Hermes sandbox on a fresh BYOVPS takes **7–10 minutes** — Docker
+builds the full Hermes base image from scratch. The browser HTTP request
+times out and the UI shows "Sandbox creation started…" with no further
+update. **This is normal.** The creation completes in the background.
+Refresh the sandbox list after ~10 minutes and the sandbox will be Ready.
+Subsequent creations are fast (layers cached).
+
+### openshell forward "sandbox is not ready"
+
+On BYOVPS, `openshell-gateway-ensure-mtls.sh` runs as ExecStartPre every
+time the controller starts. If mTLS is re-armed after a sandbox was created
+in plaintext era (e.g. after a controller update), the forward fails with
+`FailedPrecondition: sandbox is not ready`. Only fix: recreate the sandbox.
+
+After NemoClaw onboard, the gateway runs in plaintext with
+`OPENSHELL_DISABLE_GATEWAY_AUTH=true`. The ensure-mtls script detects the
+mismatch by checking the CLI **registration URL** (https:// vs http://),
+not gateway.env flags — because NVIDIA's install.sh sets the same flags.
+
+---
+
+## 12. Useful one-liners
 
 ```bash
 # How divergent are we from upstream?
