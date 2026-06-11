@@ -373,7 +373,10 @@ function resolveSandboxOpenClawInstance(instanceId) {
     id: requested,
     label: `OpenClaw for ${match[2]}`,
     dashboardUrl: `http://127.0.0.1:${port}/`,
-    controlUiOrigin: process.env.OPENCLAW_SANDBOX_CONTROL_UI_ORIGIN || 'http://127.0.0.1:18789',
+    // Must match the sandbox gateway's own port: the in-sandbox openclaw
+    // writes allowedOrigins: ["http://127.0.0.1:<its hash port>"], so a
+    // fixed 18789 only works for sandboxes whose name happens to hash there.
+    controlUiOrigin: process.env.OPENCLAW_SANDBOX_CONTROL_UI_ORIGIN || `http://127.0.0.1:${port}`,
     terminalServerUrl: process.env.TERMINAL_SERVER_URL || 'http://127.0.0.1:3011',
     loopbackOnly: true,
     default: false,
