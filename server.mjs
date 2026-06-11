@@ -373,10 +373,14 @@ function resolveSandboxOpenClawInstance(instanceId) {
     id: requested,
     label: `OpenClaw for ${match[2]}`,
     dashboardUrl: `http://127.0.0.1:${port}/`,
-    // Must match the sandbox gateway's own port: the in-sandbox openclaw
-    // writes allowedOrigins: ["http://127.0.0.1:<its hash port>"], so a
-    // fixed 18789 only works for sandboxes whose name happens to hash there.
-    controlUiOrigin: process.env.OPENCLAW_SANDBOX_CONTROL_UI_ORIGIN || `http://127.0.0.1:${port}`,
+    // The hash port above is the HOST side of the ssh tunnel; in-sandbox the
+    // gateway listens on OPENCLAW_SANDBOX_DASHBOARD_REMOTE_PORT (18789, see
+    // openshellHost.ts). Cloud sandboxes allowlist exactly this origin, so
+    // keep sending it byte-identical; BYOVPS sandboxes (whose config gateway
+    // allowlists a different port) pass via the gateway's local-loopback rule
+    // now that copyDashboardWebSocketHeaders strips forwarded headers.
+    controlUiOrigin: process.env.OPENCLAW_SANDBOX_CONTROL_UI_ORIGIN
+      || `http://127.0.0.1:${Number.parseInt(process.env.OPENCLAW_SANDBOX_DASHBOARD_REMOTE_PORT || '18789', 10)}`,
     terminalServerUrl: process.env.TERMINAL_SERVER_URL || 'http://127.0.0.1:3011',
     loopbackOnly: true,
     default: false,
@@ -573,6 +577,15 @@ const dashboardWss = new WebSocketServer({ noServer: true })
 
 function copyDashboardWebSocketHeaders(req, controlUiOrigin) {
   const headers = copyHeaders(req)
+  // OpenClaw's gateway treats the presence of ANY forwarded-style header as
+  // proof of a proxied (non-local) client and then refuses loopback origins
+  // outside its configured allowlist (isLocalDirectRequest in its origin
+  // check). This upstream hop is a host-local tunnel the controller has
+  // already authenticated, so present it as the direct local client it is.
+  for (const key of Object.keys(headers)) {
+    const lower = key.toLowerCase()
+    if (lower === 'forwarded' || lower === 'x-real-ip' || lower.startsWith('x-forwarded-')) delete headers[key]
+  }
   const cookie = filterCookieHeader(req.headers.cookie)
   const dashboardToken = readCookieValue(req.headers.cookie, openClawDashboardTokenCookieName)
   if (cookie) headers.cookie = cookie
