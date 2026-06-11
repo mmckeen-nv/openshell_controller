@@ -360,13 +360,11 @@ const [restartInProgress, setRestartInProgress] = useState(false)
   }
 
   const [copiedLinkFor, setCopiedLinkFor] = useState<string | null>(null)
-  const copyShareableLink = async (kind: 'hermes' | 'hermes-remote' | 'openclaw', sandbox: SandboxInventoryItem) => {
+  const copyShareableLink = async (kind: 'hermes' | 'openclaw', sandbox: SandboxInventoryItem) => {
     const origin = typeof window !== 'undefined' ? window.location.origin : ''
     const url = kind === 'hermes'
       ? `${origin}/operator-terminal?sandboxId=${encodeURIComponent(sandbox.name)}&launch=hermes`
-      : kind === 'hermes-remote'
-        ? `${origin}/hermes/${encodeURIComponent(sandbox.name)}`
-        : `${origin}/launch/dashboard?sandboxId=${encodeURIComponent(sandbox.name)}`
+      : `${origin}/launch/dashboard?sandboxId=${encodeURIComponent(sandbox.name)}`
     try {
       await navigator.clipboard.writeText(url)
       setCopiedLinkFor(`${kind}:${sandbox.name}`)
@@ -726,11 +724,6 @@ const [restartInProgress, setRestartInProgress] = useState(false)
                           label={copiedLinkFor === `hermes:${selectedSandbox.name}` ? 'Copied!' : 'Copy shareable Hermes link'}
                           copied={copiedLinkFor === `hermes:${selectedSandbox.name}`}
                           onClick={() => copyShareableLink('hermes', selectedSandbox)}
-                        />
-                        <CopyLinkButton
-                          label={copiedLinkFor === `hermes-remote:${selectedSandbox.name}` ? 'Copied!' : 'Copy Desktop gateway URL'}
-                          copied={copiedLinkFor === `hermes-remote:${selectedSandbox.name}`}
-                          onClick={() => copyShareableLink('hermes-remote', selectedSandbox)}
                         />
                       </span>
                     )}
