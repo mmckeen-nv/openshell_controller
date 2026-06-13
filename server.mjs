@@ -598,7 +598,11 @@ function copyDashboardWebSocketHeaders(req, controlUiOrigin) {
   else delete headers.cookie
   headers.origin = controlUiOrigin
   headers.referer = `${controlUiOrigin}/`
-  if (dashboardToken && !headers.authorization) headers.authorization = `Bearer ${dashboardToken}`
+  // Cookie wins over any client-supplied Authorization header for the same
+  // reason it wins over ?token= in withDashboardTokenQuery: the SPA can hold a
+  // stale bearer in localStorage and replay it on WS upgrades, which then
+  // overrides the fresh openclaw_dashboard_token cookie set by /dashboard/open.
+  if (dashboardToken) headers.authorization = `Bearer ${dashboardToken}`
   return headers
 }
 
