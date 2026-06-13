@@ -73,6 +73,23 @@ function elapsedMs(start: number) {
   return Date.now() - start
 }
 
+// Last N chars of stderr, single-lined for journalctl-friendly logging.
+// The actionable error is almost always at the tail of the stream (e.g.
+// "pull access denied" on a Docker FROM failure). 2KB is enough for the
+// last few hundred lines without blowing log volume.
+function stderrTail(stderr: string | undefined | null, limit = 2048) {
+  if (!stderr) return ""
+  const trimmed = String(stderr).trim()
+  if (!trimmed) return ""
+  const tail = trimmed.length > limit ? trimmed.slice(-limit) : trimmed
+  return tail.replace(/\s+/g, " ").trim()
+}
+
+function logStderr(tag: string, file: string, stderr: string | undefined | null) {
+  const excerpt = stderrTail(stderr)
+  if (excerpt) console.log(`[sandbox/create] ${tag} file=${file} stderrTail=${JSON.stringify(excerpt)}`)
+}
+
 function appendNote(...parts: Array<string | false | null | undefined>) {
   return parts.filter(Boolean).join(" ")
 }
@@ -482,6 +499,7 @@ async function runCommand(file: string, args: string[], env: NodeJS.ProcessEnv, 
     console.log(
       `[sandbox/create] command:error file=${file} elapsedMs=${elapsedMs(startedAt)} message=${message} stdoutBytes=${String(error?.stdout || "").length} stderrBytes=${String(error?.stderr || "").length}`,
     )
+    logStderr("command:error-stderr", file, error?.stderr)
     return {
       ok: false as const,
       stdout: String(error?.stdout || "").trim(),
@@ -539,6 +557,7 @@ async function runCreateCommandBounded(file: string, args: string[], env: NodeJS
     child.on("error", (error) => {
       const message = error instanceof Error ? error.message : String(error ?? "Command failed")
       console.log(`[sandbox/create] bounded-command:error file=${file} elapsedMs=${elapsedMs(startedAt)} message=${message}`)
+      logStderr("bounded-command:error-stderr", file, stderr)
       finish({
         completed: false,
         timedOut: false,
@@ -552,6 +571,7 @@ async function runCreateCommandBounded(file: string, args: string[], env: NodeJS
 
     child.on("close", (code, signal) => {
       console.log(`[sandbox/create] bounded-command:close file=${file} elapsedMs=${elapsedMs(startedAt)} code=${code} signal=${signal} stdoutBytes=${stdout.length} stderrBytes=${stderr.length}`)
+      if (code !== 0) logStderr("bounded-command:close-stderr", file, stderr)
       finish({
         completed: true,
         timedOut: false,
@@ -640,6 +660,7 @@ async function runCreateCommandUntilReady(file: string, args: string[], env: Nod
     child.on("error", (error) => {
       const message = error instanceof Error ? error.message : String(error ?? "Command failed")
       console.log(`[sandbox/create] ready-command:error file=${file} elapsedMs=${elapsedMs(startedAt)} message=${message}`)
+      logStderr("ready-command:error-stderr", file, stderr)
       finish({
         completed: false,
         timedOut: false,
@@ -654,6 +675,7 @@ async function runCreateCommandUntilReady(file: string, args: string[], env: Nod
 
     child.on("close", (code, signal) => {
       console.log(`[sandbox/create] ready-command:close file=${file} elapsedMs=${elapsedMs(startedAt)} code=${code} signal=${signal} stdoutBytes=${stdout.length} stderrBytes=${stderr.length}`)
+      if (code !== 0) logStderr("ready-command:close-stderr", file, stderr)
       finish({
         completed: true,
         timedOut: false,
