@@ -30,7 +30,7 @@ Usage:
   ./install_versioned_nemoclaw_openshell.sh [options]
 
 Options:
-  --nvidia-api-key KEY   Pass NVIDIA_API_KEY to the NemoClaw installer
+  --nvidia-api-key KEY   Pass NVIDIA_INFERENCE_API_KEY (and legacy NVIDIA_API_KEY) to the NemoClaw installer
   --skip-openshell       Do not install OpenShell
   --skip-nemoclaw        Do not install NemoClaw
   --help                 Show this help
@@ -60,7 +60,8 @@ Environment overrides:
   OPENSHELL_GATEWAY_HOST
   OPENSHELL_GATEWAY_PORT
   OPENSHELL_GATEWAY_URL
-  NVIDIA_API_KEY
+  NVIDIA_INFERENCE_API_KEY
+  NVIDIA_API_KEY (legacy alias)
 EOF
 }
 
@@ -68,7 +69,8 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --nvidia-api-key)
       [[ $# -ge 2 ]] || { echo -e "${RED}ERROR:${NC} --nvidia-api-key requires a value" >&2; exit 1; }
-      export NVIDIA_API_KEY="$2"
+      export NVIDIA_INFERENCE_API_KEY="$2"
+      export NVIDIA_API_KEY="${NVIDIA_API_KEY:-$2}"
       shift 2
       ;;
     --skip-openshell)
@@ -134,8 +136,14 @@ install_nemoclaw() {
   git -C "$source_dir" -c advice.detachedHead=false checkout --quiet --detach FETCH_HEAD
   [[ -n "$source_dir" && -f "$source_dir/install.sh" ]] || fail "Could not find NemoClaw install.sh in source checkout."
 
-  if [[ -z "${NVIDIA_API_KEY:-}" ]]; then
-    warn "NVIDIA_API_KEY is not set. NemoClaw may require it for non-local provider setup."
+  if [[ -z "${NVIDIA_INFERENCE_API_KEY:-}" && -n "${NVIDIA_API_KEY:-}" ]]; then
+    export NVIDIA_INFERENCE_API_KEY="$NVIDIA_API_KEY"
+  elif [[ -z "${NVIDIA_API_KEY:-}" && -n "${NVIDIA_INFERENCE_API_KEY:-}" ]]; then
+    export NVIDIA_API_KEY="$NVIDIA_INFERENCE_API_KEY"
+  fi
+
+  if [[ -z "${NVIDIA_INFERENCE_API_KEY:-}" ]]; then
+    warn "NVIDIA_INFERENCE_API_KEY is not set. NemoClaw may require it for non-local provider setup."
   fi
 
   log "Installing NemoClaw $NEMOCLAW_INSTALL_REF"
@@ -147,6 +155,7 @@ install_nemoclaw() {
       NEMOCLAW_NON_INTERACTIVE="$NEMOCLAW_NON_INTERACTIVE" \
       NEMOCLAW_EXPERIMENTAL="$NEMOCLAW_EXPERIMENTAL" \
       NEMOCLAW_PROVIDER="$NEMOCLAW_PROVIDER" \
+      NVIDIA_INFERENCE_API_KEY="${NVIDIA_INFERENCE_API_KEY:-}" \
       NVIDIA_API_KEY="${NVIDIA_API_KEY:-}" \
       ./install.sh
   )

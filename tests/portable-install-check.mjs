@@ -71,7 +71,11 @@ assert.match(versionedInstallSource, /NEMOCLAW_EXPERIMENTAL="\$\{NEMOCLAW_EXPERI
 assert.match(versionedInstallSource, /NEMOCLAW_PROVIDER="\$\{NEMOCLAW_PROVIDER:-vllm\}"/, 'versioned installer must default NemoClaw to the vLLM provider')
 assert.match(versionedInstallSource, /NEMOCLAW_EXPERIMENTAL="\$NEMOCLAW_EXPERIMENTAL"/, 'versioned installer must pass experimental mode through to NemoClaw install')
 assert.match(versionedInstallSource, /NEMOCLAW_PROVIDER="\$NEMOCLAW_PROVIDER"/, 'versioned installer must pass the provider through to NemoClaw install')
-assert.match(versionedInstallSource, /NVIDIA_API_KEY="\$\{NVIDIA_API_KEY:-\}"/, 'versioned installer must pass NVIDIA_API_KEY through to NemoClaw install')
+assert.match(versionedInstallSource, /NVIDIA_INFERENCE_API_KEY="\$\{NVIDIA_INFERENCE_API_KEY:-\}"/, 'versioned installer must pass NVIDIA_INFERENCE_API_KEY through to NemoClaw install')
+assert.match(versionedInstallSource, /NVIDIA_API_KEY="\$\{NVIDIA_API_KEY:-\}"/, 'versioned installer must continue passing legacy NVIDIA_API_KEY through to NemoClaw install')
+assert.match(createRouteSource, /env\.NVIDIA_INFERENCE_API_KEY = apiKey/, 'create-time inference must export NemoClaw current NVIDIA inference credential env')
+assert.match(createRouteSource, /env\.NVIDIA_API_KEY = apiKey/, 'create-time inference must retain the legacy NVIDIA_API_KEY alias for older NemoClaw builds')
+assert.match(createRouteSource, /NVIDIA_INFERENCE_API_KEY=<provided>/, 'create-time inference summaries must mention the current credential env without printing secrets')
 
 assert.match(hostCommandsSource, /export const HOST_PATH/, 'host command resolution must centralize PATH construction')
 assert.match(hostCommandsSource, /OPENSHELL_CONTROL_VENV/, 'host command resolution must include the installer-managed virtual environment')
