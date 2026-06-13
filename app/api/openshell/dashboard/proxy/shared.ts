@@ -1,6 +1,10 @@
 import { NextResponse } from 'next/server'
-import { getDefaultOpenClawDashboardInstanceId } from '@/app/lib/openshellHost'
-import { OPENCLAW_DASHBOARD_TOKEN_COOKIE } from '@/app/lib/openclawDashboardToken'
+import { getDefaultOpenClawDashboardInstanceId, probeOpenClawDashboard } from '@/app/lib/openshellHost'
+import {
+  OPENCLAW_DASHBOARD_TOKEN_COOKIE,
+  extractOpenClawDashboardToken,
+  setOpenClawDashboardTokenCookie,
+} from '@/app/lib/openclawDashboardToken'
 import { resolveRuntimeAuthority } from '@/app/lib/runtimeAuthority'
 
 const LEGACY_PROXY_PREFIX = '/api/openshell/dashboard/proxy'
@@ -95,9 +99,16 @@ function buildTargetUrl(requestUrl: URL) {
   return { target, proxyPrefix, controlUiOrigin, authorityMode, bridgeActive }
 }
 
-function copyRequestHeaders(request: Request, target: URL, controlUiOrigin: string) {
+function copyRequestHeaders(
+  request: Request,
+  target: URL,
+  controlUiOrigin: string,
+  tokenOverride?: string | null,
+) {
   const headers = new Headers()
-  const dashboardToken = readCookieValue(request.headers.get('cookie'), OPENCLAW_DASHBOARD_TOKEN_COOKIE)
+  const dashboardToken = tokenOverride !== undefined
+    ? tokenOverride
+    : readCookieValue(request.headers.get('cookie'), OPENCLAW_DASHBOARD_TOKEN_COOKIE)
 
   request.headers.forEach((value, key) => {
     const lowerKey = key.toLowerCase()
@@ -345,9 +356,34 @@ export async function proxyOpenClawDashboard(request: Request) {
     upstreamInit.duplex = 'half'
   }
 
-  const upstream = await fetch(target.toString(), {
+  let upstream = await fetch(target.toString(), {
     ...upstreamInit,
   })
+
+  // Self-heal stale dashboard token: when a sandbox is deleted and recreated with
+  // the same name, the openclaw_dashboard_token cookie still holds the previous
+  // sandbox's bearer. Upstream then rejects every request with 401/403. Re-probe
+  // the live sandbox for the current token, retry once, and refresh the cookie
+  // so subsequent calls (including the WS upgrade) use the new value.
+  let refreshedToken: string | null = null
+  if (
+    (upstream.status === 401 || upstream.status === 403) &&
+    !shouldSendBody
+  ) {
+    const probe = await probeOpenClawDashboard(resolution.instanceId)
+    const candidate = extractOpenClawDashboardToken(probe.bootstrapUrl)
+    if (candidate) {
+      const retryHeaders = copyRequestHeaders(request, target, controlUiOrigin, candidate)
+      const retry = await fetch(target.toString(), {
+        ...upstreamInit,
+        headers: retryHeaders,
+      })
+      if (retry.ok) {
+        upstream = retry
+        refreshedToken = candidate
+      }
+    }
+  }
 
   const responseHeaders = copyResponseHeaders(upstream)
   responseHeaders.set('x-openclaw-authority-mode', authorityMode)
@@ -362,16 +398,20 @@ export async function proxyOpenClawDashboard(request: Request) {
   if (contentType.includes('text/html')) {
     const body = rewriteHtml(await upstream.text(), proxyPrefix)
     responseHeaders.set('content-type', contentType)
-    return new NextResponse(body, {
+    const htmlResponse = new NextResponse(body, {
       status: upstream.status,
       headers: responseHeaders,
     })
+    if (refreshedToken) setOpenClawDashboardTokenCookie(htmlResponse, request, proxyPrefix, refreshedToken)
+    return htmlResponse
   }
 
-  return new NextResponse(upstream.body, {
+  const response = new NextResponse(upstream.body, {
     status: upstream.status,
     headers: responseHeaders,
   })
+  if (refreshedToken) setOpenClawDashboardTokenCookie(response, request, proxyPrefix, refreshedToken)
+  return response
 }
 
 export function proxyErrorResponse(error: unknown) {
