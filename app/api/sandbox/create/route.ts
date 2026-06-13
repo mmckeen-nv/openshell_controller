@@ -163,9 +163,10 @@ function applyCreateInferenceEnv(env: NodeJS.ProcessEnv, settings: CreateInferen
     settings.envSummary.push("NEMOCLAW_PROVIDER=nim-local")
     const apiKey = typeof body?.createInference?.apiKey === "string" ? body.createInference.apiKey.trim() : ""
     if (apiKey) {
+      env.NVIDIA_INFERENCE_API_KEY = apiKey
       env.NVIDIA_API_KEY = apiKey
       env.NEMOCLAW_PROVIDER_KEY = apiKey
-      settings.envSummary.push("NVIDIA_API_KEY=<provided>", "NEMOCLAW_PROVIDER_KEY=<provided>")
+      settings.envSummary.push("NVIDIA_INFERENCE_API_KEY=<provided>", "NVIDIA_API_KEY=<legacy-alias>", "NEMOCLAW_PROVIDER_KEY=<provided>")
     }
   }
 
@@ -929,7 +930,8 @@ export async function POST(request: Request) {
       }
 
       if (!enableTailscale) {
-        env.NVIDIA_API_KEY = env.NVIDIA_API_KEY || "optional-local-mode"
+        env.NVIDIA_INFERENCE_API_KEY = env.NVIDIA_INFERENCE_API_KEY || env.NVIDIA_API_KEY || "optional-local-mode"
+        env.NVIDIA_API_KEY = env.NVIDIA_API_KEY || env.NVIDIA_INFERENCE_API_KEY
       }
 
       applyCreateInferenceEnv(env, createInference, body)

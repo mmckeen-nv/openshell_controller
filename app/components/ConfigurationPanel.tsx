@@ -310,7 +310,7 @@ export default function ConfigurationPanel({ sandboxId, mode = 'existing', onCre
                 <input type="checkbox" checked={enableTailscale} onChange={(e) => setEnableTailscale(e.target.checked)} /> Enable Tailscale
               </label>
             )}
-            {enableTailscale && <div className="rounded-sm border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-300">Tailscale-enabled creation requires NVIDIA_API_KEY in the dashboard process environment.</div>}
+            {enableTailscale && <div className="rounded-sm border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-300">Tailscale-enabled creation requires NVIDIA_INFERENCE_API_KEY (or legacy NVIDIA_API_KEY) in the dashboard process environment.</div>}
             {isNemoClawOnboardBlueprint && <div className="rounded-sm border border-[var(--border-subtle)] bg-[var(--background)] p-4 space-y-4">
               <div>
                 <h6 className="text-xs font-semibold uppercase tracking-wider text-[var(--foreground)]">Inference at Create</h6>
