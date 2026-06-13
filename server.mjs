@@ -635,8 +635,6 @@ dashboardWss.on('connection', (client, req, context) => {
   let upstreamFramesIn = 0
   let clientFramesOut = 0
 
-  const incomingUrlForLog = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`)
-  const incomingUrlToken = incomingUrlForLog.searchParams.get('token') || ''
   logBridge('dashboard-ws-client-connected', {
     bridgeId,
     path: req.url || '/',
@@ -645,12 +643,6 @@ dashboardWss.on('connection', (client, req, context) => {
     remoteAddress: req.socket.remoteAddress || 'unknown',
     upstreamHeaderKeys: Object.keys(upstreamHeaders).sort().join(','),
     dashboardTokenPresent: Boolean(dashboardToken),
-    dashboardTokenFp: dashboardToken ? `${dashboardToken.slice(0, 8)}…(${dashboardToken.length})` : null,
-    incomingUrlTokenFp: incomingUrlToken ? `${incomingUrlToken.slice(0, 8)}…(${incomingUrlToken.length})` : null,
-    upstreamSentTokenFp: (() => {
-      const t = new URL(upstreamUrl.toString()).searchParams.get('token') || ''
-      return t ? `${t.slice(0, 8)}…(${t.length})` : null
-    })(),
   })
 
   const flushPendingFrames = () => {
