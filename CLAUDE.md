@@ -657,6 +657,137 @@ start openshell-controller`.
 
 ---
 
+## 11. OpenClaw dashboard token + tunnel architecture (the brittle one)
+
+This section exists because we spent a full day rediscovering this in
+June 2026. The OpenClaw "Open Dashboard" path is by far the most fragile
+piece of the controller: a token has to be in sync across four carriers
+on three machines, and there's a lazy SSH tunnel in the middle. When it
+breaks the user sees `Auth did not match — gateway token mismatch` and
+no obvious server-side error.
+
+### The four token carriers
+
+The gateway compares against `gateway.auth.token` in
+`/sandbox/.openclaw/openclaw.json` (inside the sandbox container) for
+every connection. The same value has to ride along on EVERY one of
+these carriers, or the connection is rejected:
+
+| Carrier | Who sets it | Who reads it |
+|---|---|---|
+| `openclaw_dashboard_token` HttpOnly cookie | `/api/openshell/dashboard/open` sets it from a live probe of `openclaw dashboard --no-open` | `server.mjs` for WS upgrades, `shared.ts` for HTTP proxy |
+| URL `?token=…` query | The OpenClaw Control UI SPA, from `settings.gatewayUrl` in localStorage | `server.mjs` `withDashboardTokenQuery` |
+| `Authorization: Bearer …` header | Browser, replayed from a cached value | `server.mjs` `copyDashboardWebSocketHeaders` |
+| URL hash `#token=…` on the launchUrl | `/api/openshell/dashboard/open` from the probe | The injected bootstrap script (`shared.ts` `bootstrapScriptResponse`), which writes it to `localStorage[openclaw.control.settings.v1*]` |
+
+**The invariant that holds everything together (post 2026-06-13 fixes):**
+the HttpOnly cookie is the *only* trusted source. Both `server.mjs`
+`withDashboardTokenQuery` and `copyDashboardWebSocketHeaders` now
+**unconditionally overwrite** any client-supplied `?token=` /
+`Authorization` with the cookie value. Do not re-introduce
+`if (!headers.authorization)` or `if (!searchParams.has('token'))`
+guards on those carriers — that's the regression that left "delete and
+recreate the same sandbox name" broken for any browser with cached
+state.
+
+### The lazy SSH tunnel on 127.0.0.1:20049
+
+The controller does NOT connect directly to the in-sandbox gateway at
+`ws://127.0.0.1:18789`. It connects to `127.0.0.1:20049`, which is a
+**lazy SSH forward** spawned by `ensureOpenClawDashboardListener()` in
+`app/lib/openshellHost.ts`. The forward:
+
+- Is created on demand by `/dashboard/open`'s `probeOpenClawDashboard()`
+- Maps `127.0.0.1:20049` (host) → `127.0.0.1:18789` (sandbox)
+- Dies when idle / sandbox restart / controller restart
+- Has to be re-spun by another `/dashboard/open` call before any WS or
+  HTTP traffic can flow
+
+**Gotcha for server-side testing:** a raw `curl` WS handshake against
+`/api/openshell/instances/<sb>/dashboard/proxy` will return
+`HTTP/1.1 101 Switching Protocols` (the controller accepts the
+upgrade) and then immediately `connect ECONNREFUSED 127.0.0.1:20049`
+because no `/dashboard/open` was called to spin the forward. Always
+call `/dashboard/open` first when reproducing failures from a shell;
+the browser path does this automatically.
+
+### Browser-side cache layers (also relevant)
+
+The SPA writes the gateway URL+token combination to several localStorage
+keys, all scoped by URL origin:
+
+- `openclaw.control.settings.v1` (global, no scope)
+- `openclaw.control.settings.v1:https://<controller-origin>/.../proxy`
+- `openclaw.control.settings.v1:wss://<controller-origin>/.../proxy`
+- `openclaw.control.token.v1:<scope>` in sessionStorage
+
+When a user deletes a sandbox and recreates it with the same name, the
+controller URL is identical, so the SPA reads the SAME localStorage
+entries and tries to connect with the OLD sandbox's token. The fix
+chain handles this server-side (cookie always wins), so users don't
+need to clear localStorage. **But if you ever debug this in a browser,
+remember that hitting "hard reload" does NOT clear localStorage** —
+DevTools → Application → Local Storage → clear, or use an Incognito
+window.
+
+### Diagnostic recipe (when "Auth did not match" appears)
+
+1. **Confirm the token chain matches server-side.** Run a script that:
+   - Reads `gateway.auth.token` from `/sandbox/.openclaw/openclaw.json`
+     via `docker exec -u sandbox <cnt> ...`
+   - Hits `/api/openshell/dashboard/open?sandboxId=<name>` (with
+     operator cookie) and parses the `Set-Cookie:
+     openclaw_dashboard_token=…` and the `bootstrapUrl` body field
+   - Compares all three; they must be byte-identical
+   - If they don't match: the probe failed. Check
+     `/tmp/gateway.log` inside the sandbox + the controller's
+     `probeOpenClawDashboard()` result.
+2. **Confirm the server-side WS path works** with curl after calling
+   `/dashboard/open` (to spin the lazy tunnel):
+   ```bash
+   curl -sS -i -N \
+     -H 'Upgrade: websocket' -H 'Connection: Upgrade' \
+     -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' \
+     -H 'Sec-WebSocket-Version: 13' \
+     -b "openshell_control_session=$SESSION; openclaw_dashboard_token=$TOK" \
+     http://127.0.0.1:3000/api/openshell/instances/<sb-instance>/dashboard/proxy
+   ```
+   Success = `HTTP/1.1 101 Switching Protocols` followed by a
+   `connect.challenge` event from the gateway. If curl succeeds but
+   browser fails, it's a client-cache problem (browser sending stale
+   `Authorization` or stuck SPA state) — but the cookie-wins fix should
+   already mask that.
+3. **If server-side curl ALSO fails** with `code=1008 reason=token_mismatch`,
+   re-introduce the diagnostic logging that was in commit `ed22c9e`
+   (token-fingerprint fields in `dashboard-ws-client-connected`). It
+   logs first-8-chars of the cookie token, URL token, and the token
+   forwarded upstream so you can see which carrier is wrong.
+
+### When to suspect this section
+
+| Symptom | This section? | First check |
+|---|---|---|
+| "Auth did not match" in OpenClaw UI | YES | Token chain match (step 1 above) |
+| `code=1008 reason=token_mismatch` in controller journal | YES | Same |
+| `connect ECONNREFUSED 127.0.0.1:20049` in journal/curl | YES (tunnel layer) | Did `/dashboard/open` run recently? |
+| Dashboard works once then fails after sandbox restart | YES | Tunnel died, sandbox restart re-randomizes the token |
+| Dashboard works on cloud VPS but not BYOVPS | NO | Look at §10 + the Pangolin/Traefik path |
+| 401 on `/__openclaw/control-ui-config.json` | YES | The HTTP 401 auto-refresh (`shared.ts`) should handle it; if not, regression in that code |
+
+### The four commits that make this work (do not revert)
+
+| SHA | What it does |
+|---|---|
+| `c35fea5` | `shared.ts` — on HTTP 401/403 from upstream for GET/HEAD, re-probe and retry with fresh token, refresh the cookie |
+| `48bbfa5` | `server.mjs` `withDashboardTokenQuery` — cookie token always overwrites URL `?token=` |
+| `a2e8ddb` | `server.mjs` `copyDashboardWebSocketHeaders` — cookie token always overwrites `Authorization: Bearer` |
+| `b42b323` | reverts a temporary diagnostic — keep, leaves the three real fixes in place |
+
+Rollback baseline (yesterday-working before any of these changes):
+`8b9eb852097448bbfc6c4449ce9dddcda08ca37d`.
+
+---
+
 ## 12. Useful one-liners
 
 ```bash
