@@ -440,8 +440,14 @@ function redactSensitiveUrl(value) {
 
 function withDashboardTokenQuery(upstreamWsUrl, token) {
   const url = new URL(upstreamWsUrl.toString())
-  if (token && !url.searchParams.has('token') && !url.searchParams.has('authToken')) {
+  if (token) {
+    // The cookie token is server-set by /dashboard/open from a live sandbox
+    // probe — trust it over any client-supplied URL ?token=, which the SPA may
+    // have cached in localStorage from a previous (now-recreated) sandbox.
+    // Without this, a fresh /dashboard/open call refreshes the cookie but the
+    // stale URL token still wins and the gateway rejects with token_mismatch.
     url.searchParams.set('token', token)
+    url.searchParams.delete('authToken')
   }
   return url
 }
