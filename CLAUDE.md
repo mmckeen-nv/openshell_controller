@@ -250,11 +250,37 @@ curl -sS -X POST http://127.0.0.1:3000/api/auth/setup \
 # willRestart should be false; /login should still 200 immediately.
 ```
 
-Plus the auth unit test on the laptop:
+### Local regression suite (run BEFORE every push)
+
+The repo ships a 20-file source-text + runtime assertion suite covering
+auth, middleware, dashboard proxy, sandbox lifecycle, MCP config, and the
+load-bearing dashboard token fix chain documented in §11.
 
 ```bash
-node tests/control-auth-oauth-check.mjs
+npm test
 ```
+
+This runs every `tests/*.mjs` and reports `PASS:` / `FAIL:` per file,
+exiting non-zero on any failure. Expected baseline:
+
+- **19 PASS / 1 FAIL** — the one failure is `control-auth-cookie-check.mjs`
+  (pre-existing TypeScript module resolution issue, unrelated tech debt).
+  Any *other* failure means a real regression you must investigate before
+  pushing.
+
+Particularly important after touching `server.mjs` or
+`app/api/openshell/dashboard/proxy/shared.ts`:
+
+```bash
+node tests/dashboard-token-cookie-wins-check.mjs   # source-text guards
+node tests/dashboard-token-runtime-check.mjs        # behavioural guards
+node tests/control-auth-oauth-check.mjs             # auth invariants
+```
+
+If `dashboard-token-runtime-check.mjs` fails with an assertion like
+`actual: 'STALE_FROM_LOCALSTORAGE' / expected: 'FRESH_FROM_COOKIE'`,
+the cookie-wins invariant from §11 has been broken — do NOT push. See
+§11 for the architecture explanation and the four protected commit SHAs.
 
 For WS upgrade tests (when modifying server.mjs auth), see the patterns
 in chat history — minimum 3 cases: operator session, OAuth session
@@ -303,6 +329,18 @@ These have all been tried and rejected — don't reintroduce them:
 - **Don't** push to `gatewaydashboard` without running `npm run build`
   AND deploying + smoke-testing on the VPS first. Force-push to
   `gatewaydashboard` is forbidden.
+- **Don't** push without running `npm test` first. The suite is fast
+  (~2s) and lock-in-place for the dashboard token fix chain (§11),
+  auth, middleware, sandbox lifecycle, and MCP config. The baseline is
+  19 PASS / 1 known-failing-due-to-tech-debt; any *other* red line is a
+  regression. If `npm test` reports new failures, fix the root cause
+  rather than relaxing the assertion or marking the test skip — the
+  assertions exist because each one has a documented historical
+  failure mode behind it.
+- **Don't** delete or weaken `tests/dashboard-token-cookie-wins-check.mjs`
+  or `tests/dashboard-token-runtime-check.mjs` without understanding
+  §11. They are the only mechanical guards against the brittle 2026-06-13
+  dashboard regression coming back.
 
 ---
 
@@ -785,6 +823,37 @@ window.
 
 Rollback baseline (yesterday-working before any of these changes):
 `8b9eb852097448bbfc6c4449ce9dddcda08ca37d`.
+
+### Regression tests that protect this section
+
+Two test files lock these invariants in. **Run them before pushing ANY
+change to `server.mjs` or `app/api/openshell/dashboard/proxy/shared.ts`:**
+
+```bash
+node tests/dashboard-token-cookie-wins-check.mjs   # static source-text guards
+node tests/dashboard-token-runtime-check.mjs        # behavioural execution
+# or just:
+npm test
+```
+
+| Test | What it catches |
+|---|---|
+| `dashboard-token-cookie-wins-check.mjs` | Direct reverts — someone re-adds `!url.searchParams.has('token')` or `!headers.authorization` guards |
+| `dashboard-token-runtime-check.mjs` | Behavioural bugs — new code path bypasses the guard, subtle logic error, dependency drift in copyHeaders/filterCookieHeader/readCookieValue |
+
+The runtime test EXTRACTS function source from `server.mjs` and executes
+it in a `node:vm` sandbox. If you refactor the function signatures or
+move them to a different module, the extract regex in
+`dashboard-token-runtime-check.mjs` will fail to locate them — update
+the regex, do NOT skip the test. (If you refactor enough that vm-eval
+becomes painful, the right move is to extract the helpers into
+`app/lib/dashboardProxy.mjs` and switch the test to import them
+directly — see "Option B" referenced in the test header comment.)
+
+If the runtime test fails with the assertion
+`actual: 'STALE_FROM_LOCALSTORAGE' / expected: 'FRESH_FROM_COOKIE'`, the
+exact 2026-06-13 production failure mode is back in the code. Do not
+ship.
 
 ---
 
