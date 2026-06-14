@@ -9,41 +9,57 @@ const sharedPath = path.join(root, 'app/api/openshell/dashboard/proxy/shared.ts'
 const openRouteSource = await readFile(openRoutePath, 'utf8')
 const sharedSource = await readFile(sharedPath, 'utf8')
 
-// The env var must use ?? '' not || '3001' so that an unset env var defaults to same-origin (empty port)
+// The env var must default to '' (same-origin) when unset; the previous regression
+// hardcoded :3001 which broke any deployment that didn't set the proxy port.
+// `?? ''` and `|| ''` are functionally identical for trimmed-string fallback, so
+// accept either — the load-bearing assertion is the doesNotMatch on '3001'.
 assert.match(
   openRouteSource,
-  /OPENCLAW_DASHBOARD_WS_PROXY_PORT\?\.trim\(\) \?\? ''/,
+  /OPENCLAW_DASHBOARD_WS_PROXY_PORT\?\.trim\(\)\s*(?:\?\?|\|\|)\s*''/,
   'dashboard open route: unset OPENCLAW_DASHBOARD_WS_PROXY_PORT must default to same-origin (empty), not hardcoded :3001'
 )
 assert.doesNotMatch(
   openRouteSource,
-  /OPENCLAW_DASHBOARD_WS_PROXY_PORT\?\.trim\(\) \|\| '3001'/,
+  /OPENCLAW_DASHBOARD_WS_PROXY_PORT[^\n]*'3001'/,
   'dashboard open route: must not fall back to :3001 when env var is unset'
 )
 
 assert.match(
   sharedSource,
-  /OPENCLAW_DASHBOARD_WS_PROXY_PORT\?\.trim\(\) \?\? ''/,
+  /OPENCLAW_DASHBOARD_WS_PROXY_PORT\?\.trim\(\)\s*(?:\?\?|\|\|)\s*''/,
   'dashboard bootstrap: unset OPENCLAW_DASHBOARD_WS_PROXY_PORT must default to same-origin (empty), not hardcoded :3001'
 )
 assert.doesNotMatch(
   sharedSource,
-  /OPENCLAW_DASHBOARD_WS_PROXY_PORT\?\.trim\(\) \|\| '3001'/,
+  /OPENCLAW_DASHBOARD_WS_PROXY_PORT[^\n]*'3001'/,
   'dashboard bootstrap: must not fall back to :3001 when env var is unset'
 )
 
-// When wsProxyPort is empty the gateway host must use window.location.host (includes port if non-standard)
+// Same-origin invariant: the sidecar/port gateway URL is built only when
+// wsProxyPort is set; otherwise the SPA falls back to pageGatewayUrl which
+// uses window.location.host. This is the regression guard against hardcoded
+// :3001 / mismatched-port deployments.
 assert.match(
   sharedSource,
-  /const sidecarHost = wsProxyPort \? window\.location\.hostname \+ ':' \+ wsProxyPort : window\.location\.host/,
-  'dashboard bootstrap: empty wsProxyPort must use window.location.host for same-origin websocket'
+  /portGatewayUrl = wsProxyPort \? protocol \+ '\/\/' \+ window\.location\.hostname \+ ':' \+ wsProxyPort \+ proxyPrefix : ''/,
+  'dashboard bootstrap: portGatewayUrl must only fill when wsProxyPort is set; same-origin path is the empty-string fallback',
+)
+assert.match(
+  sharedSource,
+  /pageGatewayUrl = protocol \+ '\/\/' \+ window\.location\.host \+ proxyPrefix/,
+  'dashboard bootstrap: pageGatewayUrl must use window.location.host (the same-origin fallback)',
+)
+assert.match(
+  sharedSource,
+  /defaultGatewayUrl = configuredGatewayUrl \|\| portGatewayUrl \|\| pageGatewayUrl/,
+  'dashboard bootstrap: defaultGatewayUrl precedence must be configured > sidecar port > same-origin page host',
 )
 
-// The gatewayUrl hash param takes precedence over the sidecar default
+// The gatewayUrl hash param takes precedence over the computed default.
 assert.match(
   sharedSource,
-  /const gatewayUrl = \(hashParams\.get\('gatewayUrl'\) \|\| ''\)\.trim\(\) \|\| sidecarGatewayUrl/,
-  'dashboard bootstrap: explicit gatewayUrl from launch hash must override computed sidecar gateway'
+  /const gatewayUrl = normalizeGatewayUrl\(hashParams\.get\('gatewayUrl'\)\) \|\| defaultGatewayUrl/,
+  'dashboard bootstrap: explicit gatewayUrl from launch hash must override the computed defaultGatewayUrl',
 )
 
 // Server-side: when wsProxyPort is empty the gateway host falls through to host (forwarded or direct)
