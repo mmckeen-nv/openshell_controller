@@ -10,7 +10,6 @@ const OPENSHELL_CLUSTER_CONTAINER = process.env.OPENSHELL_CLUSTER_CONTAINER || "
 function modelContextWindow(modelId: string) {
   const normalized = modelId.toLowerCase()
   if (normalized.includes("nemotron-3-super") && normalized.includes("120b")) return 262144
-  if (normalized.includes("gemma4") && normalized.includes("12b")) return 262144
   if (normalized.includes("qwen2.5:7b")) return 32768
   if (normalized.includes("qwen3.5:27b")) return 32768
   return 131072
