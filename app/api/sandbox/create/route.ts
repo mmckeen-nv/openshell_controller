@@ -5,6 +5,7 @@ import path from "node:path"
 import { promisify } from "node:util"
 import { inspectSandbox, prebuildHermesDashboardWebUi, resolveSandboxRef } from "@/app/lib/openshellHost"
 import { exposeHermesRemote, hermesRemoteMode } from "@/app/lib/hermesRemote"
+import { ensureSystemdOllama } from "@/app/lib/preflightOllama"
 import { recordActivity } from "@/app/lib/activityLog"
 import { repairOpenClawExecApprovalsFile } from "@/app/lib/sandboxPrivilegedFiles"
 import { exportSandboxPolicyToFile as exportPolicy } from "@/app/lib/sandboxCreate/policy"
@@ -935,6 +936,13 @@ export async function POST(request: Request) {
       }
 
       applyCreateInferenceEnv(env, createInference, body)
+
+      // Cloud-init user-data on some fresh-deploy paths launches `ollama serve` directly
+      // as root, holding 0.0.0.0:11434. nemoclaw onboard then can't restart ollama via
+      // systemd to apply its loopback override and exits 1 with "Failed to apply Ollama
+      // systemd loopback override". Reclaim the port for the systemd unit first.
+      const ollamaPreflight = await ensureSystemdOllama()
+      console.log(`[sandbox/create] ollama-preflight action=${ollamaPreflight.action} ${"reason" in ollamaPreflight ? `reason="${ollamaPreflight.reason}"` : ""}${"pid" in ollamaPreflight ? ` pid=${ollamaPreflight.pid}` : ""}${"reclaimedBy" in ollamaPreflight ? ` reclaimedBy=${ollamaPreflight.reclaimedBy}` : ""}`.trim())
 
       // OpenClaw: SIGTERM as soon as the sandbox is Ready — this skips nemoclaw's step 8/8
       // policy application which reliably times out and exits 1 even on success.
