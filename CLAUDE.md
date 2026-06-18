@@ -693,6 +693,33 @@ After an unattended upgrade, restart the controller manually
 state is `systemctl reset-failed openshell-controller && systemctl
 start openshell-controller`.
 
+### Ollama bootstrap lives in manidae-cloud, not here
+
+When a fresh-deploy sandbox-create fails with "Failed to apply Ollama
+systemd loopback override" — or a stray root-owned `ollama serve` holds
+port 11434 — the bug is in the user-data, not the controller. We tried
+adding a controller-side preflight shim (commit `b9f7fce`, reverted in
+`0c7e7bf`) and explicitly rejected it: the controller doesn't own
+ollama lifecycle. Fix it at source:
+
+| Deploy path | Source-of-truth file |
+|---|---|
+| Cloud (Hetzner, Linode, Vultr, GCE) | `manidae-cloud/backend/app/core/deployment/terraform_templates/includes/startup_ollama.sh.j2` |
+| BYOVPS phase-2 | `manidae-cloud/backend/app/core/deployment/byovps_bootstrap.py` (`ollama_install_block` lines ~188-271) |
+
+Both must follow the same pattern: pkill any orphan `ollama serve`
+(matches `^/usr/local/bin/ollama serve` and `^/usr/bin/ollama serve`),
+write `override.conf` + `kill-stale-proxy.conf` drop-ins, then
+`systemctl daemon-reload && systemctl enable ollama && systemctl restart
+ollama || true`. **Never** `OLLAMA_HOST=… ollama serve &` directly —
+that creates a root-owned orphan whose models live under `/root/.ollama/`
+(invisible to the daemon's `ollama` user) and whose process holds the
+port so `nemoclaw onboard`'s later restart can't bind.
+
+Regression tests: `manidae-cloud/backend/tests/test_startup_ollama_template.py`
+(cloud) and `test_byovps_bootstrap.py::test_ollama_install_kills_orphan_serve_before_systemctl_restart`
+(BYOVPS) lock the orphan-kill-before-restart ordering on both paths.
+
 ---
 
 ## 11. OpenClaw dashboard token + tunnel architecture (the brittle one)
