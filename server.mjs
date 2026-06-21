@@ -587,19 +587,46 @@ function collectIncomingBody(req) {
   })
 }
 
-function resolveRestoreSandboxName(sandboxId) {
+function execOpenshellForRestore(args) {
   return new Promise((resolve, reject) => {
     const env = { ...process.env, OPENSHELL_GATEWAY: process.env.OPENSHELL_GATEWAY || 'nemoclaw' }
-    const child = spawn(OPENSHELL_BIN_FOR_RESTORE, ['sandbox', 'get', sandboxId], { env, stdio: ['ignore', 'pipe', 'pipe'] })
-    let stdout = ''
+    const child = spawn(OPENSHELL_BIN_FOR_RESTORE, args, { env, stdio: ['ignore', 'pipe', 'pipe'] })
+    let stdout = '', stderr = ''
     child.stdout.on('data', (d) => { stdout += d })
+    child.stderr.on('data', (d) => { stderr += d })
     child.on('close', (code) => {
-      if (code !== 0) return reject(new Error(`sandbox not found: ${sandboxId}`))
-      const m = stdout.match(/^Name\s*:\s*(.+)$/m)
-      resolve(m?.[1]?.trim() || sandboxId)
+      if (code !== 0) reject(new Error(stderr.trim() || `openshell ${args.join(' ')} exited ${code}`))
+      else resolve(stdout)
     })
     child.on('error', reject)
   })
+}
+
+// Mirrors TypeScript resolveSandboxRef: try direct get, then list+match by Id.
+async function resolveRestoreSandboxName(sandboxId) {
+  const stripAnsi = (s) => s.replace(/\x1b\[[0-9;]*[mGKHF]/g, '')
+  const parseField = (stdout, field) => {
+    const m = stripAnsi(stdout).match(new RegExp(`^\\s*${field}\\s*:\\s*(.+)$`, 'mi'))
+    return m?.[1]?.trim() ?? null
+  }
+  // First try direct lookup — works when sandboxId is actually a sandbox name.
+  try {
+    const stdout = await execOpenshellForRestore(['sandbox', 'get', sandboxId])
+    return parseField(stdout, 'Name') || sandboxId
+  } catch {
+    // Fall through to list-based ID lookup below.
+  }
+  // List all sandboxes and find the one whose Id matches.
+  const listOut = await execOpenshellForRestore(['sandbox', 'list'])
+  const names = listOut.trim().split('\n').slice(1)
+    .map((l) => stripAnsi(l).trim().split(/\s+/)[0]).filter(Boolean)
+  for (const name of names) {
+    try {
+      const stdout = await execOpenshellForRestore(['sandbox', 'get', name])
+      if (parseField(stdout, 'Id') === sandboxId) return parseField(stdout, 'Name') || name
+    } catch { /* ignore individual lookup failures */ }
+  }
+  throw new Error(`sandbox not found: ${sandboxId}`)
 }
 
 function runRestoreExec(sandboxName, payload, targetPath, replace) {
