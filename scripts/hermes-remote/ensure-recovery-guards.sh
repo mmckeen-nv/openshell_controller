@@ -96,12 +96,21 @@ ensure_node_options() {
     return 0
   fi
 
-  docker exec "$CONTAINER" sh -c "
-    chmod u+w '$PROXY_ENV' 2>/dev/null || true
+  # nemoclaw-start writes proxy-env.sh with owner=sandbox mode 444. `docker
+  # exec` runs as root which is "other" for this file, so chmod u+w wouldn't
+  # grant root write access (it only flips the owner's bit). Use 666 to grant
+  # all classes write access, append, then restore 444. We verify the append
+  # actually landed because chmod/printf inside a single `sh -c` won't
+  # propagate an EPIPE-style failure as a non-zero exit otherwise.
+  if ! docker exec "$CONTAINER" sh -c "
+    chmod 666 '$PROXY_ENV' 2>/dev/null
     printf '\n# openshell-controller: gateway-recovery guards (#2478)\nexport NODE_OPTIONS=\"--require=%s --require=%s\"\n' \
-      '$SAFETY_NET_DEST' '$CIAO_GUARD_DEST' >> '$PROXY_ENV'
+      '$SAFETY_NET_DEST' '$CIAO_GUARD_DEST' >> '$PROXY_ENV' || exit 1
     chmod 444 '$PROXY_ENV'
-  " 2>/dev/null || die "failed to patch $PROXY_ENV with NODE_OPTIONS"
+    grep -q '^export NODE_OPTIONS=' '$PROXY_ENV'
+  " 2>/dev/null; then
+    die "failed to patch $PROXY_ENV with NODE_OPTIONS (file may be immutable / Landlock-locked)"
+  fi
   log "patched $CONTAINER:$PROXY_ENV with NODE_OPTIONS guards"
 }
 
