@@ -1,0 +1,39 @@
+[Unit]
+Description=OpenShell Controller Dashboard
+After=network.target docker.service openshell-gateway.service
+Wants=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/openshell-controller
+
+# --- Environment ---
+# NODE_ENV=production: Next.js production build behaviour.
+# PATH: must include the nvm-installed Node, openshell binaries (/usr/bin),
+#       and the standard search paths. Node will use this PATH when spawning
+#       `ssh`, `lsof`, etc. via child_process.
+# HOME: required for `ssh` to find ~/.ssh/known_hosts. Without it, ssh
+#       falls back to /etc/passwd and refuses BatchMode connections.
+# XDG_RUNTIME_DIR + DBUS_SESSION_BUS_ADDRESS: required so that the
+#       `openshell ssh-proxy` ProxyCommand can talk to the user-level
+#       openshell-gateway service over its UNIX socket at /run/user/0/. Without
+#       these, ssh-proxy exits 1, the SSH tunnel from the controller to the
+#       sandbox is never established, and `/api/openshell/dashboard/open`
+#       returns `reachable: false, listenerPresent: false` for every sandbox.
+Environment=NODE_ENV=production
+Environment=PATH=/root/.nvm/versions/node/v22.22.3/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Environment=HOME=/root
+Environment=XDG_RUNTIME_DIR=/run/user/0
+Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/0/bus
+
+ExecStart=/root/.nvm/versions/node/v22.22.3/bin/node /opt/openshell-controller/server.mjs
+Restart=on-failure
+RestartSec=5
+
+# Raise the FD limit — long-running Node server with many open WS upstreams
+# (one per sandbox dashboard tab) plus child processes (ssh forwards, lsof
+# probes) exhausts the 1024 default after a few weeks.
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
