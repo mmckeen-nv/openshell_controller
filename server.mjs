@@ -2,6 +2,9 @@ import http from 'node:http'
 import crypto from 'node:crypto'
 import { spawn } from 'node:child_process'
 import { existsSync, readFileSync } from 'node:fs'
+import { writeFile as fsWriteFile, unlink as fsUnlink } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join as pathJoin } from 'node:path'
 import net from 'node:net'
 import tls from 'node:tls'
 import next from 'next'
@@ -564,6 +567,65 @@ const app = next({ dev, hostname, port })
 app.didWebSocketSetup = true
 const handle = app.getRequestHandler()
 
+// Pre-buffer multipart bodies for the restore endpoint to work around a
+// Next.js 15 bug where fromNodeNextRequest disturbs the IncomingMessage stream
+// for large uploads before the route handler can call request.formData().
+const RESTORE_PATH_RE = /\/api\/sandbox\/[^/?#]+\/restore(?:\/|\?|#|$)/
+
+function collectIncomingBody(req) {
+  return new Promise((resolve, reject) => {
+    const chunks = []
+    req.on('data', (chunk) => chunks.push(Buffer.from(chunk)))
+    req.on('end', () => resolve(Buffer.concat(chunks)))
+    req.on('error', reject)
+  })
+}
+
+function parseRestoreMultipart(body, contentType) {
+  const m = contentType.match(/boundary=(?:"([^"]+)"|([^\s;,]+))/)
+  if (!m) return null
+  const boundary = m[1] || m[2]
+  const delim = Buffer.from('\r\n--' + boundary)
+  const start = Buffer.from('--' + boundary)
+  if (!body.slice(0, start.length).equals(start)) return null
+  const result = {}
+  let pos = start.length
+  while (pos < body.length) {
+    if (body[pos] === 0x2d && body[pos + 1] === 0x2d) break
+    if (body[pos] !== 0x0d || body[pos + 1] !== 0x0a) break
+    pos += 2
+    const headerEnd = body.indexOf(Buffer.from('\r\n\r\n'), pos)
+    if (headerEnd < 0) break
+    const hdr = body.slice(pos, headerEnd).toString('utf8')
+    pos = headerEnd + 4
+    const disp = hdr.match(/content-disposition\s*:[^\r\n]*name="([^"]+)"(?:[^\r\n]*filename="([^"]+)")?/i)
+    const next = body.indexOf(delim, pos)
+    if (next < 0) break
+    if (disp) {
+      const [, name, filename] = disp
+      result[name] = filename ? { data: body.slice(pos, next), filename } : body.slice(pos, next).toString('utf8')
+    }
+    pos = next + delim.length
+  }
+  return result
+}
+
+async function preBufferRestoreBody(req) {
+  if (req.method !== 'POST' || !RESTORE_PATH_RE.test(req.url || '')) return
+  const body = await collectIncomingBody(req)
+  const contentType = req.headers['content-type'] || ''
+  const fields = parseRestoreMultipart(body, contentType)
+  if (!fields?.archive?.data) throw new Error('archive field missing in multipart body')
+  const token = crypto.randomBytes(32).toString('hex')
+  const tmpPath = pathJoin(tmpdir(), `openshell-restore-${token}.bin`)
+  await fsWriteFile(tmpPath, fields.archive.data)
+  setTimeout(() => fsUnlink(tmpPath).catch(() => {}), 120000)
+  req.headers['x-restore-upload-token'] = token
+  req.headers['x-restore-archive-name'] = fields.archive.filename || 'backup.tar.gz'
+  if (typeof fields.targetPath === 'string') req.headers['x-restore-target-path'] = fields.targetPath
+  if (typeof fields.replace === 'string') req.headers['x-restore-replace'] = fields.replace
+}
+
 await startLocalTerminalServerIfNeeded()
 startInterSandboxChatSidecar()
 await app.prepare()
@@ -571,7 +633,16 @@ const handleUpgrade = typeof app.getUpgradeHandler === 'function'
   ? app.getUpgradeHandler()
   : null
 
-const server = http.createServer((req, res) => handle(req, res))
+const server = http.createServer((req, res) => {
+  preBufferRestoreBody(req)
+    .then(() => handle(req, res))
+    .catch((e) => {
+      if (!res.headersSent) {
+        res.writeHead(500, { 'content-type': 'application/json; charset=utf-8' })
+        res.end(JSON.stringify({ ok: false, error: e?.message || 'Failed to read upload body' }))
+      }
+    })
+})
 const dashboardWsProxyServer = dashboardWsProxyPort
   ? http.createServer((_, res) => {
       res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' })
