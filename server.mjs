@@ -581,49 +581,35 @@ function collectIncomingBody(req) {
   })
 }
 
-function parseRestoreMultipart(body, contentType) {
-  const m = contentType.match(/boundary=(?:"([^"]+)"|([^\s;,]+))/)
-  if (!m) return null
-  const boundary = m[1] || m[2]
-  const delim = Buffer.from('\r\n--' + boundary)
-  const start = Buffer.from('--' + boundary)
-  if (!body.slice(0, start.length).equals(start)) return null
-  const result = {}
-  let pos = start.length
-  while (pos < body.length) {
-    if (body[pos] === 0x2d && body[pos + 1] === 0x2d) break
-    if (body[pos] !== 0x0d || body[pos + 1] !== 0x0a) break
-    pos += 2
-    const headerEnd = body.indexOf(Buffer.from('\r\n\r\n'), pos)
-    if (headerEnd < 0) break
-    const hdr = body.slice(pos, headerEnd).toString('utf8')
-    pos = headerEnd + 4
-    const disp = hdr.match(/content-disposition\s*:[^\r\n]*name="([^"]+)"(?:[^\r\n]*filename="([^"]+)")?/i)
-    const next = body.indexOf(delim, pos)
-    if (next < 0) break
-    if (disp) {
-      const [, name, filename] = disp
-      result[name] = filename ? { data: body.slice(pos, next), filename } : body.slice(pos, next).toString('utf8')
-    }
-    pos = next + delim.length
-  }
-  return result
-}
-
 async function preBufferRestoreBody(req) {
   if (req.method !== 'POST' || !RESTORE_PATH_RE.test(req.url || '')) return
-  const body = await collectIncomingBody(req)
+  const rawBody = await collectIncomingBody(req)
   const contentType = req.headers['content-type'] || ''
-  const fields = parseRestoreMultipart(body, contentType)
-  if (!fields?.archive?.data) throw new Error('archive field missing in multipart body')
+  // Parse via the Node.js 18+ built-in Fetch API to avoid writing our own
+  // multipart parser, which is fragile.
+  let form
+  try {
+    form = await new Request('http://localhost/__restore', {
+      method: 'POST',
+      headers: { 'content-type': contentType },
+      body: rawBody,
+    }).formData()
+  } catch (e) {
+    throw new Error(`Failed to parse multipart body: ${e?.message}`)
+  }
+  const archive = form.get('archive')
+  if (!archive || !(archive instanceof File)) throw new Error('archive field missing in multipart body')
+  const archiveData = Buffer.from(await archive.arrayBuffer())
   const token = crypto.randomBytes(32).toString('hex')
   const tmpPath = pathJoin(tmpdir(), `openshell-restore-${token}.bin`)
-  await fsWriteFile(tmpPath, fields.archive.data)
+  await fsWriteFile(tmpPath, archiveData)
   setTimeout(() => fsUnlink(tmpPath).catch(() => {}), 120000)
   req.headers['x-restore-upload-token'] = token
-  req.headers['x-restore-archive-name'] = fields.archive.filename || 'backup.tar.gz'
-  if (typeof fields.targetPath === 'string') req.headers['x-restore-target-path'] = fields.targetPath
-  if (typeof fields.replace === 'string') req.headers['x-restore-replace'] = fields.replace
+  req.headers['x-restore-archive-name'] = archive.name || 'backup.tar.gz'
+  const targetPath = form.get('targetPath')
+  const replace = form.get('replace')
+  if (typeof targetPath === 'string') req.headers['x-restore-target-path'] = targetPath
+  if (typeof replace === 'string') req.headers['x-restore-replace'] = replace
 }
 
 await startLocalTerminalServerIfNeeded()
