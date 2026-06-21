@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { readFile } from 'node:fs/promises'
+import { readFile, stat } from 'node:fs/promises'
 import path from 'node:path'
 
 // Regression guard for the BYOVPS Hermes gateway-crash recovery fix (June 2026).
@@ -133,8 +133,44 @@ if (nodeOptionsMatch) {
   )
 }
 
+// ── 7. Vendored preload fallback ──
+//
+// On BYOVPS hosts installed via install_versioned_nemoclaw_openshell.sh, the
+// NemoClaw source tree at /opt/nemoclaw/ doesn't exist (the installer builds
+// from a mktemp -d and cleans up). Without a fallback, the script dies and
+// the gateway can't be made recoverable. The vendored copies in
+// scripts/hermes-remote/preloads/ are the fallback source.
+
+const vendoredDir = path.join(root, 'scripts/hermes-remote/preloads')
+await stat(path.join(vendoredDir, 'sandbox-safety-net.js'))
+await stat(path.join(vendoredDir, 'ciao-network-guard.js'))
+
+assert.ok(
+  /VENDORED_SCRIPTS_DIR|preloads/.test(scriptSource),
+  'ensure-recovery-guards.sh must reference the vendored preloads directory as a fallback ' +
+  '(scripts/hermes-remote/preloads/). Without this fallback, BYOVPS hosts installed via ' +
+  'install_versioned_nemoclaw_openshell.sh have no source tree at /opt/nemoclaw/ and the script ' +
+  'dies before installing the guards.',
+)
+
+// Verify the vendored files actually carry the NVIDIA SPDX header so a future
+// "let me just rewrite these to remove the dep" doesn't silently lose the
+// real safety-net behaviour.
+const vendoredSafetyNet = await readFile(path.join(vendoredDir, 'sandbox-safety-net.js'), 'utf8')
+const vendoredCiaoGuard = await readFile(path.join(vendoredDir, 'ciao-network-guard.js'), 'utf8')
+for (const [name, source] of [['sandbox-safety-net.js', vendoredSafetyNet], ['ciao-network-guard.js', vendoredCiaoGuard]]) {
+  assert.ok(
+    /SPDX-License-Identifier: Apache-2\.0/.test(source) && /NVIDIA CORPORATION/.test(source),
+    `Vendored ${name} must preserve the SPDX-License-Identifier: Apache-2.0 + NVIDIA copyright ` +
+    `header. We vendor these files verbatim under Apache-2.0 to satisfy the NemoClaw ` +
+    `gateway-recovery substring check and provide real safety-net behaviour at runtime.`,
+  )
+}
+
 console.log('PASS: ensure-recovery-guards.sh installs sandbox-safety-net.js + ciao-network-guard.js at NemoClaw-recognised paths')
 console.log('PASS: ensure-recovery-guards.sh is idempotent (skips when NODE_OPTIONS already present)')
 console.log('PASS: watchdog.sh runs the guards before recovery and no longer removes proxy-env.sh')
 console.log('PASS: expose.sh runs the guards during initial provisioning')
 console.log('PASS: synthesized NODE_OPTIONS value passes NemoClaw\'s substring check for both guards')
+console.log('PASS: vendored preloads exist with NVIDIA Apache-2.0 SPDX header')
+console.log('PASS: ensure-recovery-guards.sh has a vendored-preloads fallback for BYOVPS hosts without /opt/nemoclaw')

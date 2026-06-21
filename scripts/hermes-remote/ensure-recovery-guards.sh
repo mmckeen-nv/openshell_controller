@@ -37,10 +37,37 @@ SANDBOX="${1:-}"
 CONTAINER=$(find_sandbox_container "$SANDBOX")
 [ -n "$CONTAINER" ] || die "no running container for sandbox '$SANDBOX'"
 
-# Source for the preload files. NemoClaw install path is stable across versions.
+# Source for the preload files. Two-tier lookup:
+#   1. The NemoClaw source tree at /opt/nemoclaw/nemoclaw-blueprint/scripts/
+#      — present on hosts where NemoClaw was installed via a git checkout,
+#      preserves the upstream files verbatim.
+#   2. The vendored copy in this repo at scripts/hermes-remote/preloads/ —
+#      used when the source tree isn't on disk (the common case on hosts
+#      installed via install_versioned_nemoclaw_openshell.sh, which builds
+#      from a mktemp -d and cleans up afterwards, leaving nothing under
+#      /opt/nemoclaw).
+#
+# Either source satisfies the upstream gateway-recovery check (#2478), which
+# only globs NODE_OPTIONS for the literal substrings
+# "nemoclaw-sandbox-safety-net" and "nemoclaw-ciao-network-guard" — the file
+# content is irrelevant to the check itself, but matters for the actual
+# safety net the gateway gets at runtime.
 NEMOCLAW_SCRIPTS_DIR="${NEMOCLAW_SCRIPTS_DIR:-/opt/nemoclaw/nemoclaw-blueprint/scripts}"
-SAFETY_NET_SRC="${NEMOCLAW_SCRIPTS_DIR}/sandbox-safety-net.js"
-CIAO_GUARD_SRC="${NEMOCLAW_SCRIPTS_DIR}/ciao-network-guard.js"
+VENDORED_SCRIPTS_DIR="${SCRIPT_DIR}/preloads"
+
+resolve_preload_src() {
+  local basename="$1"
+  if [ -r "${NEMOCLAW_SCRIPTS_DIR}/${basename}" ]; then
+    echo "${NEMOCLAW_SCRIPTS_DIR}/${basename}"
+  elif [ -r "${VENDORED_SCRIPTS_DIR}/${basename}" ]; then
+    echo "${VENDORED_SCRIPTS_DIR}/${basename}"
+  else
+    die "neither ${NEMOCLAW_SCRIPTS_DIR}/${basename} nor ${VENDORED_SCRIPTS_DIR}/${basename} is readable"
+  fi
+}
+
+SAFETY_NET_SRC=$(resolve_preload_src sandbox-safety-net.js)
+CIAO_GUARD_SRC=$(resolve_preload_src ciao-network-guard.js)
 
 # Destination paths inside the container. The literal substrings
 # "nemoclaw-sandbox-safety-net" and "nemoclaw-ciao-network-guard" must
@@ -48,10 +75,6 @@ CIAO_GUARD_SRC="${NEMOCLAW_SCRIPTS_DIR}/ciao-network-guard.js"
 SAFETY_NET_DEST="/tmp/nemoclaw-sandbox-safety-net.js"
 CIAO_GUARD_DEST="/tmp/nemoclaw-ciao-network-guard.js"
 PROXY_ENV="/tmp/nemoclaw-proxy-env.sh"
-
-for src in "$SAFETY_NET_SRC" "$CIAO_GUARD_SRC"; do
-  [ -r "$src" ] || die "NemoClaw guard source not readable: $src (is /opt/nemoclaw installed?)"
-done
 
 # ── Copy the preload files into the container (idempotent) ────────────
 copy_into_container() {
