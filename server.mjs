@@ -2,9 +2,6 @@ import http from 'node:http'
 import crypto from 'node:crypto'
 import { spawn } from 'node:child_process'
 import { existsSync, readFileSync } from 'node:fs'
-import { writeFile as fsWriteFile, unlink as fsUnlink } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
-import { join as pathJoin } from 'node:path'
 import net from 'node:net'
 import tls from 'node:tls'
 import next from 'next'
@@ -567,10 +564,19 @@ const app = next({ dev, hostname, port })
 app.didWebSocketSetup = true
 const handle = app.getRequestHandler()
 
-// Pre-buffer multipart bodies for the restore endpoint to work around a
-// Next.js 15 bug where fromNodeNextRequest disturbs the IncomingMessage stream
-// for large uploads before the route handler can call request.formData().
-const RESTORE_PATH_RE = /\/api\/sandbox\/[^/?#]+\/restore(?:\/|\?|#|$)/
+// Handle the restore endpoint entirely in the custom server to avoid a Next.js 15
+// bug where fromNodeNextRequest throws "body disturbed or locked" for large
+// multipart uploads — whether the body is unconsumed (original bug) or pre-read
+// by us (same error, different cause). Bypassing Next.js routing for this one
+// POST endpoint lets us use Node.js streams directly.
+const RESTORE_ROUTE_RE = /^\/api\/sandbox\/([^/?#]+)\/restore(?:\?|$)/
+const OPENSHELL_BIN_FOR_RESTORE = process.env.OPENSHELL_BIN || '/usr/bin/openshell'
+const MAX_RESTORE_FILE_BYTES = Number(process.env.SANDBOX_FILE_TRANSFER_MAX_BYTES) || (128 * 1024 * 1024)
+const ALLOWED_SANDBOX_ROOTS = ['/sandbox', '/tmp']
+
+function shellQuoteRestore(value) {
+  return "'" + String(value).replace(/'/g, "'\\''") + "'"
+}
 
 function collectIncomingBody(req) {
   return new Promise((resolve, reject) => {
@@ -581,35 +587,118 @@ function collectIncomingBody(req) {
   })
 }
 
-async function preBufferRestoreBody(req) {
-  if (req.method !== 'POST' || !RESTORE_PATH_RE.test(req.url || '')) return
-  const rawBody = await collectIncomingBody(req)
-  const contentType = req.headers['content-type'] || ''
-  // Parse via the Node.js 18+ built-in Fetch API to avoid writing our own
-  // multipart parser, which is fragile.
-  let form
-  try {
-    form = await new Request('http://localhost/__restore', {
-      method: 'POST',
-      headers: { 'content-type': contentType },
-      body: rawBody,
-    }).formData()
-  } catch (e) {
-    throw new Error(`Failed to parse multipart body: ${e?.message}`)
+function resolveRestoreSandboxName(sandboxId) {
+  return new Promise((resolve, reject) => {
+    const env = { ...process.env, OPENSHELL_GATEWAY: process.env.OPENSHELL_GATEWAY || 'nemoclaw' }
+    const child = spawn(OPENSHELL_BIN_FOR_RESTORE, ['sandbox', 'get', sandboxId], { env, stdio: ['ignore', 'pipe', 'pipe'] })
+    let stdout = ''
+    child.stdout.on('data', (d) => { stdout += d })
+    child.on('close', (code) => {
+      if (code !== 0) return reject(new Error(`sandbox not found: ${sandboxId}`))
+      const m = stdout.match(/^Name\s*:\s*(.+)$/m)
+      resolve(m?.[1]?.trim() || sandboxId)
+    })
+    child.on('error', reject)
+  })
+}
+
+function runRestoreExec(sandboxName, payload, targetPath, replace) {
+  return new Promise((resolve, reject) => {
+    const qt = shellQuoteRestore(targetPath)
+    const script = [
+      `tmp="$(mktemp /tmp/openshell-restore.XXXXXX.tar.gz)"`,
+      `cat > "$tmp"`,
+      `tar -tzf "$tmp" >/tmp/openshell-restore-list.$$`,
+      `tar -tvzf "$tmp" >/tmp/openshell-restore-verbose.$$`,
+      `while IFS= read -r e; do case "$e" in ""|/*|../*|*/../*|*"/..") rm -f "$tmp" /tmp/openshell-restore-list.$$ /tmp/openshell-restore-verbose.$$; exit 42;; esac; done < /tmp/openshell-restore-list.$$`,
+      `while IFS= read -r e; do case "$e" in [-d]*) :;; *) rm -f "$tmp" /tmp/openshell-restore-list.$$ /tmp/openshell-restore-verbose.$$; exit 43;; esac; done < /tmp/openshell-restore-verbose.$$`,
+      `mkdir -p ${qt}`,
+      replace ? `find ${qt} -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +` : ':',
+      `if grep -q '^payload/' /tmp/openshell-restore-list.$$; then tar -xzf "$tmp" -C ${qt} --strip-components=1 --wildcards 'payload/*'; else tar -xzf "$tmp" -C ${qt}; fi`,
+      `rm -f "$tmp" /tmp/openshell-restore-list.$$ /tmp/openshell-restore-verbose.$$`,
+    ].join(' && ')
+    const env = { ...process.env, OPENSHELL_GATEWAY: process.env.OPENSHELL_GATEWAY || 'nemoclaw' }
+    const child = spawn(OPENSHELL_BIN_FOR_RESTORE, ['sandbox', 'exec', '-n', sandboxName, '--', 'sh', '-lc', script], {
+      env,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    })
+    let stderr = ''
+    child.stderr.on('data', (d) => { stderr += d })
+    child.stdin.write(payload)
+    child.stdin.end()
+    child.on('close', (code) => {
+      if (code === 42) reject(new Error('archive contains unsafe paths'))
+      else if (code === 43) reject(new Error('archive contains unsupported entry types'))
+      else if (code !== 0) reject(new Error(stderr.trim() || 'failed to restore sandbox archive'))
+      else resolve()
+    })
+    child.on('error', reject)
+  })
+}
+
+async function handleRestoreRequest(req, res, sandboxId) {
+  if (!isAuthenticatedUpgrade(req)) {
+    res.writeHead(401, { 'content-type': 'application/json; charset=utf-8' })
+    res.end(JSON.stringify({ ok: false, error: 'Unauthorized' }))
+    return
   }
-  const archive = form.get('archive')
-  if (!archive || !(archive instanceof File)) throw new Error('archive field missing in multipart body')
-  const archiveData = Buffer.from(await archive.arrayBuffer())
-  const token = crypto.randomBytes(32).toString('hex')
-  const tmpPath = pathJoin(tmpdir(), `openshell-restore-${token}.bin`)
-  await fsWriteFile(tmpPath, archiveData)
-  setTimeout(() => fsUnlink(tmpPath).catch(() => {}), 120000)
-  req.headers['x-restore-upload-token'] = token
-  req.headers['x-restore-archive-name'] = archive.name || 'backup.tar.gz'
-  const targetPath = form.get('targetPath')
-  const replace = form.get('replace')
-  if (typeof targetPath === 'string') req.headers['x-restore-target-path'] = targetPath
-  if (typeof replace === 'string') req.headers['x-restore-replace'] = replace
+  try {
+    const rawBody = await collectIncomingBody(req)
+    const contentType = req.headers['content-type'] || ''
+    let form
+    try {
+      form = await new Request('http://localhost/__restore', {
+        method: 'POST', headers: { 'content-type': contentType }, body: rawBody,
+      }).formData()
+    } catch (e) {
+      res.writeHead(400, { 'content-type': 'application/json; charset=utf-8' })
+      res.end(JSON.stringify({ ok: false, error: `Failed to parse upload: ${e?.message}` }))
+      return
+    }
+    const archiveFile = form.get('archive')
+    if (!archiveFile || !(archiveFile instanceof File)) {
+      res.writeHead(400, { 'content-type': 'application/json; charset=utf-8' })
+      res.end(JSON.stringify({ ok: false, error: 'archive is required' }))
+      return
+    }
+    const rawTarget = form.get('targetPath')
+    const rawReplace = form.get('replace')
+    const targetPath = typeof rawTarget === 'string' && rawTarget.trim() ? rawTarget.trim() : '/sandbox'
+    const replace = rawReplace === 'true' || rawReplace === '1'
+    const normalized = targetPath.startsWith('/') ? targetPath : '/sandbox/' + targetPath
+    if (!ALLOWED_SANDBOX_ROOTS.some((r) => normalized === r || normalized.startsWith(r + '/'))) {
+      res.writeHead(400, { 'content-type': 'application/json; charset=utf-8' })
+      res.end(JSON.stringify({ ok: false, error: 'sandbox path must be under /sandbox or /tmp' }))
+      return
+    }
+    const payload = Buffer.from(await archiveFile.arrayBuffer())
+    if (payload.byteLength > MAX_RESTORE_FILE_BYTES) {
+      res.writeHead(400, { 'content-type': 'application/json; charset=utf-8' })
+      res.end(JSON.stringify({ ok: false, error: `archive is too large; max transfer size is ${Math.floor(MAX_RESTORE_FILE_BYTES / 1024 / 1024)} MiB` }))
+      return
+    }
+    let sandboxName
+    try {
+      sandboxName = await resolveRestoreSandboxName(sandboxId)
+    } catch {
+      res.writeHead(404, { 'content-type': 'application/json; charset=utf-8' })
+      res.end(JSON.stringify({ ok: false, error: `sandbox not found: ${sandboxId}` }))
+      return
+    }
+    await runRestoreExec(sandboxName, payload, normalized, replace)
+    const mode = replace ? 'replace' : 'merge'
+    res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
+    res.end(JSON.stringify({
+      ok: true,
+      restored: { sandboxName, archiveName: archiveFile.name, targetPath: normalized, bytes: payload.byteLength, mode },
+      note: `Restored ${archiveFile.name} into ${normalized} (${mode}).`,
+    }))
+  } catch (e) {
+    const message = e?.message || 'Failed to restore sandbox backup'
+    const status = /required|path|large|unsafe|archive/.test(message) ? 400 : 500
+    res.writeHead(status, { 'content-type': 'application/json; charset=utf-8' })
+    res.end(JSON.stringify({ ok: false, error: message }))
+  }
 }
 
 await startLocalTerminalServerIfNeeded()
@@ -620,14 +709,17 @@ const handleUpgrade = typeof app.getUpgradeHandler === 'function'
   : null
 
 const server = http.createServer((req, res) => {
-  preBufferRestoreBody(req)
-    .then(() => handle(req, res))
-    .catch((e) => {
+  const restoreMatch = req.method === 'POST' && RESTORE_ROUTE_RE.exec(req.url || '')
+  if (restoreMatch) {
+    handleRestoreRequest(req, res, restoreMatch[1]).catch((e) => {
       if (!res.headersSent) {
         res.writeHead(500, { 'content-type': 'application/json; charset=utf-8' })
-        res.end(JSON.stringify({ ok: false, error: e?.message || 'Failed to read upload body' }))
+        res.end(JSON.stringify({ ok: false, error: e?.message || 'Failed to restore' }))
       }
     })
+    return
+  }
+  handle(req, res)
 })
 const dashboardWsProxyServer = dashboardWsProxyPort
   ? http.createServer((_, res) => {
