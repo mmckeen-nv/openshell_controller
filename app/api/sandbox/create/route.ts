@@ -773,10 +773,33 @@ async function approveOpenClawDeviceRequests(sandboxName: string) {
 }
 
 async function ensureOpenClawGatewayToken(sandboxName: string) {
+  // 1. Run doctor (may rotate the JSON token + trigger gateway restart)
+  // 2. Read the token from JSON
+  // 3. Verify the token is accepted by the live gateway via a WS handshake
+  //    against the gateway's in-sandbox port (18789). Retry up to 10× over
+  //    ~15 s to cover the gateway-restart window. If the gateway never
+  //    accepts the JSON token, the dashboard would fail with "Auth did not
+  //    match" — surface that here so the caller can react (eg log + alert)
+  //    instead of letting the user discover it in the browser.
+  // The verification is harmless when the gateway already accepts the token
+  // (single WS handshake, ~50 ms). The retry only fires on the slow path.
   const script = [
     "openclaw doctor --generate-gateway-token >/dev/null 2>&1 || true",
     'token=$(node -e \'const fs=require("fs"); try { const c=JSON.parse(fs.readFileSync("/sandbox/.openclaw/openclaw.json","utf8")); process.stdout.write(String(c?.gateway?.auth?.token||c?.gateway?.token||"")); } catch(e) {}\')',
-    'printf "%s" "$token"',
+    // Poll the gateway WS handshake up to 10× to confirm the JSON token is live.
+    // The gateway's in-sandbox port is OPENCLAW_GATEWAY_PORT (default 18789).
+    'gw_port="${OPENCLAW_GATEWAY_PORT:-18789}"',
+    'gw_accepted=0',
+    'for _i in $(seq 1 10); do',
+    '  code=$(curl -sf -m 2 -o /dev/null -w "%{http_code}" \\',
+    '    -H "Connection: Upgrade" -H "Upgrade: websocket" \\',
+    '    -H "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==" -H "Sec-WebSocket-Version: 13" \\',
+    '    -H "Authorization: Bearer ${token}" \\',
+    '    "http://127.0.0.1:${gw_port}/?token=${token}" 2>/dev/null)',
+    '  if [ "$code" = "101" ]; then gw_accepted=1; break; fi',
+    '  sleep 1.5',
+    'done',
+    'printf "%s\\n%s" "$token" "$gw_accepted"',
   ].join("; ")
 
   const result = await runCreateCommandBounded(OPENSHELL_BIN, [
@@ -792,20 +815,28 @@ async function ensureOpenClawGatewayToken(sandboxName: string) {
     OPENSHELL_GATEWAY: process.env.OPENSHELL_GATEWAY || "nemoclaw",
   }), 60000)
 
-  const token = (result.stdout || "").trim()
+  // The script prints "<token>\n<gw_accepted>" — the second line is "1" when
+  // the gateway has accepted the token (= dashboard will not show "Auth did
+  // not match" on first open).
+  const lines = (result.stdout || "").split(/\r?\n/)
+  const token = (lines[0] || "").trim()
+  const gatewayAccepted = (lines[1] || "").trim() === "1"
   const tokenPresent = Boolean(token) && !/\s/.test(token)
 
   return {
     attempted: true,
     tokenPresent,
+    gatewayAccepted,
     completed: result.completed,
     timedOut: result.timedOut,
     exitCode: result.exitCode,
     signal: result.signal,
     error: result.error,
-    note: tokenPresent
-      ? "Ensured OpenClaw gateway auth token in /sandbox/.openclaw/openclaw.json so the dashboard proxy can authenticate."
-      : "Tried to generate OpenClaw gateway auth token but the sandbox config still has no token; dashboard proxy will fail until this is fixed.",
+    note: !tokenPresent
+      ? "Tried to generate OpenClaw gateway auth token but the sandbox config still has no token; dashboard proxy will fail until this is fixed."
+      : gatewayAccepted
+      ? "Ensured OpenClaw gateway auth token in /sandbox/.openclaw/openclaw.json and confirmed the live gateway accepts it."
+      : "OpenClaw gateway auth token written to /sandbox/.openclaw/openclaw.json but the live gateway did not accept it within 15 s. Dashboard may show 'Auth did not match' on first open until the gateway restarts.",
   }
 }
 
@@ -1007,6 +1038,7 @@ export async function POST(request: Request) {
       const gatewayToken = created && isOpenClawAgent ? await ensureOpenClawGatewayToken(sandboxName).catch((error) => ({
         attempted: true,
         tokenPresent: false,
+        gatewayAccepted: false,
         completed: false,
         timedOut: false,
         exitCode: null as number | null,
