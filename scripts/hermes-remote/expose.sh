@@ -119,6 +119,11 @@ Restart=always
 # and floods the journal indefinitely (StartLimitIntervalSec=0).
 RestartSec=30
 StartLimitIntervalSec=0
+# Raise the FD limit: openshell forward is a long-lived SSH tunnel that
+# accumulates file descriptors. The default soft limit (1024) is exhausted
+# after ~6 days of active forwarding, causing "Too many open files" and
+# making the Hermes remote appear Unreachable. 65536 gives years of headroom.
+LimitNOFILE=65536
 
 [Install]
 WantedBy=multi-user.target
