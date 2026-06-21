@@ -675,16 +675,20 @@ async function runRestoreExec(sandboxId, payload, targetPath, replace) {
     // Make the file readable by the sandbox user (docker cp creates root-owned files).
     await spawnAsync('docker', ['exec', '-u', 'root', containerName, 'chmod', '644', containerTmp])
     const qt = shellQuoteRestore(targetPath)
+    // --warning=no-unknown-keyword: silence macOS PAX header keywords (SCHILY.fflags etc.)
+    // --exclude='._*': skip macOS AppleDouble resource-fork sidecar files
+    // tar exits 1 for "some files differ" (warnings), 2 for fatal errors; treat 1 as success.
+    const tarFlags = `--warning=no-unknown-keyword --exclude='._*'`
     const script = [
       `tmp=${shellQuoteRestore(containerTmp)}`,
-      `tar -tzf "$tmp" >/tmp/openshell-restore-list.$$`,
-      `tar -tvzf "$tmp" >/tmp/openshell-restore-verbose.$$`,
+      `tar -tzf "$tmp" ${tarFlags} >/tmp/openshell-restore-list.$$`,
+      `tar -tvzf "$tmp" ${tarFlags} >/tmp/openshell-restore-verbose.$$`,
       `while IFS= read -r e; do case "$e" in ""|/*|../*|*/../*|*"/..") rm -f "$tmp" /tmp/openshell-restore-list.$$ /tmp/openshell-restore-verbose.$$; exit 42;; esac; done < /tmp/openshell-restore-list.$$`,
       `while IFS= read -r e; do case "$e" in [-d]*) :;; *) rm -f "$tmp" /tmp/openshell-restore-list.$$ /tmp/openshell-restore-verbose.$$; exit 43;; esac; done < /tmp/openshell-restore-verbose.$$`,
       `mkdir -p ${qt}`,
       replace ? `find ${qt} -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +` : ':',
-      `if grep -q '^payload/' /tmp/openshell-restore-list.$$; then tar -xzf "$tmp" -C ${qt} --strip-components=1 --wildcards 'payload/*'; else tar -xzf "$tmp" -C ${qt}; fi`,
-      `rm -f /tmp/openshell-restore-list.$$ /tmp/openshell-restore-verbose.$$ 2>/dev/null`,
+      `if grep -q '^payload/' /tmp/openshell-restore-list.$$; then tar -xzf "$tmp" -C ${qt} --strip-components=1 --wildcards 'payload/*' ${tarFlags}; else tar -xzf "$tmp" -C ${qt} ${tarFlags}; fi`,
+      `rc=$?; rm -f /tmp/openshell-restore-list.$$ /tmp/openshell-restore-verbose.$$ 2>/dev/null; [ $rc -le 1 ]`,
     ].join(' && ')
     const exec = await spawnAsync('docker', ['exec', '-u', 'sandbox', containerName, 'sh', '-lc', script])
     if (exec.code === 42) throw new Error('archive contains unsafe paths')
