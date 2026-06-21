@@ -94,6 +94,14 @@ if [ -x "$UFW" ] && "$UFW" status 2>/dev/null | grep -q '^Status: active'; then
   "$UFW" allow from 172.0.0.0/8 to any port "$PORT" proto tcp >/dev/null 2>&1 || true
 fi
 
+# ── Gateway-recovery guards (#2478) ────────────────────────────────
+# Install the sandbox-safety-net + ciao-network-guard preloads and patch
+# /tmp/nemoclaw-proxy-env.sh with the matching NODE_OPTIONS so the gateway
+# can self-recover from any future crash. Non-fatal: the watchdog re-runs
+# this every 2 min, so a transient docker-cp blip doesn't fail the expose.
+"$SCRIPT_DIR/ensure-recovery-guards.sh" "$SANDBOX" \
+  || warn "ensure-recovery-guards.sh failed; the gateway will not self-heal from abrupt crashes until the watchdog re-applies it"
+
 # ── Dashboard ──────────────────────────────────────────────────────
 "$SCRIPT_DIR/launch.sh" "$SANDBOX" || die "dashboard launch failed"
 

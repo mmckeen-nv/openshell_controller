@@ -9,29 +9,33 @@
 # Python exception) because gateway-recovery only forks on graceful SIGTERM.
 # When the gateway dies abruptly AND /tmp/nemoclaw-proxy-env.sh exists (as it
 # always does on BYOVPS after the first startup), gateway-recovery refuses to
-# restart because NODE_OPTIONS lacks the "safety-net preload" that NemoClaw
-# expects on cloud installs. The workaround: remove proxy-env.sh so the
-# "missing" code path is taken (which starts the gateway without guards), then
-# run `nemoclaw recover` to trigger the restart.
+# restart because NODE_OPTIONS lacks the sandbox-safety-net + ciao-network-guard
+# preloads NemoClaw checks for (see /opt/nemoclaw/src/lib/agent/runtime.ts).
+#
+# The fix: ensure-recovery-guards.sh copies the REAL preload files from the
+# NemoClaw install into the container and patches proxy-env.sh with the
+# matching NODE_OPTIONS. The substring check then passes and the gateway can
+# recover with the safety net actually intact (preserving HTTP_PROXY,
+# unhandled-rejection swallowing, ciao netns guard, etc.).
+#
+# We run ensure-recovery-guards.sh on every tick (idempotent) so a container
+# restart that re-wrote proxy-env.sh without NODE_OPTIONS gets re-patched
+# before the NEXT crash can happen.
 
 TAG="[hermes-remote-watchdog]"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib.sh
 source "$SCRIPT_DIR/lib.sh"
 
-# Attempt to restart a dead gateway using `nemoclaw recover`.
-# Removes /tmp/nemoclaw-proxy-env.sh first so gateway-recovery takes the
-# "missing" code path (bypassing the NODE_OPTIONS safety-net check, #2478).
+# Attempt to restart a dead gateway using `nemoclaw recover`. With the
+# recovery guards already in place (see ensure-recovery-guards.sh) the
+# NemoClaw gateway-recovery code path succeeds with the safety net intact —
+# no need to remove proxy-env.sh.
 recover_dead_gateway() {
   local name="$1" container="$2"
-  log "gateway dead for '$name' — attempting nemoclaw recover (BYOVPS #2478 workaround)"
+  log "gateway dead for '$name' — attempting nemoclaw recover"
 
-  # Remove proxy-env.sh so gateway-recovery starts without the NODE_OPTIONS guard.
-  docker exec "$container" sh -c \
-    'chmod u+w /tmp/nemoclaw-proxy-env.sh 2>/dev/null; rm -f /tmp/nemoclaw-proxy-env.sh' \
-    2>/dev/null || true
-
-  # nemoclaw lives in the nvm bin dir which is not in systemd's PATH
+  # nemoclaw lives in the nvm bin dir which is not in systemd's PATH.
   local nemoclaw_bin
   nemoclaw_bin=$(command -v nemoclaw 2>/dev/null \
     || ls /root/.nvm/versions/node/*/bin/nemoclaw 2>/dev/null | sort -t/ -k8 -V | tail -1 \
@@ -65,6 +69,11 @@ for f in "$ACCESS_DIR"/*.json; do
     log "sandbox '$name' has no running container — skipping (unexpose if deleted)"
     continue
   fi
+
+  # Always (re)install the gateway-recovery guards so any crash AFTER this
+  # tick can self-heal. Idempotent and short-circuits when already applied.
+  "$SCRIPT_DIR/ensure-recovery-guards.sh" "$name" 2>/dev/null \
+    || warn "ensure-recovery-guards failed for '$name'"
 
   # If the Hermes gateway process is dead, try to recover it before launch.sh
   # attempts to (re)launch the dashboard — launch.sh exits immediately if it
