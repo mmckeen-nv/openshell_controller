@@ -772,6 +772,10 @@ async function approveOpenClawDeviceRequests(sandboxName: string) {
   }
 }
 
+// ── FORK-ONLY (BYOVPS): see CLAUDE.md §3 conflict table + §11 token architecture.
+// This function does not exist in upstream — it was added by the fork to seed
+// the OpenClaw gateway token at sandbox creation. Verification logic added on
+// top of that to close the doctor-rotation race documented in §11.
 async function ensureOpenClawGatewayToken(sandboxName: string) {
   // 1. Run doctor (may rotate the JSON token + trigger gateway restart)
   // 2. Read the token from JSON
