@@ -677,19 +677,22 @@ async function runRestoreExec(sandboxId, payload, targetPath, replace) {
     const qt = shellQuoteRestore(targetPath)
     // --warning=no-unknown-keyword: silence macOS PAX header keywords (SCHILY.fflags etc.)
     // --exclude='._*': skip macOS AppleDouble resource-fork sidecar files
-    // tar exits 1 for "some files differ" (warnings), 2 for fatal errors; treat 1 as success.
+    // tar exits 1 for "some files differ" (non-fatal warnings), 2 for fatal errors.
+    // Use newline-separated commands (not &&) so ec=$? always runs; treat exit 1 as success.
     const tarFlags = `--warning=no-unknown-keyword --exclude='._*'`
     const script = [
       `tmp=${shellQuoteRestore(containerTmp)}`,
-      `tar -tzf "$tmp" ${tarFlags} >/tmp/openshell-restore-list.$$`,
-      `tar -tvzf "$tmp" ${tarFlags} >/tmp/openshell-restore-verbose.$$`,
+      `tar -tzf "$tmp" ${tarFlags} >/tmp/openshell-restore-list.$$ 2>/dev/null || { ec=$?; test "$ec" -eq 1 || { rm -f "$tmp" /tmp/openshell-restore-list.$$; exit "$ec"; }; }`,
+      `tar -tvzf "$tmp" ${tarFlags} >/tmp/openshell-restore-verbose.$$ 2>/dev/null || { ec=$?; test "$ec" -eq 1 || { rm -f "$tmp" /tmp/openshell-restore-list.$$ /tmp/openshell-restore-verbose.$$; exit "$ec"; }; }`,
       `while IFS= read -r e; do case "$e" in ""|/*|../*|*/../*|*"/..") rm -f "$tmp" /tmp/openshell-restore-list.$$ /tmp/openshell-restore-verbose.$$; exit 42;; esac; done < /tmp/openshell-restore-list.$$`,
       `while IFS= read -r e; do case "$e" in [-d]*) :;; *) rm -f "$tmp" /tmp/openshell-restore-list.$$ /tmp/openshell-restore-verbose.$$; exit 43;; esac; done < /tmp/openshell-restore-verbose.$$`,
       `mkdir -p ${qt}`,
       replace ? `find ${qt} -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +` : ':',
-      `if grep -q '^payload/' /tmp/openshell-restore-list.$$; then tar -xzf "$tmp" -C ${qt} --strip-components=1 --wildcards 'payload/*' ${tarFlags}; else tar -xzf "$tmp" -C ${qt} ${tarFlags}; fi`,
-      `rc=$?; rm -f /tmp/openshell-restore-list.$$ /tmp/openshell-restore-verbose.$$ 2>/dev/null; [ $rc -le 1 ]`,
-    ].join(' && ')
+      `if grep -q '^payload/' /tmp/openshell-restore-list.$$; then tar -xzf "$tmp" -C ${qt} --strip-components=1 --wildcards 'payload/*' ${tarFlags} 2>/dev/null; else tar -xzf "$tmp" -C ${qt} ${tarFlags} 2>/dev/null; fi`,
+      `ec=$?`,
+      `rm -f /tmp/openshell-restore-list.$$ /tmp/openshell-restore-verbose.$$ 2>/dev/null`,
+      `test "$ec" -le 1 || exit "$ec"`,
+    ].join('\n')
     const exec = await spawnAsync('docker', ['exec', '-u', 'sandbox', containerName, 'sh', '-lc', script])
     if (exec.code === 42) throw new Error('archive contains unsafe paths')
     if (exec.code === 43) throw new Error('archive contains unsupported entry types')
