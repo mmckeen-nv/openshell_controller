@@ -278,8 +278,34 @@ function bootstrapScriptResponse(proxyPrefix: string) {
     window.localStorage.setItem(settingsKey, serializedSettings);
     for (const key of settingsKeys) window.localStorage.setItem(key, serializedSettings);
     window.sessionStorage.removeItem(tokenKey);
+    // Token-scope cleanup: the SPA writes sessionStorage[tokenPrefix + <scope>]
+    // for both the wss:// gatewayUrl scope AND an https:// page-origin scope
+    // derived from window.location. After multiple failed dashboard opens (eg
+    // the BYOVPS doctor-rotation race in #2478), these scoped keys accumulate
+    // stale tokens that the SPA replays in the application-level WS connect
+    // frame -- our server.mjs cookie-wins fix only covers the WS handshake,
+    // not the in-frame token, so a stale sessionStorage token reaches the
+    // gateway and triggers "Auth did not match". Wipe ANY existing
+    // tokenPrefix:<scope> key whose scope path matches this proxyPrefix, then
+    // write the fresh hash token under our known gatewayScopes.
+    try {
+      const sessionKeysToWipe = [];
+      for (let i = 0; i < window.sessionStorage.length; i++) {
+        const k = window.sessionStorage.key(i);
+        if (k && k.startsWith(tokenPrefix) && k.includes(proxyPrefix)) {
+          sessionKeysToWipe.push(k);
+        }
+      }
+      for (const k of sessionKeysToWipe) window.sessionStorage.removeItem(k);
+    } catch {}
     if (token) {
       for (const scope of gatewayScopes) window.sessionStorage.setItem(tokenPrefix + scope, token);
+      // Also write under the https:// (page-origin) scope so the SPA's own
+      // sessionStorage lookup keyed off window.location finds the fresh token.
+      try {
+        const pageScope = window.location.protocol + '//' + window.location.host + proxyPrefix;
+        window.sessionStorage.setItem(tokenPrefix + pageScope, token);
+      } catch {}
     }
   } catch {
     // Best-effort compatibility bridge for OpenClaw's persisted UI settings.
