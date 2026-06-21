@@ -2,6 +2,9 @@ import http from 'node:http'
 import crypto from 'node:crypto'
 import { spawn } from 'node:child_process'
 import { existsSync, readFileSync } from 'node:fs'
+import { writeFile as fsWriteFile, unlink as fsUnlink } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join as pathJoin } from 'node:path'
 import net from 'node:net'
 import tls from 'node:tls'
 import next from 'next'
@@ -629,12 +632,51 @@ async function resolveRestoreSandboxName(sandboxId) {
   throw new Error(`sandbox not found: ${sandboxId}`)
 }
 
-function runRestoreExec(sandboxName, payload, targetPath, replace) {
+// openshell sandbox exec pipes stdin through gRPC which has a 1 MiB message limit,
+// making it unusable for archives > 1 MiB. Instead: write the archive to a VPS
+// temp file, docker cp it into the container (no gRPC), then restore with docker exec.
+function spawnAsync(cmd, args) {
   return new Promise((resolve, reject) => {
+    const child = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'] })
+    let stdout = '', stderr = ''
+    child.stdout.on('data', (d) => { stdout += d })
+    child.stderr.on('data', (d) => { stderr += d })
+    child.on('close', (code) => resolve({ code, stdout, stderr: stderr.trim() }))
+    child.on('error', reject)
+  })
+}
+
+function findSandboxContainer(sandboxId) {
+  return new Promise((resolve, reject) => {
+    const child = spawn('docker', ['ps', '--format', '{{.Names}}', '--filter', `name=${sandboxId}`], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
+    let stdout = ''
+    child.stdout.on('data', (d) => { stdout += d })
+    child.on('close', (code) => {
+      if (code !== 0) return reject(new Error('docker ps failed'))
+      const name = stdout.trim().split('\n').map((s) => s.trim()).find(Boolean)
+      if (!name) return reject(new Error(`no running container found for sandbox ${sandboxId}`))
+      resolve(name)
+    })
+    child.on('error', reject)
+  })
+}
+
+async function runRestoreExec(sandboxId, payload, targetPath, replace) {
+  const token = crypto.randomBytes(16).toString('hex')
+  const hostTmp = pathJoin(tmpdir(), `openshell-restore-${token}.tar.gz`)
+  const containerTmp = `/tmp/openshell-restore-${token}.tar.gz`
+  await fsWriteFile(hostTmp, payload)
+  try {
+    const containerName = await findSandboxContainer(sandboxId)
+    const cp = await spawnAsync('docker', ['cp', hostTmp, `${containerName}:${containerTmp}`])
+    if (cp.code !== 0) throw new Error(`docker cp failed: ${cp.stderr}`)
+    // Make the file readable by the sandbox user (docker cp creates root-owned files).
+    await spawnAsync('docker', ['exec', '-u', 'root', containerName, 'chmod', '644', containerTmp])
     const qt = shellQuoteRestore(targetPath)
     const script = [
-      `tmp="$(mktemp /tmp/openshell-restore.XXXXXX.tar.gz)"`,
-      `cat > "$tmp"`,
+      `tmp=${shellQuoteRestore(containerTmp)}`,
       `tar -tzf "$tmp" >/tmp/openshell-restore-list.$$`,
       `tar -tvzf "$tmp" >/tmp/openshell-restore-verbose.$$`,
       `while IFS= read -r e; do case "$e" in ""|/*|../*|*/../*|*"/..") rm -f "$tmp" /tmp/openshell-restore-list.$$ /tmp/openshell-restore-verbose.$$; exit 42;; esac; done < /tmp/openshell-restore-list.$$`,
@@ -642,25 +684,17 @@ function runRestoreExec(sandboxName, payload, targetPath, replace) {
       `mkdir -p ${qt}`,
       replace ? `find ${qt} -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +` : ':',
       `if grep -q '^payload/' /tmp/openshell-restore-list.$$; then tar -xzf "$tmp" -C ${qt} --strip-components=1 --wildcards 'payload/*'; else tar -xzf "$tmp" -C ${qt}; fi`,
-      `rm -f "$tmp" /tmp/openshell-restore-list.$$ /tmp/openshell-restore-verbose.$$`,
+      `rm -f /tmp/openshell-restore-list.$$ /tmp/openshell-restore-verbose.$$ 2>/dev/null`,
     ].join(' && ')
-    const env = { ...process.env, OPENSHELL_GATEWAY: process.env.OPENSHELL_GATEWAY || 'nemoclaw' }
-    const child = spawn(OPENSHELL_BIN_FOR_RESTORE, ['sandbox', 'exec', '-n', sandboxName, '--', 'sh', '-lc', script], {
-      env,
-      stdio: ['pipe', 'pipe', 'pipe'],
-    })
-    let stderr = ''
-    child.stderr.on('data', (d) => { stderr += d })
-    child.stdin.write(payload)
-    child.stdin.end()
-    child.on('close', (code) => {
-      if (code === 42) reject(new Error('archive contains unsafe paths'))
-      else if (code === 43) reject(new Error('archive contains unsupported entry types'))
-      else if (code !== 0) reject(new Error(stderr.trim() || 'failed to restore sandbox archive'))
-      else resolve()
-    })
-    child.on('error', reject)
-  })
+    const exec = await spawnAsync('docker', ['exec', '-u', 'sandbox', containerName, 'sh', '-lc', script])
+    if (exec.code === 42) throw new Error('archive contains unsafe paths')
+    if (exec.code === 43) throw new Error('archive contains unsupported entry types')
+    if (exec.code !== 0) throw new Error(exec.stderr || 'failed to restore sandbox archive')
+    // Best-effort cleanup of container temp file (sandbox user may not own it).
+    await spawnAsync('docker', ['exec', '-u', 'root', containerName, 'rm', '-f', containerTmp]).catch(() => {})
+  } finally {
+    await fsUnlink(hostTmp).catch(() => {})
+  }
 }
 
 async function handleRestoreRequest(req, res, sandboxId) {
@@ -712,7 +746,7 @@ async function handleRestoreRequest(req, res, sandboxId) {
       res.end(JSON.stringify({ ok: false, error: `sandbox not found: ${sandboxId}` }))
       return
     }
-    await runRestoreExec(sandboxName, payload, normalized, replace)
+    await runRestoreExec(sandboxId, payload, normalized, replace)
     const mode = replace ? 'replace' : 'merge'
     res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
     res.end(JSON.stringify({
