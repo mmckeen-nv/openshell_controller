@@ -105,11 +105,19 @@ function buildAttachCommand(sandboxId) {
     const safeAlias = shellEscape(`openshell-${normalizeSandboxId(sandboxId)}`)
     return process.env.OPENSHELL_TERMINAL_ATTACH_TEMPLATE.replaceAll('{sandboxId}', safeSandboxId).replaceAll('{alias}', safeAlias)
   }
+  // No template configured → default sandbox attach is ssh via the openshell
+  // host alias. The terminal lands directly inside the sandbox shell with
+  // no host-side wrapper text visible to the operator. Host mode falls back
+  // to the platform shell via buildSessionCommand.
+  if (sandboxId && sandboxId !== 'host') {
+    const safeAlias = shellEscape(`openshell-${normalizeSandboxId(sandboxId)}`)
+    return `ssh ${safeAlias}`
+  }
   return shellForPlatform()
 }
 
 function buildSessionCommand(sandboxId) {
-  if (sandboxId && sandboxId !== 'host' && process.env.OPENSHELL_TERMINAL_ATTACH_TEMPLATE) {
+  if (sandboxId && sandboxId !== 'host') {
     return buildAttachCommand(sandboxId)
   }
   return `${shellForPlatform()} -i`
@@ -117,7 +125,7 @@ function buildSessionCommand(sandboxId) {
 
 function buildSessionExec(sandboxId) {
   const sessionCommand = buildSessionCommand(sandboxId)
-  if (sandboxId && sandboxId !== 'host' && process.env.OPENSHELL_TERMINAL_ATTACH_TEMPLATE) {
+  if (sandboxId && sandboxId !== 'host') {
     return `exec ${shellForPlatform()} -lc ${shellEscape(sessionCommand)}`
   }
   return `exec ${sessionCommand}`

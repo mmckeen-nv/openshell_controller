@@ -164,12 +164,49 @@ function readNemoClawRegistry(): NemoClawRegistryData {
   }
 }
 
-function resolveSandboxAgent(name: string, id: string | null, registry: NemoClawRegistryData) {
+async function readSandboxContainerImageMap(): Promise<Map<string, string>> {
+  // One docker-ps lookup powers the agent fallback for every sandbox in this
+  // inventory call. The image tells us whether NemoClaw built the sandbox
+  // ("openshell/sandbox-from:...") or it's a bare `openshell sandbox create`
+  // ("ghcr.io/nvidia/openshell-community/sandboxes/base:..."). Empty map on
+  // error so resolveSandboxAgent silently falls through to its prior default.
+  try {
+    const { stdout } = await execFileAsync(
+      "docker",
+      ["ps", "--filter", "label=openshell.ai/managed-by=openshell", "--format", "{{.Label \"openshell.ai/sandbox-name\"}}|{{.Image}}"],
+      { env: hostCommandEnv(), timeout: 5000, maxBuffer: 1024 * 1024 },
+    )
+    const map = new Map<string, string>()
+    for (const line of String(stdout).split(/\r?\n/)) {
+      const [name, image] = line.split("|")
+      if (name && image) map.set(name.trim(), image.trim())
+    }
+    return map
+  } catch {
+    return new Map()
+  }
+}
+
+function resolveSandboxAgent(
+  name: string,
+  id: string | null,
+  registry: NemoClawRegistryData,
+  imageMap: Map<string, string>,
+) {
   const entries = registry.sandboxes ?? {}
   const directEntry = entries[name] || (id ? entries[id] : undefined)
   const namedEntry = Object.values(entries).find((entry) => entry?.name === name || Boolean(id && entry?.name === id))
-  const agent = directEntry?.agent || namedEntry?.agent
-  return typeof agent === "string" && agent.trim() ? agent.trim() : "openclaw"
+  const registryAgent = directEntry?.agent || namedEntry?.agent
+  if (typeof registryAgent === "string" && registryAgent.trim()) return registryAgent.trim()
+
+  // No registry entry → use the container image. NemoClaw-built sandboxes
+  // get "openclaw" as the default; bare openshell sandboxes are "custom".
+  const image = imageMap.get(name) || ""
+  if (/openshell\/sandbox-from/i.test(image)) return "openclaw"
+  if (image) return "custom"
+
+  // No image data at all (transient docker hiccup) — preserve prior behaviour.
+  return "openclaw"
 }
 
 async function execNemoclaw(args: string[]) {
@@ -216,7 +253,7 @@ function readHostIdentity() {
   return { hostname: hostname(), address: "127.0.0.1", interface: "lo0" }
 }
 
-async function readSandbox(name: string, defaultSandboxNames: Set<string>, registry: NemoClawRegistryData): Promise<{ summary: SandboxSummary; pod: SandboxItem }> {
+async function readSandbox(name: string, defaultSandboxNames: Set<string>, registry: NemoClawRegistryData, imageMap: Map<string, string>): Promise<{ summary: SandboxSummary; pod: SandboxItem }> {
   try {
     const [{ stdout: detailsStdout }, { stdout: sshStdout }] = await Promise.all([
       execOpenShell(["sandbox", "get", name]),
@@ -230,7 +267,7 @@ async function readSandbox(name: string, defaultSandboxNames: Set<string>, regis
     const sshConfig = sshStdout.trim()
     const sshHostAlias = parseSshHostAlias(sshConfig, sandboxName)
     const isDefault = defaultSandboxNames.has(sandboxName)
-    const agent = resolveSandboxAgent(sandboxName, sandboxId, registry)
+    const agent = resolveSandboxAgent(sandboxName, sandboxId, registry, imageMap)
 
     return {
       summary: {
@@ -275,7 +312,7 @@ async function readSandbox(name: string, defaultSandboxNames: Set<string>, regis
   } catch (error) {
     const sandboxName = name
     const isDefault = defaultSandboxNames.has(sandboxName)
-    const agent = resolveSandboxAgent(sandboxName, sandboxName, registry)
+    const agent = resolveSandboxAgent(sandboxName, sandboxName, registry, imageMap)
     return {
       summary: {
         id: sandboxName,
@@ -337,7 +374,8 @@ export async function GET(request: Request) {
       : [null, null]
     const defaultSandboxNames = parseDefaultSandboxNames(nemoclawListResult?.stdout ?? "")
     const registry = readNemoClawRegistry()
-    const results = await Promise.all(names.map((name) => readSandbox(name, defaultSandboxNames, registry)))
+    const imageMap = names.length > 0 ? await readSandboxContainerImageMap() : new Map<string, string>()
+    const results = await Promise.all(names.map((name) => readSandbox(name, defaultSandboxNames, registry, imageMap)))
     const sandboxes = results.map((result) => result.summary)
     const items = results.map((result) => result.pod)
     const nemoclaw = buildNemoClawSummary(nemoclawStatusResult?.stdout ?? null, defaultSandboxNames)
