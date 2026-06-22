@@ -157,7 +157,7 @@ assert.match(manifestSource, /syncSandboxOpenClawMcpConfig/, 'MCP sandbox manife
 assert.match(manifestSource, /\/mcp/, 'MCP sandbox handoff must include the protocol-compatible MCP endpoint')
 assert.match(manifestSource, /Quick Check/, 'MCP sandbox handoff must include a token-safe local verification snippet')
 assert.match(manifestSource, /tools\/list/, 'MCP sandbox handoff quick check should verify tool discovery')
-assert.match(privilegedFilesSource, /kubectl/, 'privileged sandbox file writes must use the OpenShell cluster control path')
+assert.match(privilegedFilesSource, /OPENSHELL_BIN.*sandbox.*exec|sandbox.*exec.*-n.*sandboxName/s, 'privileged sandbox file writes must go through the driver-agnostic openshell sandbox exec path')
 assert.doesNotMatch(manifestSource, /allowedServers|renderServer|commandLine/, 'MCP sandbox handoff must not disclose server inventory or launch specs')
 assert.match(manifestSource, /control plane enforces/, 'MCP sandbox handoff must explain broker-side enforcement')
 assert.match(brokerCapabilitiesRouteSource, /listAllowedBrokerServers/, 'MCP broker capabilities must only list allowed servers')

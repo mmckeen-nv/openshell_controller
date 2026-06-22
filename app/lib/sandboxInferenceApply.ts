@@ -1,11 +1,9 @@
 import { execFile, spawn } from "node:child_process"
 import { promisify } from "node:util"
-import { HOST_PATH, OPENSHELL_BIN, hostCommandEnv } from "./hostCommands"
+import { OPENSHELL_BIN, hostCommandEnv } from "./hostCommands"
 import { getSandboxInferenceConfig, type SandboxInferenceRoute } from "./sandboxInferenceStore"
 
 const execFileAsync = promisify(execFile)
-const DOCKER_BIN = process.env.DOCKER_BIN || "docker"
-const OPENSHELL_CLUSTER_CONTAINER = process.env.OPENSHELL_CLUSTER_CONTAINER || "openshell-cluster-nemoclaw"
 
 function modelContextWindow(modelId: string) {
   const normalized = modelId.toLowerCase()
@@ -163,10 +161,10 @@ async function runOpenShell(args: string[]) {
   return { stdout: String(stdout).trim(), stderr: String(stderr).trim() }
 }
 
-async function runDockerKubectl(args: string[], input?: string) {
+async function runSandboxExec(sandboxName: string, command: string[], input?: string) {
   return await new Promise<{ stdout: string; stderr: string; code: number | null }>((resolve, reject) => {
-    const child = spawn(DOCKER_BIN, ["exec", ...(input ? ["-i"] : []), OPENSHELL_CLUSTER_CONTAINER, "kubectl", ...args], {
-      env: { ...process.env, PATH: HOST_PATH },
+    const child = spawn(OPENSHELL_BIN, ["sandbox", "exec", "-n", sandboxName, "--", ...command], {
+      env: hostCommandEnv({ OPENSHELL_GATEWAY: process.env.OPENSHELL_GATEWAY || "nemoclaw" }),
       stdio: ["pipe", "pipe", "pipe"],
     })
     let stdout = ""
@@ -181,7 +179,7 @@ async function runDockerKubectl(args: string[], input?: string) {
 }
 
 async function readCurrentOpenClawConfig(sandboxName: string) {
-  const result = await runDockerKubectl(["exec", "-n", "openshell", sandboxName, "--", "cat", "/sandbox/.openclaw/openclaw.json"])
+  const result = await runSandboxExec(sandboxName, ["cat", "/sandbox/.openclaw/openclaw.json"])
   if (result.code !== 0) throw new Error(result.stderr || "Failed to read OpenClaw config")
   return JSON.parse(result.stdout)
 }
@@ -196,14 +194,14 @@ async function writeOpenClawConfig(sandboxName: string, config: any) {
     "chmod 444 /sandbox/.openclaw/.config-hash",
     "chown root:root /sandbox/.openclaw/.config-hash",
   ].join(" && ")
-  const result = await runDockerKubectl(["exec", "-i", "-n", "openshell", sandboxName, "--", "sh", "-lc", script], payload)
+  const result = await runSandboxExec(sandboxName, ["sh", "-lc", script], payload)
   if (result.code !== 0) throw new Error(result.stderr || "Failed to write OpenClaw config")
   return result
 }
 
 async function restartOpenClawGatewayIfRunning(sandboxName: string) {
   const script = "for p in /proc/[0-9]*; do cmd=$(tr '\\0' ' ' < \"$p/cmdline\" 2>/dev/null || true); case \"$cmd\" in *'openclaw gateway'*) kill \"${p##*/}\" 2>/dev/null || true;; esac; done"
-  return await runDockerKubectl(["exec", "-n", "openshell", sandboxName, "--", "sh", "-lc", script])
+  return await runSandboxExec(sandboxName, ["sh", "-lc", script])
 }
 
 export async function applySandboxInferenceProfile(sandboxId: string, sandboxName: string) {
