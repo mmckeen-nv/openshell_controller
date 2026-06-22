@@ -283,7 +283,7 @@ assert.match(sandboxInferencePanelSource, /\/api\/ollama\/models/, 'selected san
 assert.match(sandboxInferencePanelSource, /Enabled Routes/, 'selected sandbox UI must show multiple enabled inference routes')
 assert.match(sandboxInferencePanelSource, /Add Route/, 'selected sandbox UI must allow adding provider/model routes')
 assert.match(sandboxInferenceApplyLibSource, /\/sandbox\/\.openclaw\/openclaw\.json/, 'live apply must patch OpenClaw config inside the running sandbox')
-assert.match(sandboxInferenceApplyLibSource, /sha256sum \/sandbox\/\.openclaw\/openclaw\.json > \/sandbox\/\.openclaw\/\.config-hash/, 'live apply must refresh the immutable OpenClaw config hash')
+assert.match(sandboxInferenceApplyLibSource, /sha256sum \/sandbox\/\.openclaw\/openclaw\.json > "\$tmp2"[\s\S]*mv -f "\$tmp2" \/sandbox\/\.openclaw\/\.config-hash/, 'live apply must refresh the immutable OpenClaw config hash via atomic temp-file rename')
 assert.match(sandboxInferenceApplyLibSource, /\["inference", "set", "--no-verify", "--provider", primary\.provider, "--model", primary\.model\]/, 'live apply must point OpenShell inference at the primary route')
 assert.match(sandboxInferenceApplyLibSource, /resolveInferenceModelIdentity/, 'live apply must normalize provider/model identities for OpenClaw inference routes')
 assert.match(sandboxInferenceApplyLibSource, /providerKey: "nvidia"[\s\S]*modelRef: route\.model/, 'live apply must preserve nvidia/... model refs without wrapping them as inference/...')

@@ -43,19 +43,21 @@ async function readOpenClawConfig(sandboxName: string) {
 
 async function writeOpenClawConfig(sandboxName: string, config: Record<string, unknown>) {
   const payload = `${JSON.stringify(config, null, 2)}\n`
-  // The file lands as 444 sandbox:sandbox on the Docker driver, so we must
-  // chmod it writable before truncating. set -e + newline joins guarantee
-  // any write failure surfaces as a non-zero exit (mixing && with || true
-  // on one line lets failures get swallowed by precedence).
+  // Write via 444 temp file + atomic rename so the destination is never
+  // momentarily writable. Joined with `;` (not && — operator precedence
+  // with `|| true` would swallow failures) and newline-free (openshell
+  // sandbox exec rejects argv entries containing newlines).
   const script = [
     "set -e",
-    `chmod 644 ${OPENCLAW_CONFIG_PATH} 2>/dev/null || true`,
-    `cat > ${OPENCLAW_CONFIG_PATH}`,
-    `chmod 444 ${OPENCLAW_CONFIG_PATH}`,
-    `chmod 644 ${OPENCLAW_CONFIG_HASH_PATH} 2>/dev/null || true`,
-    `sha256sum ${OPENCLAW_CONFIG_PATH} > ${OPENCLAW_CONFIG_HASH_PATH}`,
-    `chmod 444 ${OPENCLAW_CONFIG_HASH_PATH}`,
-  ].join("\n")
+    `tmp="$(mktemp ${OPENCLAW_CONFIG_PATH}.XXXXXX)"`,
+    `cat > "$tmp"`,
+    `chmod 444 "$tmp"`,
+    `mv -f "$tmp" ${OPENCLAW_CONFIG_PATH}`,
+    `tmp2="$(mktemp ${OPENCLAW_CONFIG_HASH_PATH}.XXXXXX)"`,
+    `sha256sum ${OPENCLAW_CONFIG_PATH} > "$tmp2"`,
+    `chmod 444 "$tmp2"`,
+    `mv -f "$tmp2" ${OPENCLAW_CONFIG_HASH_PATH}`,
+  ].join("; ")
   const result = await runSandboxExec(sandboxName, ["sh", "-lc", script], payload)
   if (result.code !== 0) throw new Error(result.stderr || "Failed to write OpenClaw MCP config")
 }
