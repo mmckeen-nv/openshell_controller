@@ -43,16 +43,19 @@ async function readOpenClawConfig(sandboxName: string) {
 
 async function writeOpenClawConfig(sandboxName: string, config: Record<string, unknown>) {
   const payload = `${JSON.stringify(config, null, 2)}\n`
-  // chown root:root is best-effort: openshell sandbox exec runs as the
-  // sandbox user, which cannot chown to root on the Docker driver.
+  // The file lands as 444 sandbox:sandbox on the Docker driver, so we must
+  // chmod it writable before truncating. set -e + newline joins guarantee
+  // any write failure surfaces as a non-zero exit (mixing && with || true
+  // on one line lets failures get swallowed by precedence).
   const script = [
+    "set -e",
+    `chmod 644 ${OPENCLAW_CONFIG_PATH} 2>/dev/null || true`,
     `cat > ${OPENCLAW_CONFIG_PATH}`,
     `chmod 444 ${OPENCLAW_CONFIG_PATH}`,
-    `chown root:root ${OPENCLAW_CONFIG_PATH} 2>/dev/null || true`,
+    `chmod 644 ${OPENCLAW_CONFIG_HASH_PATH} 2>/dev/null || true`,
     `sha256sum ${OPENCLAW_CONFIG_PATH} > ${OPENCLAW_CONFIG_HASH_PATH}`,
     `chmod 444 ${OPENCLAW_CONFIG_HASH_PATH}`,
-    `chown root:root ${OPENCLAW_CONFIG_HASH_PATH} 2>/dev/null || true`,
-  ].join(" && ")
+  ].join("\n")
   const result = await runSandboxExec(sandboxName, ["sh", "-lc", script], payload)
   if (result.code !== 0) throw new Error(result.stderr || "Failed to write OpenClaw MCP config")
 }
