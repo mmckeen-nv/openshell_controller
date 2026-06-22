@@ -10,9 +10,10 @@ import { repairOpenClawExecApprovalsFile } from "@/app/lib/sandboxPrivilegedFile
 import { exportSandboxPolicyToFile as exportPolicy } from "@/app/lib/sandboxCreate/policy"
 import {
   bucketCandidatesByAgent,
-  type NemoClawAgent as NemoClawAgentT,
+  type QuickDeployAgent,
   type RegistryShape,
 } from "@/app/lib/sandboxCreate/agentFilter"
+import { readSandboxContainerImageMap, type SandboxImageMap } from "@/app/lib/sandboxContainerImage"
 import {
   commandExists,
   HOST_PATH,
@@ -354,10 +355,17 @@ async function resolveSourcePodImageFromRef(sourceSandboxRef: string) {
   }
 }
 
+function agentDisplayName(agent: QuickDeployAgent) {
+  if (agent === "hermes") return "Hermes"
+  if (agent === "openclaw") return "OpenClaw"
+  return "Custom"
+}
+
 async function resolveSourcePodImage(
   sourceSandboxRef: string | null | undefined,
   targetSandboxName: string,
-  requestedAgent?: NemoClawAgent | null,
+  requestedAgent: QuickDeployAgent | null,
+  imageMap: SandboxImageMap,
 ) {
   if (sourceSandboxRef && typeof sourceSandboxRef === "string" && sourceSandboxRef.trim()) {
     return await resolveSourcePodImageFromRef(sourceSandboxRef)
@@ -367,8 +375,8 @@ async function resolveSourcePodImage(
   const registeredEntries = Object.entries(registry.sandboxes ?? {})
     .sort(([, a], [, b]) => String(b?.createdAt ?? "").localeCompare(String(a?.createdAt ?? "")))
 
-  const agentFilter: NemoClawAgentT | null =
-    requestedAgent === "hermes" || requestedAgent === "openclaw" ? requestedAgent : null
+  const agentFilter: QuickDeployAgent | null =
+    requestedAgent === "hermes" || requestedAgent === "openclaw" || requestedAgent === "custom" ? requestedAgent : null
   const liveNames = await listOpenShellSandboxNames()
   const seeds = [
     registry.defaultSandbox || undefined,
@@ -376,7 +384,7 @@ async function resolveSourcePodImage(
     ...liveNames,
   ].filter((candidate): candidate is string => Boolean(candidate && candidate !== targetSandboxName))
 
-  const { candidates } = bucketCandidatesByAgent(seeds, registry as RegistryShape, agentFilter)
+  const { candidates } = bucketCandidatesByAgent(seeds, registry as RegistryShape, agentFilter, imageMap)
 
   for (const candidate of candidates) {
     try {
@@ -388,7 +396,7 @@ async function resolveSourcePodImage(
 
   throw new Error(
     agentFilter
-      ? `No running ${agentFilter === "hermes" ? "Hermes" : "OpenClaw"} sandbox image was found for quick deploy. Create a Fresh ${agentFilter === "hermes" ? "Hermes" : "OpenClaw"} sandbox first, or pass sourceSandboxName explicitly.`
+      ? `No running ${agentDisplayName(agentFilter)} sandbox image was found for quick deploy. Create a Fresh ${agentDisplayName(agentFilter)} sandbox first, or pass sourceSandboxName explicitly.`
       : "No running NemoClaw sandbox image was found for quick deploy. Create one Fresh NemoClaw Image first, or pass sourceSandboxName explicitly.",
   )
 }
@@ -1258,34 +1266,56 @@ export async function POST(request: Request) {
     if (blueprint === "redeploy-image") {
       const sourceSandboxName = typeof body?.sourceSandboxName === "string" ? body.sourceSandboxName.trim() : ""
       const requestedAgentRaw = typeof body?.agent === "string" ? body.agent.trim().toLowerCase() : ""
-      const requestedAgent: NemoClawAgent | null = requestedAgentRaw === "hermes" ? "hermes" : requestedAgentRaw === "openclaw" ? "openclaw" : null
-      const source = await resolveSourcePodImage(sourceSandboxName, sandboxName, requestedAgent)
+      const requestedAgent: QuickDeployAgent | null =
+        requestedAgentRaw === "hermes" ? "hermes" :
+        requestedAgentRaw === "openclaw" ? "openclaw" :
+        requestedAgentRaw === "custom" ? "custom" : null
+      const imageMap = await readSandboxContainerImageMap()
+      const source = await resolveSourcePodImage(sourceSandboxName, sandboxName, requestedAgent, imageMap)
       const sourceImage = source.image
-      // Inherit the source's effective policy. Hermes sandboxes need /opt/hermes
-      // in the read_only set (which the static openclaw-sandbox.yaml template
-      // lacks); without this, Landlock denies execute on the hermes binary in
-      // the redeployed sandbox. Fall back to the static policy if export fails.
-      const inheritedPolicyPath = await exportSandboxPolicyToFile(source.name)
-      const basePolicyPath = inheritedPolicyPath ?? resolveNemoClawBasePolicyPath()
-      const policySource: "source-sandbox" | "base-template" = inheritedPolicyPath ? "source-sandbox" : "base-template"
+      const isCustomAgent = requestedAgent === "custom"
+      // For OpenClaw/Hermes clones, inherit the source's effective policy.
+      // Hermes sandboxes need /opt/hermes in the read_only set (which the
+      // static openclaw-sandbox.yaml template lacks); without this, Landlock
+      // denies execute on the hermes binary in the redeployed sandbox. Fall
+      // back to the static policy if export fails. For Custom clones we
+      // intentionally skip --policy (and -- nemoclaw-start) — bare openshell
+      // sandboxes don't carry a NemoClaw policy and shouldn't start under
+      // NemoClaw's runtime hook.
+      const inheritedPolicyPath = isCustomAgent ? null : await exportSandboxPolicyToFile(source.name)
+      const basePolicyPath = isCustomAgent ? null : (inheritedPolicyPath ?? resolveNemoClawBasePolicyPath())
+      const policySource: "source-sandbox" | "base-template" | "none" = isCustomAgent
+        ? "none"
+        : inheritedPolicyPath ? "source-sandbox" : "base-template"
       const env: NodeJS.ProcessEnv = hostCommandEnv({
         OPENSHELL_GATEWAY: process.env.OPENSHELL_GATEWAY || "nemoclaw",
       })
 
-      const createAttempt = await runCreateCommandUntilReady(OPENSHELL_BIN, [
-        "sandbox",
-        "create",
-        "--name",
-        sandboxName,
-        ...openShellGpuArgs(gpuMode),
-        "--from",
-        sourceImage,
-        "--policy",
-        basePolicyPath,
-        "--auto-providers",
-        "--",
-        "nemoclaw-start",
-      ], env, sandboxName, 120000, 2000)
+      const createArgs = isCustomAgent
+        ? [
+            "sandbox",
+            "create",
+            "--name",
+            sandboxName,
+            ...openShellGpuArgs(gpuMode),
+            "--from",
+            sourceImage,
+          ]
+        : [
+            "sandbox",
+            "create",
+            "--name",
+            sandboxName,
+            ...openShellGpuArgs(gpuMode),
+            "--from",
+            sourceImage,
+            "--policy",
+            basePolicyPath as string,
+            "--auto-providers",
+            "--",
+            "nemoclaw-start",
+          ]
+      const createAttempt = await runCreateCommandUntilReady(OPENSHELL_BIN, createArgs, env, sandboxName, 120000, 2000)
 
       const readiness = createAttempt.readyVerification?.verified
         ? {
@@ -1301,14 +1331,18 @@ export async function POST(request: Request) {
         error: "Sandbox readiness polling produced no verification result.",
       }
       const created = readiness.verified
-      const registry = created ? registerNemoClawImageRedeploy(source.name, sandboxName) : null
-      const sourceAgent: NemoClawAgent = (() => {
+      const registry = (created && !isCustomAgent) ? registerNemoClawImageRedeploy(source.name, sandboxName) : null
+      const sourceAgent: QuickDeployAgent = (() => {
         const map = readNemoClawRegistry().sandboxes ?? {}
         const entry = (map[source.name] ?? map[source.id ?? ""]) as { agent?: string } | undefined
         const value = typeof entry?.agent === "string" ? entry.agent.trim() : ""
-        return value === "hermes" ? "hermes" : "openclaw"
+        if (value === "hermes" || value === "openclaw") return value
+        // No registry entry → check image to disambiguate Custom from "ambiguous NemoClaw".
+        const image = imageMap.get(source.name)
+        if (image && !/openshell\/sandbox-from/i.test(image)) return "custom"
+        return "openclaw"
       })()
-      const effectiveAgent: NemoClawAgent = requestedAgent ?? sourceAgent
+      const effectiveAgent: QuickDeployAgent = requestedAgent ?? sourceAgent
       const isOpenClawAgent = effectiveAgent === "openclaw"
       const execApprovalsRepair = created && isOpenClawAgent ? await repairOpenClawExecApprovalsFile(sandboxName).catch((error) => ({
         sandboxName,

@@ -6,9 +6,11 @@
 // sandbox list (which doesn't). When the user picks an agent type for
 // Quick Deploy, we MUST avoid cloning from a mismatched-agent source — a
 // hermes image satisfying an openclaw request (or vice versa) lands the
-// wrong runtime in the new sandbox.
+// wrong runtime in the new sandbox. A "custom" clone also has to land on a
+// bare openshell image, not a NemoClaw-built one.
 
 export type NemoClawAgent = "openclaw" | "hermes"
+export type QuickDeployAgent = NemoClawAgent | "custom"
 
 export type RegistryShape = {
   sandboxes?: Record<string, { name?: string; createdAt?: string; agent?: string }>
@@ -35,19 +37,43 @@ export function registryAgentForName(registry: RegistryShape, name: string): "op
   return "unknown"
 }
 
+const NEMOCLAW_IMAGE_PATTERN = /openshell\/sandbox-from/i
+
+/**
+ * Classify a sandbox into one of openclaw / hermes / custom / unknown using
+ * both the registry agent field and (optionally) the container image. The
+ * image map lets us distinguish a Custom sandbox (no registry entry + bare
+ * openshell image) from an ambiguous one (no registry entry + image data
+ * missing).
+ */
+export function classifySandbox(
+  registry: RegistryShape,
+  name: string,
+  imageMap?: Map<string, string>,
+): "openclaw" | "hermes" | "custom" | "unknown" {
+  const registryTag = registryAgentForName(registry, name)
+  if (registryTag !== "unknown") return registryTag
+  if (!imageMap) return "unknown"
+  const image = imageMap.get(name)
+  if (!image) return "unknown"
+  if (NEMOCLAW_IMAGE_PATTERN.test(image)) return "unknown" // NemoClaw image but unlabelled — leave as ambiguous
+  return "custom"
+}
+
 /**
  * Order candidate sandbox names for Quick Deploy. When `agentFilter` is null,
- * preserves the input order (deduplicated). When set, returns matched-agent
- * candidates first, then unknown-agent (live sandboxes not in the registry),
- * with mismatched-agent candidates excluded.
- *
- * @returns The ordered, deduplicated candidate list, plus per-bucket lists for
- *          logging / debug output.
+ * preserves the input order (deduplicated). When set to "openclaw"/"hermes",
+ * returns matched-agent candidates first, then unknown-agent (live sandboxes
+ * not in the registry, no image data), with mismatched-agent candidates
+ * excluded. When set to "custom", returns ONLY sandboxes positively
+ * identified as Custom — the unknown bucket stays empty so we never
+ * accidentally clone a NemoClaw image as Custom.
  */
 export function bucketCandidatesByAgent(
   seeds: Array<string | null | undefined>,
   registry: RegistryShape,
-  agentFilter: NemoClawAgent | null,
+  agentFilter: QuickDeployAgent | null,
+  imageMap?: Map<string, string>,
 ): BucketResult {
   // Deduplicate while preserving first-seen order.
   const seen = new Set<string>()
@@ -68,9 +94,9 @@ export function bucketCandidatesByAgent(
   const unknown: string[] = []
   const excluded: string[] = []
   for (const name of ordered) {
-    const tag = registryAgentForName(registry, name)
+    const tag = classifySandbox(registry, name, imageMap)
     if (tag === agentFilter) matched.push(name)
-    else if (tag === "unknown") unknown.push(name)
+    else if (tag === "unknown" && agentFilter !== "custom") unknown.push(name)
     else excluded.push(name)
   }
   return { candidates: [...matched, ...unknown], matched, unknown, excluded }
