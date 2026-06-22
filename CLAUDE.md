@@ -168,6 +168,57 @@ Repeat for each sandbox that stays unhealthy after the host gateway is back.
 
 ---
 
+## 4. Upstream divergence audit — when to consult `docs/upstream-divergence-audit.md`
+
+This fork is ~94 commits ahead of upstream as of 2026-06-22, with several
+workarounds for current NemoClaw / OpenShell / Hermes limitations.
+`docs/upstream-divergence-audit.md` catalogs every meaningful divergence,
+ranks each by security risk (🔴 HIGH / 🟠 MEDIUM / 🟢 LOW), and tags each
+with whether an upstream update is likely to obsolete it
+("HIGHLY upstream-fixable" vs "OURS — permanent").
+
+**Read it (or at minimum the prioritized summary table at the top) when:**
+
+1. **You finish a `sync/upstream-YYYY-MM-DD` merge** (see §5). For every
+   item tagged "HIGHLY upstream-fixable", check whether the new upstream
+   delivers the underlying capability — and if so, *delete* the workaround
+   in the same merge. Don't carry obsolete shims forward.
+2. **You bump `NEMOCLAW_INSTALL_REF`, `NEMOCLAW_INSTALL_TAG`,
+   `OPENSHELL_VERSION`, `OPENCLAW_VERSION`, or `HERMES`** in
+   `install_versioned_nemoclaw_openshell.sh` (see §10). The audit lists
+   the specific shims a version bump should let you remove (e.g.
+   `upgrade-hermes.sh` when base ships Hermes ≥0.16; the Dockerfile
+   apt-pin sed-patch when NemoClaw stops Debian-pinning on Ubuntu).
+3. **You are about to touch a file marked 🔴 HIGH-risk** in the audit
+   (anything under `app/lib/auth/*`, `app/lib/sandboxPrivilegedFiles.ts`,
+   `app/lib/sandboxOpenClawMcpConfig.ts`, `app/lib/mcpBroker*.ts`,
+   `app/lib/hermesRemote.ts`, `scripts/hermes-remote/*`, the dashboard
+   token chain in `server.mjs`, or restore handling in `server.mjs`).
+   Confirm the relevant regression tests still pass and you aren't
+   violating the audit's open security questions or §9 Don'ts.
+4. **A security review or external pentest is requested.** The audit is
+   the starting point — it lists the six open security questions worth
+   resolving (file perms on the access stores, restore rate-limiting,
+   Hermes URL guessability, etc.) and the threat model assumptions behind
+   each high-risk area.
+5. **You are deciding scope for a refactor or feature.** If you're tempted
+   to "while I'm in here, clean up X", check the audit first — X may be
+   a load-bearing workaround.
+
+**Refresh the audit when:**
+
+- After every merge from upstream (the file list at the top of the audit
+  goes stale immediately).
+- Whenever a new fork-only feature lands that touches sandbox isolation,
+  auth, or public exposure.
+- Target cadence: every 2 weeks if active development is happening, or
+  immediately after an upstream merge.
+
+Regeneration commands are in the "How to use this document" section at
+the bottom of the audit itself.
+
+---
+
 ## 5. Pulling from upstream — the safe procedure
 
 This is the procedure I'd recommend whenever `git fetch upstream` shows
@@ -238,6 +289,12 @@ git branch -d "sync/upstream-$DATE"
 git push origin --delete "sync/upstream-$DATE"
 ```
 
+9. **Walk `docs/upstream-divergence-audit.md`** (see §4). For every item
+   tagged "HIGHLY upstream-fixable", check whether this merge brings in
+   the upstream capability that obsoletes our workaround — and if so,
+   delete it in a follow-up commit. Then refresh the audit's file lists
+   and per-area sections to reflect the new divergence.
+
 ### Common conflict patterns and the right resolution
 
 | Pattern | Resolution |
@@ -258,7 +315,11 @@ git push origin --delete "sync/upstream-$DATE"
 
 ## 6. Architecture pointers (where the load-bearing code lives)
 
-Read these in this order if you're a new agent picking up the codebase:
+Read these in this order if you're a new agent picking up the codebase.
+**For a security-prioritized view of what's fork-local vs upstream, also
+skim `docs/upstream-divergence-audit.md` — its summary table tells you
+which areas are 🔴 HIGH risk and warrant extra care before editing (see
+§4).**
 
 1. **`middleware.ts`** — entry point. Uses `resolveAuthContext()` to
    build an `AuthContext` discriminated union, then dispatches per kind.
@@ -401,7 +462,9 @@ Update those files when your work would change their accuracy.
 
 ## 9. Don'ts
 
-These have all been tried and rejected — don't reintroduce them:
+These have all been tried and rejected — don't reintroduce them. The
+parallel list at the end of `docs/upstream-divergence-audit.md` is kept
+in sync — if you change either, update both.
 
 - **Don't** call `process.exit(0)` after writing config. The Node-runtime
   middleware refresh covers this.
@@ -442,6 +505,14 @@ cause was a pinned `tmux=3.5a-3` (and friends) in NemoClaw's
 `Dockerfile` / `Dockerfile.base` — Debian-version strings against an
 Ubuntu noble base. Apt returned exit 100, the docker build died at
 step 11 / 86, and the controller's readiness polls never saw a sandbox.
+
+> **Before bumping any of these versions:** read `docs/upstream-divergence-audit.md`
+> (see §4). The audit lists every fork-local shim that exists *specifically
+> because* of the current upstream version (e.g. `scripts/hermes-remote/upgrade-hermes.sh`
+> only exists because the NemoClaw base ships Hermes 0.14; the apt-pin
+> sed-patch only exists because NemoClaw pins Debian package versions on
+> Ubuntu). A version bump may obsolete several of these — check, then
+> delete what's no longer needed in the same change set.
 
 ### What can break when a pin changes
 
