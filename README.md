@@ -425,6 +425,40 @@ Before exposing this outside a trusted lab network, replace auth with a real ide
 
 ## Troubleshooting
 
+### Gateway down — `openshell sandbox list` returns "Connection refused"
+
+The OpenShell Docker-driver gateway is a background process managed by NemoClaw. If it crashes or is killed, every `openshell sandbox` command fails with:
+
+```
+Error: × transport error
+  ╰─▶ Connection refused (os error 111)
+```
+
+All sandbox containers are also stopped when the gateway shuts down.
+
+**Recovery — one command:**
+
+```bash
+PATH=/root/.nvm/versions/node/v22.22.3/bin:/root/.local/bin:$PATH \
+HOME=/root \
+OPENSHELL_GATEWAY=nemoclaw \
+nemoclaw <any-sandbox-name> recover
+```
+
+Replace `<any-sandbox-name>` with any name from `nemoclaw list` (e.g. `my-first-hermes`). The `recover` sub-command restarts the host gateway as a side-effect. Once it prints `✓ Docker-driver gateway is healthy`, `openshell sandbox list` works again and the sandboxes are back to Ready.
+
+`HOME` must be set — NemoClaw needs it to locate `~/.local/state/nemoclaw/`. It is always set correctly inside the controller's systemd unit, but bare SSH sessions may lack it.
+
+After the gateway is back, individual sandbox Hermes/OpenClaw gateways may need their own recovery if the inner gateway process also died:
+
+```bash
+# repeat for each sandbox that shows degraded health
+PATH=/root/.nvm/versions/node/v22.22.3/bin:/root/.local/bin:$PATH \
+HOME=/root \
+OPENSHELL_GATEWAY=nemoclaw \
+nemoclaw <sandbox-name> recover
+```
+
 Check OpenShell:
 
 ```bash

@@ -445,6 +445,28 @@ function registerNemoClawImageRedeploy(sourceName: string, sandboxName: string) 
   }
 }
 
+function patchNemoClawRegistryAgent(sandboxName: string, agent: string) {
+  try {
+    const current = existsSync(NEMOCLAW_REGISTRY_FILE)
+      ? JSON.parse(readFileSync(NEMOCLAW_REGISTRY_FILE, "utf8"))
+      : {}
+    const sandboxes = current && typeof current.sandboxes === "object" && current.sandboxes !== null
+      ? current.sandboxes
+      : {}
+    const entry = sandboxes[sandboxName]
+    if (!entry || entry.agent === agent) return { ok: true as const, patched: false }
+    sandboxes[sandboxName] = { ...entry, agent }
+    const next = { ...current, sandboxes }
+    mkdirSync(path.dirname(NEMOCLAW_REGISTRY_FILE), { recursive: true })
+    const tempPath = `${NEMOCLAW_REGISTRY_FILE}.tmp.${process.pid}.${Date.now()}`
+    writeFileSync(tempPath, `${JSON.stringify(next, null, 2)}\n`, { mode: 0o600 })
+    renameSync(tempPath, NEMOCLAW_REGISTRY_FILE)
+    return { ok: true as const, patched: true }
+  } catch (error) {
+    return { ok: false as const, error: error instanceof Error ? error.message : "Failed to patch NemoClaw registry agent" }
+  }
+}
+
 async function verifySandboxCreation(sandboxName: string): Promise<SandboxVerification> {
   const startedAt = Date.now()
   console.log(`[sandbox/create] verify:start sandbox=${sandboxName}`)
@@ -1010,6 +1032,7 @@ export async function POST(request: Request) {
         error: "Sandbox readiness polling produced no verification result.",
       }
       const created = readiness.verified
+      if (created) patchNemoClawRegistryAgent(sandboxName, agent)
 
       if (!created && result.error && !result.timedOut) {
         await recordCreateActivity({

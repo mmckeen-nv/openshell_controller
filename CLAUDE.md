@@ -106,7 +106,7 @@ after every deploy. It owns the four host-side concerns that the dev
 | Concern | Why it can't be in install.sh |
 |---|---|
 | systemd unit at `/etc/systemd/system/openshell-controller.service` | `install.sh` is documented as dev-mode; production unit needs `HOME/XDG_RUNTIME_DIR/DBUS_SESSION_BUS_ADDRESS` for ssh-via-openshell-gateway to work, which only matters under systemd |
-| `/etc/needrestart/conf.d/openshell-controller.conf` | Only relevant on production hosts using `unattended-upgrades` (see §10 incident 2026-06-11) |
+| `/etc/needrestart/conf.d/openshell-controller.conf` | Only relevant on production hosts using `unattended-upgrades` (see §12 incident 2026-06-11) |
 | `/root/.local/state/nemoclaw/openshell-docker-gateway/` | The DB parent dir is wiped by `purge-agent-stack.sh` and never recreated by NemoClaw's onboard; gateway crash-loops without it |
 | UFW allow `from 172.0.0.0/8 to any port 8080,18789 proto tcp` | Sandbox containers on the openshell-docker bridge can't reach the gateway without these |
 
@@ -131,7 +131,44 @@ correspond to a pushed commit. See `memory/feedback_deployment.md`.
 
 ---
 
-## 3. Pulling from upstream — the safe procedure
+## 3. Gateway recovery
+
+**Symptom:** `openshell sandbox list` (or any `openshell sandbox` command) returns:
+
+```
+Error: × transport error
+  ╰─▶ Connection refused (os error 111)
+```
+
+**Cause:** The OpenShell Docker-driver gateway process died. The gateway shuts down all sandbox containers when it exits, so every sandbox shows Exited in `docker ps`.
+
+**Fix — run on the VPS:**
+
+```bash
+PATH=/root/.nvm/versions/node/v22.22.3/bin:/root/.local/bin:$PATH \
+HOME=/root \
+OPENSHELL_GATEWAY=nemoclaw \
+nemoclaw <any-sandbox-name> recover
+```
+
+`<any-sandbox-name>` = any name from `nemoclaw list` (reads the local registry, works even when the gateway is down). The `recover` sub-command calls NemoClaw's internal `startDockerDriverGateway()`, which restarts the host gateway. Once you see `✓ Docker-driver gateway is healthy`, `openshell sandbox list` works again and sandboxes return to Ready.
+
+`HOME` must be set explicitly — NemoClaw needs it for `~/.local/state/nemoclaw/`. It is always set in the systemd unit; add it when recovering from a bare SSH session.
+
+After the host gateway is back, individual sandbox inner gateways (Hermes / OpenClaw) may also need recovery if they crashed:
+
+```bash
+PATH=/root/.nvm/versions/node/v22.22.3/bin:/root/.local/bin:$PATH \
+HOME=/root \
+OPENSHELL_GATEWAY=nemoclaw \
+nemoclaw <sandbox-name> recover
+```
+
+Repeat for each sandbox that stays unhealthy after the host gateway is back.
+
+---
+
+## 5. Pulling from upstream — the safe procedure
 
 This is the procedure I'd recommend whenever `git fetch upstream` shows
 new commits on `upstream/main`. **Always use a sync branch — never merge
@@ -212,14 +249,14 @@ git push origin --delete "sync/upstream-$DATE"
 | Upstream changed `middleware.ts` to add a new public path | Add it to our `PUBLIC_PATHS` array; keep our dual-auth dispatch |
 | Upstream changed cookie names | Don't follow them — our cookie is `oauth_session`. Keep the legacy fallback. |
 | Upstream changed `app/api/sandbox/create/route.ts` or `delete/route.ts` near our hermes-remote hooks | Take upstream's changes, then re-apply our hooks: in create, the `hermesRemote` block (after `hermesDashboardBuild`) + import + response field; in delete, the `unexposeHermesRemote` teardown block (before `deleteSandbox`) + import + response field. All hermes-remote logic lives in `app/lib/hermesRemote.ts` + `scripts/hermes-remote/` (ours only, never conflict). |
-| Upstream changed `ensureOpenClawGatewayToken` in `app/api/sandbox/create/route.ts` | Fork-only function (doesn't exist upstream as of 2026-06-21). Keep ours verbatim — the shell script we run via `openshell sandbox exec` polls the gateway WS handshake to verify the JSON token is live before returning, satisfying the §11 dashboard-token invariant. Also keep `gatewayAccepted: false` in all three catch-handler shapes (1038, 1171, 1291) so the result type stays consistent. Test: `tests/openclaw-create-gateway-token-verify-check.mjs`. |
-| Upstream changed `bootstrapScriptResponse` in `app/api/openshell/dashboard/proxy/shared.ts` near the `sessionStorage` block | Keep upstream's structure; re-apply our two fork additions (BOTH inside the same `try { ... } catch {}`): (1) the `sessionKeysToWipe` scan that removes existing `tokenPrefix + <scope>` keys whose scope contains the current `proxyPrefix`, placed BETWEEN `window.sessionStorage.removeItem(tokenKey)` and `if (token) { ... }`; (2) the `pageScope` setItem inside the `if (token)` block that also writes the token under the https:// page-origin scope. See §11 — without these, the SPA replays stale tokens in the application-level WS connect frame and the cookie-wins fix doesn't catch it. Test: `tests/openclaw-dashboard-session-token-cleanup-check.mjs`. |
+| Upstream changed `ensureOpenClawGatewayToken` in `app/api/sandbox/create/route.ts` | Fork-only function (doesn't exist upstream as of 2026-06-21). Keep ours verbatim — the shell script we run via `openshell sandbox exec` polls the gateway WS handshake to verify the JSON token is live before returning, satisfying the §13 dashboard-token invariant. Also keep `gatewayAccepted: false` in all three catch-handler shapes (1038, 1171, 1291) so the result type stays consistent. Test: `tests/openclaw-create-gateway-token-verify-check.mjs`. |
+| Upstream changed `bootstrapScriptResponse` in `app/api/openshell/dashboard/proxy/shared.ts` near the `sessionStorage` block | Keep upstream's structure; re-apply our two fork additions (BOTH inside the same `try { ... } catch {}`): (1) the `sessionKeysToWipe` scan that removes existing `tokenPrefix + <scope>` keys whose scope contains the current `proxyPrefix`, placed BETWEEN `window.sessionStorage.removeItem(tokenKey)` and `if (token) { ... }`; (2) the `pageScope` setItem inside the `if (token)` block that also writes the token under the https:// page-origin scope. See §13 — without these, the SPA replays stale tokens in the application-level WS connect frame and the cookie-wins fix doesn't catch it. Test: `tests/openclaw-dashboard-session-token-cleanup-check.mjs`. |
 | Upstream changed `app/components/SandboxList.tsx` | Keep upstream; re-apply our 4 additions: `HermesRemotePanel` import, `'hermesRemote'` in `DrawerKey` + state init, and the "Remote Desktop Access" `<DrawerSection>` before File Transfer. |
 | Upstream added new files under `scripts/hermes-remote/` (unlikely — upstream has only `scripts/inter-sandbox-chat-*.mjs` and `scripts/ollama-thinkless-*.mjs` here) | Take upstream's additions; the directory is otherwise fork-only. `scripts/hermes-remote/{expose,launch,unexpose,watchdog,upgrade-hermes,ensure-recovery-guards}.sh` + `lib.sh` are ours. |
 
 ---
 
-## 4. Architecture pointers (where the load-bearing code lives)
+## 6. Architecture pointers (where the load-bearing code lives)
 
 Read these in this order if you're a new agent picking up the codebase:
 
@@ -275,7 +312,7 @@ Read these in this order if you're a new agent picking up the codebase:
 
 ---
 
-## 5. Smoke tests (run on the VPS after any deploy)
+## 7. Smoke tests (run on the VPS after any deploy)
 
 The full set lives only in chat history; the core ones to run after a
 significant change are:
@@ -306,7 +343,7 @@ curl -sS -X POST http://127.0.0.1:3000/api/auth/setup \
 
 The repo ships a 20-file source-text + runtime assertion suite covering
 auth, middleware, dashboard proxy, sandbox lifecycle, MCP config, and the
-load-bearing dashboard token fix chain documented in §11.
+load-bearing dashboard token fix chain documented in §13.
 
 ```bash
 npm test
@@ -331,8 +368,8 @@ node tests/control-auth-oauth-check.mjs             # auth invariants
 
 If `dashboard-token-runtime-check.mjs` fails with an assertion like
 `actual: 'STALE_FROM_LOCALSTORAGE' / expected: 'FRESH_FROM_COOKIE'`,
-the cookie-wins invariant from §11 has been broken — do NOT push. See
-§11 for the architecture explanation and the four protected commit SHAs.
+the cookie-wins invariant from §13 has been broken — do NOT push. See
+§13 for the architecture explanation and the four protected commit SHAs.
 
 For WS upgrade tests (when modifying server.mjs auth), see the patterns
 in chat history — minimum 3 cases: operator session, OAuth session
@@ -340,7 +377,7 @@ in chat history — minimum 3 cases: operator session, OAuth session
 
 ---
 
-## 6. Memory & past decisions
+## 8. Memory & past decisions
 
 Persistent memory lives at:
 ```
@@ -362,7 +399,7 @@ Update those files when your work would change their accuracy.
 
 ---
 
-## 7. Don'ts
+## 9. Don'ts
 
 These have all been tried and rejected — don't reintroduce them:
 
@@ -382,7 +419,7 @@ These have all been tried and rejected — don't reintroduce them:
   AND deploying + smoke-testing on the VPS first. Force-push to
   `gatewaydashboard` is forbidden.
 - **Don't** push without running `npm test` first. The suite is fast
-  (~2s) and lock-in-place for the dashboard token fix chain (§11),
+  (~2s) and lock-in-place for the dashboard token fix chain (§13),
   auth, middleware, sandbox lifecycle, and MCP config. The baseline is
   19 PASS / 1 known-failing-due-to-tech-debt; any *other* red line is a
   regression. If `npm test` reports new failures, fix the root cause
@@ -391,12 +428,12 @@ These have all been tried and rejected — don't reintroduce them:
   failure mode behind it.
 - **Don't** delete or weaken `tests/dashboard-token-cookie-wins-check.mjs`
   or `tests/dashboard-token-runtime-check.mjs` without understanding
-  §11. They are the only mechanical guards against the brittle 2026-06-13
+  §13. They are the only mechanical guards against the brittle 2026-06-13
   dashboard regression coming back.
 
 ---
 
-## 8. NemoClaw / OpenClaw / OpenShell version bumps
+## 10. NemoClaw / OpenClaw / OpenShell version bumps
 
 This section exists because of a real outage: bumping `NEMOCLAW_INSTALL_REF`
 to `v0.0.56` left every fresh sandbox creation hanging for ~90 s before
@@ -545,7 +582,7 @@ before declaring the bump done.**
 
 ---
 
-## 9. Hermes Desktop remote-gateway exposure (multi-tenant)
+## 11. Hermes Desktop remote-gateway exposure (multi-tenant)
 
 Hermes sandboxes can be driven by the Hermes Desktop app over a public
 URL: `https://<controller-host>/hermes/<sandbox>`. Implemented in
@@ -665,7 +702,7 @@ failures, not a clear version error.
 
 ---
 
-## 10. BYOVPS vs cloud VPS — architecture differences that affect scripts
+## 12. BYOVPS vs cloud VPS — architecture differences that affect scripts
 
 When a script works on cloud VPS but breaks on BYOVPS, check these first:
 
@@ -714,7 +751,7 @@ mismatch by checking the CLI **registration URL** (https:// vs http://),
 not gateway.env flags — because NVIDIA's install.sh sets the same flags.
 
 Since 2026-06-11 the script refuses to flip while `openshell-*`
-containers are running (see §9 troubleshooting item 3) — the flip used
+containers are running (see §11 troubleshooting item 3) — the flip used
 to silently brick every live sandbox. It also now registers the CLI to
 **match the gateway's actual scheme** (http:// while plaintext is
 deferred, https:// otherwise). The old version always registered
@@ -774,7 +811,7 @@ Regression tests: `manidae-cloud/backend/tests/test_startup_ollama_template.py`
 
 ---
 
-## 11. OpenClaw dashboard token + tunnel architecture (the brittle one)
+## 13. OpenClaw dashboard token + tunnel architecture (the brittle one)
 
 This section exists because we spent a full day rediscovering this in
 June 2026. The OpenClaw "Open Dashboard" path is by far the most fragile
@@ -888,7 +925,7 @@ window.
 | `code=1008 reason=token_mismatch` in controller journal | YES | Same |
 | `connect ECONNREFUSED 127.0.0.1:20049` in journal/curl | YES (tunnel layer) | Did `/dashboard/open` run recently? |
 | Dashboard works once then fails after sandbox restart | YES | Tunnel died, sandbox restart re-randomizes the token |
-| Dashboard works on cloud VPS but not BYOVPS | NO | Look at §10 + the Pangolin/Traefik path |
+| Dashboard works on cloud VPS but not BYOVPS | NO | Look at §12 + the Pangolin/Traefik path |
 | 401 on `/__openclaw/control-ui-config.json` | YES | The HTTP 401 auto-refresh (`shared.ts`) should handle it; if not, regression in that code |
 
 ### The four commits that make this work (do not revert)
@@ -936,7 +973,7 @@ ship.
 
 ---
 
-## 12. Useful one-liners
+## 14. Useful one-liners
 
 ```bash
 # How divergent are we from upstream?
