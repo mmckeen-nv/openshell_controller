@@ -32,7 +32,10 @@ function runSandboxExec(sandboxName: string, command: string[], input?: string) 
 
 async function readOpenClawConfig(sandboxName: string) {
   const result = await runSandboxExec(sandboxName, ["cat", OPENCLAW_CONFIG_PATH])
-  if (result.code !== 0) throw new Error(result.stderr || "Failed to read OpenClaw config")
+  if (result.code !== 0) {
+    if (/no such file or directory/i.test(result.stderr)) return null
+    throw new Error(result.stderr || "Failed to read OpenClaw config")
+  }
   const parsed = JSON.parse(result.stdout)
   if (!isRecord(parsed)) throw new Error("OpenClaw config must be a JSON object")
   return parsed
@@ -40,13 +43,15 @@ async function readOpenClawConfig(sandboxName: string) {
 
 async function writeOpenClawConfig(sandboxName: string, config: Record<string, unknown>) {
   const payload = `${JSON.stringify(config, null, 2)}\n`
+  // chown root:root is best-effort: openshell sandbox exec runs as the
+  // sandbox user, which cannot chown to root on the Docker driver.
   const script = [
     `cat > ${OPENCLAW_CONFIG_PATH}`,
     `chmod 444 ${OPENCLAW_CONFIG_PATH}`,
-    `chown root:root ${OPENCLAW_CONFIG_PATH}`,
+    `chown root:root ${OPENCLAW_CONFIG_PATH} 2>/dev/null || true`,
     `sha256sum ${OPENCLAW_CONFIG_PATH} > ${OPENCLAW_CONFIG_HASH_PATH}`,
     `chmod 444 ${OPENCLAW_CONFIG_HASH_PATH}`,
-    `chown root:root ${OPENCLAW_CONFIG_HASH_PATH}`,
+    `chown root:root ${OPENCLAW_CONFIG_HASH_PATH} 2>/dev/null || true`,
   ].join(" && ")
   const result = await runSandboxExec(sandboxName, ["sh", "-lc", script], payload)
   if (result.code !== 0) throw new Error(result.stderr || "Failed to write OpenClaw MCP config")
@@ -74,6 +79,14 @@ export async function syncSandboxOpenClawMcpConfig(
   token: string,
 ) {
   const current = await readOpenClawConfig(sandboxName)
+  if (!current) {
+    return {
+      path: OPENCLAW_CONFIG_PATH,
+      serverName: OPENSHELL_CONTROL_MCP_SERVER_NAME,
+      skipped: true,
+      reason: "OpenClaw is not installed in this sandbox; MCP broker is wired only through the sandbox manifest.",
+    }
+  }
   const mcp = isRecord(current.mcp) ? { ...current.mcp } : {}
   const servers = isRecord(mcp.servers) ? { ...mcp.servers } : {}
   const serverConfig = buildOpenClawMcpServerConfig(brokerBaseUrl, token)
@@ -97,6 +110,15 @@ export async function syncSandboxOpenClawMcpConfig(
 
 export async function revokeSandboxOpenClawMcpConfig(sandboxName: string) {
   const current = await readOpenClawConfig(sandboxName)
+  if (!current) {
+    return {
+      path: OPENCLAW_CONFIG_PATH,
+      serverName: OPENSHELL_CONTROL_MCP_SERVER_NAME,
+      removed: false,
+      skipped: true,
+      reason: "OpenClaw is not installed in this sandbox; nothing to revoke from openclaw.json.",
+    }
+  }
   const mcp = isRecord(current.mcp) ? { ...current.mcp } : {}
   const servers = isRecord(mcp.servers) ? { ...mcp.servers } : {}
   delete servers[OPENSHELL_CONTROL_MCP_SERVER_NAME]

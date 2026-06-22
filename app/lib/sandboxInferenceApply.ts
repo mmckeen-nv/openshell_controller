@@ -189,10 +189,10 @@ async function writeOpenClawConfig(sandboxName: string, config: any) {
   const script = [
     "cat > /sandbox/.openclaw/openclaw.json",
     "chmod 444 /sandbox/.openclaw/openclaw.json",
-    "chown root:root /sandbox/.openclaw/openclaw.json",
+    "chown root:root /sandbox/.openclaw/openclaw.json 2>/dev/null || true",
     "sha256sum /sandbox/.openclaw/openclaw.json > /sandbox/.openclaw/.config-hash",
     "chmod 444 /sandbox/.openclaw/.config-hash",
-    "chown root:root /sandbox/.openclaw/.config-hash",
+    "chown root:root /sandbox/.openclaw/.config-hash 2>/dev/null || true",
   ].join(" && ")
   const result = await runSandboxExec(sandboxName, ["sh", "-lc", script], payload)
   if (result.code !== 0) throw new Error(result.stderr || "Failed to write OpenClaw config")

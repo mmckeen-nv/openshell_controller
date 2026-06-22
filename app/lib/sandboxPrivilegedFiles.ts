@@ -43,7 +43,20 @@ export async function writeSandboxFilePrivileged(
   }
 }
 
+async function sandboxHasOpenClaw(sandboxName: string) {
+  const probe = await runSandboxExec(sandboxName, ["sh", "-lc", "test -f /sandbox/.openclaw/openclaw.json"])
+  return probe.code === 0
+}
+
 export async function repairOpenClawExecApprovalsFile(sandboxName: string) {
+  if (!(await sandboxHasOpenClaw(sandboxName))) {
+    return {
+      sandboxName,
+      path: "/sandbox/.openclaw/exec-approvals.json",
+      skipped: true,
+      reason: "OpenClaw is not installed in this sandbox; nothing to repair.",
+    }
+  }
   const normalizeScript = [
     `const fs = require("fs")`,
     `const approval = "/sandbox/.openclaw/exec-approvals.json"`,
