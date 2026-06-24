@@ -77,7 +77,7 @@ type NemoClawCreateCommand = {
 
 type CreateInferenceMode = "auto" | "vllm" | "nim"
 type CreateGpuMode = "none" | "auto" | "required"
-type NemoClawAgent = "openclaw" | "hermes"
+type NemoClawAgent = "openclaw" | "hermes" | "langchain-deepagents-code"
 
 type CreateInferenceSettings = {
   mode: CreateInferenceMode
@@ -151,14 +151,15 @@ function nemoClawGpuArgs(mode: CreateGpuMode) {
 }
 
 function nemoClawAgentArgs(agent: NemoClawAgent) {
-  return agent === "hermes" ? ["--agent", "hermes"] : []
+  return agent === "openclaw" ? [] : ["--agent", agent]
 }
 
 function isNemoClawOnboardBlueprint(blueprint: string) {
-  return blueprint === "nemoclaw-blueprint" || blueprint === "nemoclaw-hermes"
+  return blueprint === "nemoclaw-blueprint" || blueprint === "nemoclaw-hermes" || blueprint === "nemoclaw-deepagents-code"
 }
 
 function nemoClawAgentForBlueprint(blueprint: string): NemoClawAgent {
+  if (blueprint === "nemoclaw-deepagents-code") return "langchain-deepagents-code"
   return blueprint === "nemoclaw-hermes" ? "hermes" : "openclaw"
 }
 
@@ -180,8 +181,8 @@ function buildNemoClawCreateCommand(gpuMode: CreateGpuMode, agent: NemoClawAgent
       ? { file: NODE_BIN, args: [NEMOCLAW_BIN, ...args], mode: "cli-onboard" }
       : { file: NEMOCLAW_BIN, args, mode: "cli-onboard" }
   }
-  if (agent === "hermes") {
-    throw new Error("Hermes sandbox creation requires the current NemoClaw CLI with --agent hermes support. Set NEMOCLAW_BIN in .env.local.")
+  if (agent !== "openclaw") {
+    throw new Error(`${agent} sandbox creation requires the current NemoClaw CLI with --agent support. Set NEMOCLAW_BIN in .env.local.`)
   }
   if (NEMOCLAW_SETUP && commandExists(NEMOCLAW_SETUP)) {
     return { file: "/bin/bash", args: [NEMOCLAW_SETUP], mode: "legacy-setup" }
@@ -730,6 +731,14 @@ export async function GET() {
         description: "Bootstraps a Hermes Agent sandbox using NemoClaw's Hermes workflow.",
         type: "blueprint",
         source: "~/NemoClaw/agents/hermes/Dockerfile",
+        supportsTailscale: false,
+      },
+      {
+        id: "nemoclaw-deepagents-code",
+        label: "Fresh Deep Agents Code Sandbox",
+        description: "Bootstraps LangChain Deep Agents Code using NemoClaw's terminal-agent workflow.",
+        type: "blueprint",
+        source: "~/NemoClaw/agents/langchain-deepagents-code/manifest.yaml",
         supportsTailscale: false,
       },
       {
