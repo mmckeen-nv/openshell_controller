@@ -360,7 +360,6 @@ const [restartInProgress, setRestartInProgress] = useState(false)
   )
   const selectedSandboxIsHermes = selectedSandbox?.agent === 'hermes'
   const selectedSandboxIsCustom = selectedSandbox?.agent === 'custom'
-  const selectedSandboxUsesTerminal = selectedSandboxIsHermes || selectedSandboxIsCustom
 
   const connectToSandboxTerminal = (sandbox: SandboxInventoryItem) => {
     const route = buildOperatorTerminalRoute({
@@ -371,11 +370,16 @@ const [restartInProgress, setRestartInProgress] = useState(false)
   }
 
   const [copiedLinkFor, setCopiedLinkFor] = useState<string | null>(null)
-  const copyShareableLink = async (kind: 'terminal' | 'openclaw', sandbox: SandboxInventoryItem) => {
+  const copyShareableLink = async (kind: 'terminal' | 'openclaw' | 'hermes', sandbox: SandboxInventoryItem) => {
     const origin = typeof window !== 'undefined' ? window.location.origin : ''
     const url = kind === 'terminal'
       ? `${origin}/operator-terminal?sandboxId=${encodeURIComponent(sandbox.name)}`
-      : `${origin}/launch/dashboard?sandboxId=${encodeURIComponent(sandbox.name)}`
+      : kind === 'hermes'
+        // The Hermes dashboard proxy lives under /api/sandbox/[sandboxId]/... — the same
+        // path the middleware gates by email/IdP — so a shared link to it is access-controlled
+        // exactly like the Hermes terminal (recipient logs in via the IdP with an authorized email).
+        ? `${origin}/api/sandbox/${encodeURIComponent(sandbox.name)}/hermes/dashboard/proxy/`
+        : `${origin}/launch/dashboard?sandboxId=${encodeURIComponent(sandbox.name)}`
     try {
       await navigator.clipboard.writeText(url)
       setCopiedLinkFor(`${kind}:${sandbox.name}`)
@@ -685,27 +689,28 @@ const [restartInProgress, setRestartInProgress] = useState(false)
             <>
               <DrawerSection
                 title={`${selectedSandbox.name} - Operations`}
-                summary={selectedSandboxUsesTerminal ? "Terminal, restart, refresh, and live telemetry." : "Dashboard, terminal, restart, refresh, and live telemetry."}
+                summary={selectedSandboxIsCustom ? "Terminal, restart, refresh, and live telemetry." : "Dashboard, terminal, restart, refresh, and live telemetry."}
                 open={openDrawers.operations}
                 onToggle={() => toggleDrawer('operations')}
               >
                 <div className="space-y-6">
                   <div className="flex flex-wrap items-center gap-3 max-sm:[&>button]:w-full">
-                    {selectedSandboxUsesTerminal ? (
-                      <span className="inline-flex items-stretch gap-1">
-                        <button
-                          onClick={() => connectToSandboxTerminal(selectedSandbox)}
-                          className="action-button px-3 py-2"
-                        >
-                          Connect to Terminal
-                        </button>
-                        <CopyLinkButton
-                          label={copiedLinkFor === `terminal:${selectedSandbox.name}` ? 'Copied!' : 'Copy shareable terminal link'}
-                          copied={copiedLinkFor === `terminal:${selectedSandbox.name}`}
-                          onClick={() => copyShareableLink('terminal', selectedSandbox)}
-                        />
-                      </span>
-                    ) : (
+                    {/* Every sandbox type gets terminal access. */}
+                    <span className="inline-flex items-stretch gap-1">
+                      <button
+                        onClick={() => connectToSandboxTerminal(selectedSandbox)}
+                        className="action-button px-3 py-2"
+                      >
+                        Connect to Terminal
+                      </button>
+                      <CopyLinkButton
+                        label={copiedLinkFor === `terminal:${selectedSandbox.name}` ? 'Copied!' : 'Copy shareable terminal link'}
+                        copied={copiedLinkFor === `terminal:${selectedSandbox.name}`}
+                        onClick={() => copyShareableLink('terminal', selectedSandbox)}
+                      />
+                    </span>
+                    {/* OpenClaw sandboxes additionally expose the OpenClaw gateway dashboard. */}
+                    {!selectedSandboxIsHermes && !selectedSandboxIsCustom && (
                       <span className="inline-flex items-stretch gap-1">
                         <button
                           onClick={async () => {
@@ -735,6 +740,27 @@ const [restartInProgress, setRestartInProgress] = useState(false)
                           label={copiedLinkFor === `openclaw:${selectedSandbox.name}` ? 'Copied!' : 'Copy shareable dashboard link'}
                           copied={copiedLinkFor === `openclaw:${selectedSandbox.name}`}
                           onClick={() => copyShareableLink('openclaw', selectedSandbox)}
+                        />
+                      </span>
+                    )}
+                    {/* Hermes sandboxes additionally expose the Hermes web dashboard (proxied through the controller). */}
+                    {selectedSandboxIsHermes && (
+                      <span className="inline-flex items-stretch gap-1">
+                        <button
+                          onClick={() =>
+                            openDashboardUrl(
+                              `/api/sandbox/${encodeURIComponent(selectedSandbox.name)}/hermes/dashboard/proxy/`,
+                              true,
+                            )
+                          }
+                          className="action-button px-3 py-2"
+                        >
+                          Open Hermes Dashboard
+                        </button>
+                        <CopyLinkButton
+                          label={copiedLinkFor === `hermes:${selectedSandbox.name}` ? 'Copied!' : 'Copy shareable dashboard link'}
+                          copied={copiedLinkFor === `hermes:${selectedSandbox.name}`}
+                          onClick={() => copyShareableLink('hermes', selectedSandbox)}
                         />
                       </span>
                     )}

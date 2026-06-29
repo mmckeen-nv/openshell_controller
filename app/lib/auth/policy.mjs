@@ -217,6 +217,14 @@ export function extractSandboxIdFromUrl(pathname, searchParams) {
       if (match) return match[2]
     }
   }
+  // Per-sandbox resource routes carry the bare sandbox name directly in the path,
+  // e.g. /api/sandbox/<name>/hermes/dashboard/proxy/... — gate these for OAuth/IDP
+  // users exactly like the terminal (which identifies the sandbox via ?sandboxId=).
+  if (typeof pathname === 'string' && pathname.startsWith('/api/sandbox/')) {
+    const parts = pathname.split('/')
+    const id = parts[3]
+    if (id) return decodeURIComponent(id)
+  }
   if (searchParams && typeof searchParams.get === 'function') {
     const v = searchParams.get('sandboxId')
     if (v) return v

@@ -1205,7 +1205,86 @@ clientWss.on('connection', (client, req) => {
   })
 })
 
+// ── Hermes dashboard proxy (NemoClaw v0.17+) ───────────────────────────────
+// Mirror of app/api/sandbox/[sandboxId]/hermes/dashboard/proxy (HTTP). The HTTP
+// route can't handle WS upgrades, so the chat/events/pty sockets are tunnelled
+// here. Hermes v0.17 authorises WS via single-use ws-tickets in the query string,
+// so this is pure transport (plus the session-token header for parity); the
+// upstream is the desktop-mode forward at http://<bridgeIp>:<port>.
+const hermesProxyAccessDir = process.env.HERMES_REMOTE_ACCESS_DIR || '/etc/openshell/hermes-access'
+const hermesProxyPathRe = /^\/api\/sandbox\/([^/]+)\/hermes\/dashboard\/proxy(?:\/|$)/
+
+function readHermesProxyAccess(sandboxId) {
+  try {
+    const file = pathJoin(hermesProxyAccessDir, `${sandboxId}.json`)
+    if (!existsSync(file)) return null
+    return JSON.parse(readFileSync(file, 'utf8'))
+  } catch {
+    return null
+  }
+}
+
+function handleHermesProxyUpgrade(req, socket, head) {
+  const fullUrl = req.url || '/'
+  const match = hermesProxyPathRe.exec(fullUrl.split('?')[0])
+  if (!match) { socket.destroy(); return }
+  const sandboxId = decodeURIComponent(match[1])
+  const access = readHermesProxyAccess(sandboxId)
+  if (!access || !access.port) {
+    socket.end('HTTP/1.1 404 Not Found\r\nConnection: close\r\nContent-Length: 0\r\n\r\n')
+    return
+  }
+  const host = (access.bridgeIp && String(access.bridgeIp).trim()) || '127.0.0.1'
+  const prefix = `/api/sandbox/${encodeURIComponent(sandboxId)}/hermes/dashboard/proxy`
+  const afterPrefix = fullUrl.startsWith(prefix) ? (fullUrl.slice(prefix.length) || '/') : '/'
+  const upstreamPath = afterPrefix.startsWith('/') ? afterPrefix : `/${afterPrefix}`
+
+  socket.pause()
+  const upstreamSocket = net.connect({ host, port: Number(access.port) })
+  const skip = new Set(['host', 'x-forwarded-prefix', 'x-hermes-session-token', 'origin'])
+  const lines = [`GET ${upstreamPath} HTTP/1.1`, `Host: ${host}:${access.port}`]
+  for (let i = 0; i < req.rawHeaders.length; i += 2) {
+    const k = req.rawHeaders[i]
+    if (skip.has(String(k).toLowerCase())) continue
+    lines.push(`${k}: ${req.rawHeaders[i + 1]}`)
+  }
+  lines.push(`X-Forwarded-Prefix: ${prefix}`)
+  lines.push(`X-Hermes-Session-Token: ${access.token}`)
+  lines.push(`Origin: http://${host}:${access.port}`)
+  const requestHead = lines.join('\r\n') + '\r\n\r\n'
+
+  let opened = false
+  upstreamSocket.once('connect', () => {
+    opened = true
+    upstreamSocket.write(requestHead)
+    if (head?.length) upstreamSocket.write(head)
+    socket.pipe(upstreamSocket, { end: false })
+    upstreamSocket.pipe(socket, { end: false })
+    upstreamSocket.resume()
+    socket.allowHalfOpen = true
+    socket.resume()
+    logBridge('hermes-dashboard-tunnel-open', { path: fullUrl, sandboxId, upstream: `${host}:${access.port}` })
+  })
+  upstreamSocket.on('error', (error) => {
+    logBridge('hermes-dashboard-tunnel-error', { sandboxId, reason: error instanceof Error ? error.message : 'upstream error' })
+    if (!opened && !socket.destroyed) socket.end('HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\nContent-Length: 0\r\n\r\n')
+    else socket.destroy()
+  })
+  socket.on('error', () => upstreamSocket.destroy())
+  upstreamSocket.on('close', () => socket.destroy())
+  socket.on('close', () => upstreamSocket.destroy())
+}
+
 server.on('upgrade', (req, socket, head) => {
+  if (hermesProxyPathRe.test((req.url || '').split('?')[0])) {
+    if (!isAuthenticatedUpgrade(req) && !isOAuthSandboxUpgradeAuthorized(req)) {
+      rejectUnauthorizedUpgrade(req, socket, req.url || '/')
+      return
+    }
+    handleHermesProxyUpgrade(req, socket, head)
+    return
+  }
+
   if ((req.url || '').startsWith(terminalProxyPath)) {
     if (!isAuthenticatedUpgrade(req) && !isOAuthSandboxUpgradeAuthorized(req)) {
       rejectUnauthorizedUpgrade(req, socket, req.url || '/')

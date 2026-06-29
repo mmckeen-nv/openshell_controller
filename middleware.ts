@@ -110,7 +110,8 @@ function withForwardedUser(request: NextRequest, email: string) {
 function isDashboardProxyNavigation(pathname: string) {
   return (
     pathname.startsWith("/api/openshell/dashboard/proxy") ||
-    /^\/api\/openshell\/instances\/[^/]+\/dashboard\/proxy/.test(pathname)
+    /^\/api\/openshell\/instances\/[^/]+\/dashboard\/proxy/.test(pathname) ||
+    /^\/api\/sandbox\/[^/]+\/hermes\/dashboard\/proxy/.test(pathname)
   )
 }
 
