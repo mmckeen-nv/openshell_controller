@@ -55,7 +55,7 @@ assert.match(installSource, /\$venv_python" -m pip install --upgrade uv/, 'insta
 assert.match(installSource, /set_env "OPENSHELL_CONTROL_VENV"/, 'installer must persist the virtual environment path for runtime MCP launches')
 
 assert.match(versionedInstallSource, /OPENSHELL_VERSION="\$\{OPENSHELL_VERSION:-v0\.0\.44\}"/, 'versioned installer must default to the OpenShell release supported by current NemoClaw main')
-assert.match(versionedInstallSource, /NEMOCLAW_INSTALL_REF="\$\{NEMOCLAW_INSTALL_REF:-\$\{NEMOCLAW_INSTALL_TAG:-v0\.0\.66\}\}"/, 'versioned installer must pin to NemoClaw v0.0.66 by default (the release validated with OpenShell v0.0.44 and OpenClaw 2026.5.27)')
+assert.match(versionedInstallSource, /NEMOCLAW_INSTALL_REF="\$\{NEMOCLAW_INSTALL_REF:-\$\{NEMOCLAW_INSTALL_TAG:-v0\.0\.69\}\}"/, 'versioned installer must pin to NemoClaw v0.0.69 by default (first release bundling Hermes v0.17.0; OpenShell stays v0.0.44)')
 assert.match(versionedInstallSource, /NEMOCLAW_SOURCE_URL="\$\{NEMOCLAW_SOURCE_URL:-https:\/\/github\.com\/NVIDIA\/NemoClaw\.git\}"/, 'versioned installer must use the NemoClaw source repository URL')
 assert.match(versionedInstallSource, /OPENCLAW_VERSION="\$\{OPENCLAW_VERSION:-2026\.5\.27\}"/, 'versioned installer must default to NemoClaw main\'s current OpenClaw build target')
 assert.match(versionedInstallSource, /https:\/\/raw\.githubusercontent\.com\/NVIDIA\/OpenShell\/main\/install\.sh/, 'versioned installer must use the OpenShell installer URL')
