@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react'
 import type { ReactNode } from 'react'
 import ConfigurationPanel from './ConfigurationPanel'
 import HermesRemotePanel from './HermesRemotePanel'
+import OpenClawRemotePanel from './OpenClawRemotePanel'
 import SandboxArchivePanel from './SandboxArchivePanel'
 import SandboxFilesPanel from './SandboxFilesPanel'
 import SandboxInferencePanel from './SandboxInferencePanel'
@@ -30,7 +31,7 @@ interface SandboxListProps {
   dashboardSessionId: string
 }
 
-type DrawerKey = 'operations' | 'files' | 'inference' | 'policy' | 'archive' | 'mcp' | 'hermesRemote'
+type DrawerKey = 'operations' | 'files' | 'inference' | 'policy' | 'archive' | 'mcp' | 'hermesRemote' | 'openclawRemote'
 type McpServerAccess = {
   id: string
   name: string
@@ -251,6 +252,7 @@ const [restartInProgress, setRestartInProgress] = useState(false)
     archive: false,
     mcp: false,
     hermesRemote: false,
+    openclawRemote: false,
   })
   const [telemetry, setTelemetry] = useState<TelemetryData>({
     cpu: 0, memory: 0, disk: 0, timestamp: new Date().toISOString()
@@ -360,6 +362,7 @@ const [restartInProgress, setRestartInProgress] = useState(false)
   )
   const selectedSandboxIsHermes = selectedSandbox?.agent === 'hermes'
   const selectedSandboxIsCustom = selectedSandbox?.agent === 'custom'
+  const selectedSandboxIsOpenClaw = Boolean(selectedSandbox) && !selectedSandboxIsHermes && !selectedSandboxIsCustom
 
   const connectToSandboxTerminal = (sandbox: SandboxInventoryItem) => {
     const route = buildOperatorTerminalRoute({
@@ -819,6 +822,17 @@ const [restartInProgress, setRestartInProgress] = useState(false)
                   onToggle={() => toggleDrawer('hermesRemote')}
                 >
                   <HermesRemotePanel sandboxName={selectedSandbox.name} />
+                </DrawerSection>
+              )}
+
+              {selectedSandboxIsOpenClaw && (
+                <DrawerSection
+                  title="Mobile App Gateway Access"
+                  summary="Connect the OpenClaw Android/iOS app to this sandbox's gateway over a public URL."
+                  open={openDrawers.openclawRemote}
+                  onToggle={() => toggleDrawer('openclawRemote')}
+                >
+                  <OpenClawRemotePanel sandboxName={selectedSandbox.name} />
                 </DrawerSection>
               )}
 
