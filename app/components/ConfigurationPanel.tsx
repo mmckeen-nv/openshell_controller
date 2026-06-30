@@ -7,7 +7,7 @@ type EndpointProtocol = "" | "rest"
 type EndpointTls = "" | "terminate" | "passthrough"
 type EndpointEnforcement = "" | "enforce" | "audit"
 type EndpointAccess = "" | "read-only" | "read-write" | "full"
-type CreateInferenceMode = "auto" | "vllm" | "nim"
+type CreateInferenceMode = "auto" | "vllm" | "nvidia" | "compatible"
 type CreateGpuMode = "none" | "auto" | "required"
 
 interface NetworkRule { method: string; path: string }
@@ -92,6 +92,7 @@ export default function ConfigurationPanel({ sandboxId, mode = 'existing', onCre
   const [createGpuMode, setCreateGpuMode] = useState<CreateGpuMode>("none")
   const [createInferenceMode, setCreateInferenceMode] = useState<CreateInferenceMode>("vllm")
   const [createInferenceModel, setCreateInferenceModel] = useState<string>("")
+  const [createInferenceEndpointUrl, setCreateInferenceEndpointUrl] = useState<string>("")
   const [createNvidiaApiKey, setCreateNvidiaApiKey] = useState<string>("")
   const [restoreFromBackup, setRestoreFromBackup] = useState<boolean>(false)
   const [restoreArchive, setRestoreArchive] = useState<File | null>(null)
@@ -144,7 +145,8 @@ export default function ConfigurationPanel({ sandboxId, mode = 'existing', onCre
         const createInference = {
           mode: createInferenceMode,
           model: createInferenceModel.trim(),
-          apiKey: createInferenceMode === 'nim' ? createNvidiaApiKey.trim() : '',
+          endpointUrl: createInferenceEndpointUrl.trim(),
+          apiKey: (createInferenceMode === 'nvidia' || createInferenceMode === 'compatible') ? createNvidiaApiKey.trim() : '',
         }
         const res = await fetch('/api/sandbox/create', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ blueprint: selectedBlueprint, sandboxName: sandboxName.trim(), enableTailscale, gpuMode: createGpuMode, createInference, policy: assembledPolicy, preset: selectedPreset || null }) })
         const data = await res.json()
@@ -257,7 +259,7 @@ export default function ConfigurationPanel({ sandboxId, mode = 'existing', onCre
                 <h6 className="text-xs font-semibold uppercase tracking-wider text-[var(--foreground)]">Inference at Create</h6>
                 <p className="mt-1 text-xs text-[var(--foreground-dim)]">Choose the provider NemoClaw should use while onboarding this sandbox.</p>
               </div>
-              <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+              <div className="grid grid-cols-1 gap-3 md:grid-cols-4">
                 <label className={`flex items-start gap-3 rounded-sm border p-3 text-sm text-[var(--foreground)] ${createInferenceMode === 'auto' ? 'border-[var(--nvidia-green)] bg-[rgba(118,185,0,0.08)]' : 'border-[var(--border-subtle)] bg-[var(--background-tertiary)]'}`}>
                   <input type="checkbox" checked={createInferenceMode === 'auto'} onChange={() => setCreateInferenceMode('auto')} className="mt-0.5 h-4 w-4 accent-[var(--nvidia-green)]" />
                   <span><span className="block text-xs font-mono uppercase tracking-wider">Auto</span><span className="mt-1 block text-[11px] text-[var(--foreground-dim)]">Let NemoClaw choose.</span></span>
@@ -266,9 +268,13 @@ export default function ConfigurationPanel({ sandboxId, mode = 'existing', onCre
                   <input type="checkbox" checked={createInferenceMode === 'vllm'} onChange={() => setCreateInferenceMode('vllm')} className="mt-0.5 h-4 w-4 accent-[var(--nvidia-green)]" />
                   <span><span className="block text-xs font-mono uppercase tracking-wider">Use vLLM in experimental mode</span><span className="mt-1 block text-[11px] text-[var(--foreground-dim)]">Sets NEMOCLAW_EXPERIMENTAL and vLLM.</span></span>
                 </label>
-                <label className={`flex items-start gap-3 rounded-sm border p-3 text-sm text-[var(--foreground)] ${createInferenceMode === 'nim' ? 'border-[var(--nvidia-green)] bg-[rgba(118,185,0,0.08)]' : 'border-[var(--border-subtle)] bg-[var(--background-tertiary)]'}`}>
-                  <input type="checkbox" checked={createInferenceMode === 'nim'} onChange={() => setCreateInferenceMode('nim')} className="mt-0.5 h-4 w-4 accent-[var(--nvidia-green)]" />
-                  <span><span className="block text-xs font-mono uppercase tracking-wider">Use NVIDIA NIM</span><span className="mt-1 block text-[11px] text-[var(--foreground-dim)]">Uses the experimental local NIM provider.</span></span>
+                <label className={`flex items-start gap-3 rounded-sm border p-3 text-sm text-[var(--foreground)] ${createInferenceMode === 'nvidia' ? 'border-[var(--nvidia-green)] bg-[rgba(118,185,0,0.08)]' : 'border-[var(--border-subtle)] bg-[var(--background-tertiary)]'}`}>
+                  <input type="checkbox" checked={createInferenceMode === 'nvidia'} onChange={() => setCreateInferenceMode('nvidia')} className="mt-0.5 h-4 w-4 accent-[var(--nvidia-green)]" />
+                  <span><span className="block text-xs font-mono uppercase tracking-wider">NVIDIA hosted API</span><span className="mt-1 block text-[11px] text-[var(--foreground-dim)]">Uses NemoClaw build provider and requires an nvapi-* key.</span></span>
+                </label>
+                <label className={`flex items-start gap-3 rounded-sm border p-3 text-sm text-[var(--foreground)] ${createInferenceMode === 'compatible' ? 'border-[var(--nvidia-green)] bg-[rgba(118,185,0,0.08)]' : 'border-[var(--border-subtle)] bg-[var(--background-tertiary)]'}`}>
+                  <input type="checkbox" checked={createInferenceMode === 'compatible'} onChange={() => setCreateInferenceMode('compatible')} className="mt-0.5 h-4 w-4 accent-[var(--nvidia-green)]" />
+                  <span><span className="block text-xs font-mono uppercase tracking-wider">OpenAI-compatible endpoint</span><span className="mt-1 block text-[11px] text-[var(--foreground-dim)]">Sets NEMOCLAW_PROVIDER=custom, endpoint URL, and compatible API key.</span></span>
                 </label>
               </div>
               {createInferenceMode !== 'auto' && (
@@ -277,10 +283,16 @@ export default function ConfigurationPanel({ sandboxId, mode = 'existing', onCre
                     <label className="text-[10px] uppercase tracking-wider text-[var(--foreground-dim)]">Model</label>
                     <input value={createInferenceModel} onChange={(e) => setCreateInferenceModel(e.target.value)} placeholder={createInferenceMode === 'vllm' ? 'auto-detect from vLLM' : 'model name'} className="w-full rounded-sm border border-[var(--border-subtle)] bg-[var(--background-tertiary)] px-3 py-2 text-xs font-mono text-[var(--foreground)]" />
                   </div>
-                  {createInferenceMode === 'nim' && (
+                  {createInferenceMode === 'compatible' && (
                     <div className="space-y-2">
-                      <label className="text-[10px] uppercase tracking-wider text-[var(--foreground-dim)]">NVIDIA API Key</label>
-                      <input type="password" value={createNvidiaApiKey} onChange={(e) => setCreateNvidiaApiKey(e.target.value)} placeholder="nvapi-..." className="w-full rounded-sm border border-[var(--border-subtle)] bg-[var(--background-tertiary)] px-3 py-2 text-xs font-mono text-[var(--foreground)]" />
+                      <label className="text-[10px] uppercase tracking-wider text-[var(--foreground-dim)]">Endpoint URL</label>
+                      <input value={createInferenceEndpointUrl} onChange={(e) => setCreateInferenceEndpointUrl(e.target.value)} placeholder="https://integrate.api.nvidia.com/v1" className="w-full rounded-sm border border-[var(--border-subtle)] bg-[var(--background-tertiary)] px-3 py-2 text-xs font-mono text-[var(--foreground)]" />
+                    </div>
+                  )}
+                  {(createInferenceMode === 'nvidia' || createInferenceMode === 'compatible') && (
+                    <div className="space-y-2">
+                      <label className="text-[10px] uppercase tracking-wider text-[var(--foreground-dim)]">Provider API Key</label>
+                      <input type="password" value={createNvidiaApiKey} onChange={(e) => setCreateNvidiaApiKey(e.target.value)} placeholder={createInferenceMode === 'nvidia' ? 'nvapi-...' : 'endpoint token or blank for no auth'} className="w-full rounded-sm border border-[var(--border-subtle)] bg-[var(--background-tertiary)] px-3 py-2 text-xs font-mono text-[var(--foreground)]" />
                     </div>
                   )}
                 </div>

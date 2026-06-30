@@ -258,7 +258,8 @@ The UI supports per-sandbox route profiles and can apply them live to OpenClaw w
 Supported provider categories in the UI:
 
 - Ollama
-- NVIDIA NIM
+- NVIDIA hosted API with `nvapi-*` credentials through NemoClaw's `build` provider
+- OpenAI-compatible NVIDIA/enterprise inference endpoints through NemoClaw's `custom` provider with `NEMOCLAW_ENDPOINT_URL`, `COMPATIBLE_API_KEY`, and `NEMOCLAW_PROVIDER_KEY`
 - vLLM
 - external HTTP-compatible endpoints
 
