@@ -48,7 +48,7 @@ It is currently built for active development and lab use. It includes a simple p
 This dashboard is validated against the current NVIDIA NemoClaw repo and the OpenShell version range declared in NemoClaw's `nemoclaw-blueprint/blueprint.yaml`, not the older April 2026 point releases. Current NemoClaw `main` pins OpenShell exactly to `0.0.44`, so the bundled refresh helper defaults to:
 
 - OpenShell installer release: `v0.0.44` (`OPENSHELL_VERSION=v0.0.44`)
-- NemoClaw source ref: `v0.0.69` (`NEMOCLAW_INSTALL_REF=v0.0.69`) — first release bundling Hermes v0.17.0
+- NemoClaw source ref: `v0.0.70` (`NEMOCLAW_INSTALL_REF=v0.0.70`) — keeps the Hermes v0.17.0 base (v0.0.69 was the first to bundle it)
 - OpenClaw base-image build target: `2026.5.27` (`OPENCLAW_VERSION=2026.5.27`) unless overridden
 
 Runtime/toolchain versions used during development:
@@ -98,7 +98,7 @@ Install or refresh the locked OpenShell/NemoClaw pair first:
 ./install_versioned_nemoclaw_openshell.sh
 ```
 
-That helper defaults to `OPENSHELL_VERSION=v0.0.44`, `NEMOCLAW_INSTALL_REF=v0.0.69`, and `OPENCLAW_VERSION=2026.5.27`.
+That helper defaults to `OPENSHELL_VERSION=v0.0.44`, `NEMOCLAW_INSTALL_REF=v0.0.70`, and `OPENCLAW_VERSION=2026.5.27`.
 
 Then install the dashboard from the repository root:
 
