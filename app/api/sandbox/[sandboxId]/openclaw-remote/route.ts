@@ -25,6 +25,21 @@ async function resolveName(sandboxId: string): Promise<string> {
   }
 }
 
+// Reachability is checked server-side: the gateway lives on a per-sandbox
+// subdomain, so a browser fetch from the controller's own origin is blocked by
+// CORS (false "Unreachable"). The controller process has no such restriction.
+// The gateway serves HTTP on the same port, so a plain GET to the https:// form
+// answers (200) when the forward + Traefik route are healthy.
+async function probeReachable(wssUrl: string): Promise<boolean> {
+  try {
+    const httpsUrl = wssUrl.replace(/^wss:/i, "https:")
+    const res = await fetch(httpsUrl, { signal: AbortSignal.timeout(8000), redirect: "manual" })
+    return res.status > 0
+  } catch {
+    return false
+  }
+}
+
 export async function GET(
   request: Request,
   { params }: { params: Promise<{ sandboxId: string }> },
@@ -39,7 +54,8 @@ export async function GET(
   if (!access) {
     return NextResponse.json({ ok: false, configured: false }, { status: 404 })
   }
-  return NextResponse.json({ ok: true, configured: true, access })
+  const reachable = await probeReachable(access.url)
+  return NextResponse.json({ ok: true, configured: true, access, reachable })
 }
 
 // POST = (re)expose on demand: lets operators enable the mobile-app remote

@@ -36,16 +36,13 @@ export default function OpenClawRemotePanel({ sandboxName }: { sandboxName: stri
         setState({ status: 'error', message: data?.error || `Request failed (${res.status})` })
         return
       }
-      setState({ status: 'ready', access: data.access, healthy: null })
-      // Reachability: the gateway also serves HTTP on the same port, so a plain
-      // GET to the https:// form of the URL should answer if the route is live.
-      try {
-        const httpsUrl = String(data.access.url).replace(/^wss:/, 'https:')
-        const probe = await fetch(httpsUrl, { signal: AbortSignal.timeout(8000) })
-        setState({ status: 'ready', access: data.access, healthy: probe.ok || probe.status > 0 })
-      } catch {
-        setState({ status: 'ready', access: data.access, healthy: false })
-      }
+      // Reachability is determined server-side (the route probes the gateway —
+      // a browser fetch to the per-sandbox subdomain would be CORS-blocked).
+      setState({
+        status: 'ready',
+        access: data.access,
+        healthy: typeof data.reachable === 'boolean' ? data.reachable : null,
+      })
     } catch (error) {
       setState({ status: 'error', message: error instanceof Error ? error.message : 'Failed to load remote access' })
     }
