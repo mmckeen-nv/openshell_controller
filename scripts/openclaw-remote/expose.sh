@@ -95,8 +95,9 @@ PUBLIC_URL="wss://${SUBHOST}"
 
 # ── systemd-supervised forward (forward service maps host:HP -> sandbox:GWPORT) ──
 FORWARD_UNIT="openclaw-remote-forward@.service"
-if [ ! -f "/etc/systemd/system/$FORWARD_UNIT" ]; then
-  cat > "/etc/systemd/system/$FORWARD_UNIT" <<'UNIT'
+# Always (re)write the template unit so command/flag changes take effect even
+# when a unit written by an older version already exists.
+cat > "/etc/systemd/system/$FORWARD_UNIT" <<'UNIT'
 [Unit]
 Description=OpenClaw gateway forward for sandbox %i
 After=network-online.target docker.service
@@ -120,8 +121,7 @@ LimitNOFILE=65536
 [Install]
 WantedBy=multi-user.target
 UNIT
-  systemctl daemon-reload
-fi
+systemctl daemon-reload
 cat > "$FORWARD_ENV_DIR/${SANDBOX}.env" <<EOF
 OPENCLAW_FORWARD_BIND=${BRIDGE_IP}
 OPENCLAW_FORWARD_PORT=${PORT}
@@ -141,7 +141,7 @@ cat > "$RULES_DIR/openclaw-remote-${SANDBOX}.yml" <<EOF
 # Managed by openshell-controller scripts/openclaw-remote/expose.sh — do not edit.
 # Host-based route for the OpenClaw mobile app: wss://${SUBHOST} (:443) -> gateway.
 # Auth = the OpenClaw gateway shared-secret token, sent by the app in the WS
-# `connect` frame (NOT in the URL/HTML), so this route can be public.
+# connect frame (NOT in the URL/HTML), so this route can be public.
 # NOTE: certResolver letsencrypt uses HTTP-01 per subdomain — switch to a
 # wildcard DNS-01 cert before exposing many sandboxes (LE rate limits).
 http:
