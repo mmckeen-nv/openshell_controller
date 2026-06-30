@@ -25,15 +25,18 @@ async function resolveName(sandboxId: string): Promise<string> {
   }
 }
 
-// Reachability is checked server-side: the gateway lives on a per-sandbox
-// subdomain, so a browser fetch from the controller's own origin is blocked by
-// CORS (false "Unreachable"). The controller process has no such restriction.
-// The gateway serves HTTP on the same port, so a plain GET to the https:// form
-// answers (200) when the forward + Traefik route are healthy.
-async function probeReachable(wssUrl: string): Promise<boolean> {
+// Reachability is checked server-side: a browser fetch to the per-sandbox
+// subdomain would be CORS-blocked (false "Unreachable"). The controller is a
+// host process, so it probes the forward backend (bridgeIp:hostPort) directly —
+// no DNS, no proxmox hairpin, no CORS. The gateway serves HTTP on the same port,
+// so a plain GET answers when the forward + Traefik route are healthy. Falls
+// back to the public https URL for records written before bridgeIp existed.
+async function probeReachable(access: { bridgeIp?: string; hostPort: number; url: string }): Promise<boolean> {
+  const target = access.bridgeIp
+    ? `http://${access.bridgeIp}:${access.hostPort}/`
+    : access.url.replace(/^wss:/i, "https:")
   try {
-    const httpsUrl = wssUrl.replace(/^wss:/i, "https:")
-    const res = await fetch(httpsUrl, { signal: AbortSignal.timeout(8000), redirect: "manual" })
+    const res = await fetch(target, { signal: AbortSignal.timeout(8000), redirect: "manual" })
     return res.status > 0
   } catch {
     return false
@@ -54,7 +57,7 @@ export async function GET(
   if (!access) {
     return NextResponse.json({ ok: false, configured: false }, { status: 404 })
   }
-  const reachable = await probeReachable(access.url)
+  const reachable = await probeReachable(access)
   return NextResponse.json({ ok: true, configured: true, access, reachable })
 }
 

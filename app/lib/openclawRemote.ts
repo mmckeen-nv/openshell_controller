@@ -16,6 +16,7 @@ export type OpenClawRemoteAccess = {
   sandbox: string
   gatewayPort: number
   hostPort: number
+  bridgeIp?: string
   token: string
   host: string
   port: number

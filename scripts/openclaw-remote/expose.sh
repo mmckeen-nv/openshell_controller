@@ -165,6 +165,7 @@ cat > "$(access_file "$SANDBOX")" <<EOF
   "sandbox": "${SANDBOX}",
   "gatewayPort": ${GWPORT},
   "hostPort": ${PORT},
+  "bridgeIp": "${BRIDGE_IP}",
   "token": "${TOKEN}",
   "host": "${SUBHOST}",
   "port": 443,
