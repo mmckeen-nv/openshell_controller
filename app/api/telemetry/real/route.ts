@@ -6,6 +6,8 @@ import path from "node:path"
 import { promisify } from "node:util"
 import { NEMOCLAW_BIN, NODE_BIN, OPENSHELL_BIN, hostCommandEnv } from "@/app/lib/hostCommands"
 import { resolveRuntimeAuthority } from "@/app/lib/runtimeAuthority"
+import { isUserAuthorizedForSandbox } from "@/app/lib/controlAuth"
+import { isNemoClawImage, readSandboxContainerImageMap, type SandboxImageMap } from "@/app/lib/sandboxContainerImage"
 
 const execFileAsync = promisify(execFile)
 const NEMOCLAW_REGISTRY_FILE = path.join(process.env.HOME || "/tmp", ".nemoclaw", "sandboxes.json")
@@ -163,12 +165,26 @@ function readNemoClawRegistry(): NemoClawRegistryData {
   }
 }
 
-function resolveSandboxAgent(name: string, id: string | null, registry: NemoClawRegistryData) {
+function resolveSandboxAgent(
+  name: string,
+  id: string | null,
+  registry: NemoClawRegistryData,
+  imageMap: SandboxImageMap,
+) {
   const entries = registry.sandboxes ?? {}
   const directEntry = entries[name] || (id ? entries[id] : undefined)
   const namedEntry = Object.values(entries).find((entry) => entry?.name === name || Boolean(id && entry?.name === id))
-  const agent = directEntry?.agent || namedEntry?.agent
-  return typeof agent === "string" && agent.trim() ? agent.trim() : "openclaw"
+  const registryAgent = directEntry?.agent || namedEntry?.agent
+  if (typeof registryAgent === "string" && registryAgent.trim()) return registryAgent.trim()
+
+  // No registry entry → use the container image. NemoClaw-built sandboxes
+  // get "openclaw" as the default; bare openshell sandboxes are "custom".
+  const image = imageMap.get(name)
+  if (isNemoClawImage(image)) return "openclaw"
+  if (image) return "custom"
+
+  // No image data at all (transient docker hiccup) — preserve prior behaviour.
+  return "openclaw"
 }
 
 async function execNemoclaw(args: string[]) {
@@ -215,7 +231,7 @@ function readHostIdentity() {
   return { hostname: hostname(), address: "127.0.0.1", interface: "lo0" }
 }
 
-async function readSandbox(name: string, defaultSandboxNames: Set<string>, registry: NemoClawRegistryData): Promise<{ summary: SandboxSummary; pod: SandboxItem }> {
+async function readSandbox(name: string, defaultSandboxNames: Set<string>, registry: NemoClawRegistryData, imageMap: SandboxImageMap): Promise<{ summary: SandboxSummary; pod: SandboxItem }> {
   try {
     const [{ stdout: detailsStdout }, { stdout: sshStdout }] = await Promise.all([
       execOpenShell(["sandbox", "get", name]),
@@ -229,7 +245,7 @@ async function readSandbox(name: string, defaultSandboxNames: Set<string>, regis
     const sshConfig = sshStdout.trim()
     const sshHostAlias = parseSshHostAlias(sshConfig, sandboxName)
     const isDefault = defaultSandboxNames.has(sandboxName)
-    const agent = resolveSandboxAgent(sandboxName, sandboxId, registry)
+    const agent = resolveSandboxAgent(sandboxName, sandboxId, registry, imageMap)
 
     return {
       summary: {
@@ -274,7 +290,7 @@ async function readSandbox(name: string, defaultSandboxNames: Set<string>, regis
   } catch (error) {
     const sandboxName = name
     const isDefault = defaultSandboxNames.has(sandboxName)
-    const agent = resolveSandboxAgent(sandboxName, sandboxName, registry)
+    const agent = resolveSandboxAgent(sandboxName, sandboxName, registry, imageMap)
     return {
       summary: {
         id: sandboxName,
@@ -318,10 +334,16 @@ async function readSandbox(name: string, defaultSandboxNames: Set<string>, regis
   }
 }
 
-export async function GET() {
+export async function GET(request: Request) {
   try {
+    const userEmail = request.headers.get("x-forwarded-user")
     const { stdout: sandboxListStdout } = await execOpenShell(["sandbox", "list"])
-    const names = parseOpenShellSandboxNames(sandboxListStdout)
+    let names = parseOpenShellSandboxNames(sandboxListStdout)
+
+    if (userEmail) {
+      names = names.filter((name) => isUserAuthorizedForSandbox(userEmail, name))
+    }
+
     const [nemoclawListResult, nemoclawStatusResult] = names.length > 0
       ? await Promise.all([
           execNemoclaw(["list"]).catch(() => null),
@@ -330,7 +352,8 @@ export async function GET() {
       : [null, null]
     const defaultSandboxNames = parseDefaultSandboxNames(nemoclawListResult?.stdout ?? "")
     const registry = readNemoClawRegistry()
-    const results = await Promise.all(names.map((name) => readSandbox(name, defaultSandboxNames, registry)))
+    const imageMap: SandboxImageMap = names.length > 0 ? await readSandboxContainerImageMap() : new Map()
+    const results = await Promise.all(names.map((name) => readSandbox(name, defaultSandboxNames, registry, imageMap)))
     const sandboxes = results.map((result) => result.summary)
     const items = results.map((result) => result.pod)
     const nemoclaw = buildNemoClawSummary(nemoclawStatusResult?.stdout ?? null, defaultSandboxNames)
@@ -348,6 +371,7 @@ export async function GET() {
       pods: { items },
       nemoclaw,
       host: readHostIdentity(),
+      userEmail: userEmail || null,
       source: "openshell-cli",
       authoritySource: "runtimeAuthority",
       truthState: hasMappedFallbackWithoutInventory ? "unverified" : "verified",

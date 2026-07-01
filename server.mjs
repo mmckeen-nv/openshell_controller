@@ -2,10 +2,24 @@ import http from 'node:http'
 import crypto from 'node:crypto'
 import { spawn } from 'node:child_process'
 import { existsSync, readFileSync } from 'node:fs'
+import { writeFile as fsWriteFile, unlink as fsUnlink } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join as pathJoin } from 'node:path'
 import net from 'node:net'
 import tls from 'node:tls'
 import next from 'next'
 import { WebSocketServer, WebSocket } from 'ws'
+import {
+  verifyOperatorSession as authVerifyOperatorSession,
+  verifyOAuthJWT as authVerifyOAuthJWT,
+  parseSandboxAccessCSV,
+  isEmailAuthorizedForSandbox,
+  emailFromOAuthPayload,
+  extractSandboxIdFromUrl,
+  parseCookieHeader,
+  OAUTH_COOKIE_NAME,
+  LEGACY_OAUTH_COOKIE_NAME,
+} from './app/lib/auth/node.mjs'
 
 function loadLocalEnvFile(pathname) {
   if (!existsSync(pathname)) return
@@ -91,27 +105,38 @@ function registerManagedChild(child) {
   })
 }
 
+// File-backed sandbox-access store. We re-implement the read path in JS here
+// because server.mjs runs outside the Next.js bundler and cannot import the
+// TypeScript helper directly. The format must stay in sync with
+// app/lib/auth/sandboxAccessStore.ts.
+function readSandboxAccessFromFile() {
+  const file = (process.env.SANDBOX_ACCESS_FILE && process.env.SANDBOX_ACCESS_FILE.trim())
+    || `${process.cwd()}/data/sandbox-access.json`
+  try {
+    if (!existsSync(file)) return null
+    const raw = readFileSync(file, 'utf8')
+    const parsed = JSON.parse(raw)
+    const entries = Array.isArray(parsed?.entries) ? parsed.entries : []
+    const map = new Map()
+    for (const entry of entries) {
+      const sandboxName = typeof entry?.sandboxName === 'string' ? entry.sandboxName.trim() : ''
+      const email = typeof entry?.email === 'string' ? entry.email.trim().toLowerCase() : ''
+      if (!sandboxName || !email) continue
+      if (!map.has(sandboxName)) map.set(sandboxName, new Set())
+      map.get(sandboxName).add(email)
+    }
+    return map
+  } catch {
+    return null
+  }
+}
+
 function isAuthDisabled() {
   return /^(1|true|yes|on)$/i.test(process.env.OPENSHELL_CONTROL_AUTH_DISABLED || '')
 }
 
 function getAuthSecret() {
   return process.env.OPENSHELL_CONTROL_AUTH_SECRET || process.env.OPENSHELL_CONTROL_PASSWORD || ''
-}
-
-function base64UrlDecode(value) {
-  const normalized = value.replace(/-/g, '+').replace(/_/g, '/')
-  return Buffer.from(normalized.padEnd(Math.ceil(normalized.length / 4) * 4, '='), 'base64').toString('utf8')
-}
-
-function hmac(payload) {
-  return crypto.createHmac('sha256', getAuthSecret()).update(payload).digest('base64url')
-}
-
-function safeEqual(left, right) {
-  const leftBuffer = Buffer.from(left || '')
-  const rightBuffer = Buffer.from(right || '')
-  return leftBuffer.length === rightBuffer.length && crypto.timingSafeEqual(leftBuffer, rightBuffer)
 }
 
 function filterCookieHeader(value) {
@@ -123,42 +148,15 @@ function filterCookieHeader(value) {
 }
 
 function readCookieValue(value, name) {
-  for (const part of String(value || '').split(';')) {
-    const trimmed = part.trim()
-    if (!trimmed.startsWith(`${name}=`)) continue
-    try {
-      return decodeURIComponent(trimmed.slice(name.length + 1))
-    } catch {
-      return trimmed.slice(name.length + 1)
-    }
-  }
-  return null
-}
-
-function parseCookies(req) {
-  return String(req.headers.cookie || '')
-    .split(';')
-    .reduce((cookies, part) => {
-      const [rawName, ...rawValue] = part.trim().split('=')
-      if (!rawName) return cookies
-      cookies[rawName] = decodeURIComponent(rawValue.join('=') || '')
-      return cookies
-    }, {})
+  const cookies = parseCookieHeader(value)
+  return cookies[name] || null
 }
 
 function isAuthenticatedUpgrade(req) {
   if (isAuthDisabled()) return true
   if (!process.env.OPENSHELL_CONTROL_PASSWORD) return false
-  const value = parseCookies(req)[authCookieName]
-  if (!value) return false
-  const [payload, signature] = value.split('.')
-  if (!payload || !signature || !safeEqual(signature, hmac(payload))) return false
-  try {
-    const parsed = JSON.parse(base64UrlDecode(payload))
-    return typeof parsed.exp === 'number' && parsed.exp > Math.floor(Date.now() / 1000)
-  } catch {
-    return false
-  }
+  const value = readCookieValue(req.headers.cookie, authCookieName)
+  return Boolean(authVerifyOperatorSession(value, getAuthSecret()))
 }
 
 function rejectUnauthorizedUpgrade(req, socket, path) {
@@ -167,6 +165,61 @@ function rejectUnauthorizedUpgrade(req, socket, path) {
     remoteAddress: req.socket.remoteAddress || 'unknown',
   })
   socket.end('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\nContent-Length: 0\r\n\r\n')
+}
+
+function getOAuthJWTSecret() {
+  // Match the priority order used by the Edge adapter in
+  // app/lib/auth/context.ts so the two sides cannot disagree about which
+  // secret is active.
+  return (
+    process.env.OAUTH_JWT_SECRET
+    || process.env.MCPAUTH_JWT_SECRET
+    || process.env.CF_AUTH_JWT_SECRET
+    || ''
+  )
+}
+
+function verifyOAuthSessionJWT(token) {
+  return authVerifyOAuthJWT(token, getOAuthJWTSecret())
+}
+
+function getSandboxAccessMapForServer() {
+  const fromFile = readSandboxAccessFromFile()
+  if (fromFile && fromFile.size > 0) return fromFile
+  return parseSandboxAccessCSV(process.env.SANDBOX_ACCESS_USERS || '')
+}
+
+function getSandboxIdFromUpgradeUrl(url) {
+  try {
+    const parsed = new URL(url || '/', `http://localhost:${port}`)
+    return extractSandboxIdFromUrl(parsed.pathname, parsed.searchParams)
+  } catch {
+    return null
+  }
+}
+
+function isOAuthSandboxUpgradeAuthorized(req) {
+  // Prefer the new cookie name, fall back to the legacy CF_Authorization
+  // alias for sessions issued by an older controller version.
+  const oauthToken =
+    readCookieValue(req.headers.cookie, OAUTH_COOKIE_NAME)
+    || readCookieValue(req.headers.cookie, LEGACY_OAUTH_COOKIE_NAME)
+  const payload = verifyOAuthSessionJWT(oauthToken)
+  if (!payload) return false
+  const email = emailFromOAuthPayload(payload)
+  if (!email) return false
+  const sandboxId = getSandboxIdFromUpgradeUrl(req.url)
+  if (!sandboxId) return false
+  const map = getSandboxAccessMapForServer()
+  const authorized = isEmailAuthorizedForSandbox(map, email, sandboxId)
+  if (authorized) {
+    logBridge('ws-upgrade-oauth-authorized', {
+      path: req.url || '/',
+      sandboxId,
+      remoteAddress: req.socket.remoteAddress || 'unknown',
+    })
+  }
+  return authorized
 }
 
 function buildTerminalUpstreamUrl(req) {
@@ -182,9 +235,11 @@ function copyHeaders(req) {
     if (typeof value === 'undefined') continue
     const lowerKey = key.toLowerCase()
     if (
-      ['connection', 'host', 'upgrade'].includes(lowerKey) ||
+      ['connection', 'host', 'upgrade', 'x-forwarded-user'].includes(lowerKey) ||
       lowerKey.startsWith('sec-websocket-')
     ) {
+      // x-forwarded-user is set only by trusted middleware; never forward a
+      // client-supplied value upstream where downstream services might trust it.
       continue
     }
     headers[key] = Array.isArray(value) ? value.join(', ') : value
@@ -321,7 +376,14 @@ function resolveSandboxOpenClawInstance(instanceId) {
     id: requested,
     label: `OpenClaw for ${match[2]}`,
     dashboardUrl: `http://127.0.0.1:${port}/`,
-    controlUiOrigin: process.env.OPENCLAW_SANDBOX_CONTROL_UI_ORIGIN || 'http://127.0.0.1:18789',
+    // The hash port above is the HOST side of the ssh tunnel; in-sandbox the
+    // gateway listens on OPENCLAW_SANDBOX_DASHBOARD_REMOTE_PORT (18789, see
+    // openshellHost.ts). Cloud sandboxes allowlist exactly this origin, so
+    // keep sending it byte-identical; BYOVPS sandboxes (whose config gateway
+    // allowlists a different port) pass via the gateway's local-loopback rule
+    // now that copyDashboardWebSocketHeaders strips forwarded headers.
+    controlUiOrigin: process.env.OPENCLAW_SANDBOX_CONTROL_UI_ORIGIN
+      || `http://127.0.0.1:${Number.parseInt(process.env.OPENCLAW_SANDBOX_DASHBOARD_REMOTE_PORT || '18789', 10)}`,
     terminalServerUrl: process.env.TERMINAL_SERVER_URL || 'http://127.0.0.1:3011',
     loopbackOnly: true,
     default: false,
@@ -381,8 +443,14 @@ function redactSensitiveUrl(value) {
 
 function withDashboardTokenQuery(upstreamWsUrl, token) {
   const url = new URL(upstreamWsUrl.toString())
-  if (token && !url.searchParams.has('token') && !url.searchParams.has('authToken')) {
+  if (token) {
+    // The cookie token is server-set by /dashboard/open from a live sandbox
+    // probe — trust it over any client-supplied URL ?token=, which the SPA may
+    // have cached in localStorage from a previous (now-recreated) sandbox.
+    // Without this, a fresh /dashboard/open call refreshes the cookie but the
+    // stale URL token still wins and the gateway rejects with token_mismatch.
     url.searchParams.set('token', token)
+    url.searchParams.delete('authToken')
   }
   return url
 }
@@ -490,7 +558,216 @@ function startInterSandboxChatSidecar() {
 }
 
 const app = next({ dev, hostname, port })
+// Next.js's NextCustomServer lazily attaches its own 'upgrade' listener to the
+// http server on the first request (see node_modules/next/dist/server/next.js
+// setupWebSocketHandler). When EventEmitter dispatches an 'upgrade', that
+// listener runs alongside ours and destroys the socket, killing our dashboard
+// WebSocket bridge ~3 ms after we send 101 Switching Protocols. Setting the
+// internal flag prevents Next.js from ever attaching that listener.
+app.didWebSocketSetup = true
 const handle = app.getRequestHandler()
+
+// Handle the restore endpoint entirely in the custom server to avoid a Next.js 15
+// bug where fromNodeNextRequest throws "body disturbed or locked" for large
+// multipart uploads — whether the body is unconsumed (original bug) or pre-read
+// by us (same error, different cause). Bypassing Next.js routing for this one
+// POST endpoint lets us use Node.js streams directly.
+const RESTORE_ROUTE_RE = /^\/api\/sandbox\/([^/?#]+)\/restore(?:\?|$)/
+const OPENSHELL_BIN_FOR_RESTORE = process.env.OPENSHELL_BIN || '/usr/bin/openshell'
+const MAX_RESTORE_FILE_BYTES = Number(process.env.SANDBOX_FILE_TRANSFER_MAX_BYTES) || (128 * 1024 * 1024)
+const ALLOWED_SANDBOX_ROOTS = ['/sandbox', '/tmp']
+
+function shellQuoteRestore(value) {
+  return "'" + String(value).replace(/'/g, "'\\''") + "'"
+}
+
+function collectIncomingBody(req) {
+  return new Promise((resolve, reject) => {
+    const chunks = []
+    req.on('data', (chunk) => chunks.push(Buffer.from(chunk)))
+    req.on('end', () => resolve(Buffer.concat(chunks)))
+    req.on('error', reject)
+  })
+}
+
+function execOpenshellForRestore(args) {
+  return new Promise((resolve, reject) => {
+    const env = { ...process.env, OPENSHELL_GATEWAY: process.env.OPENSHELL_GATEWAY || 'nemoclaw' }
+    const child = spawn(OPENSHELL_BIN_FOR_RESTORE, args, { env, stdio: ['ignore', 'pipe', 'pipe'] })
+    let stdout = '', stderr = ''
+    child.stdout.on('data', (d) => { stdout += d })
+    child.stderr.on('data', (d) => { stderr += d })
+    child.on('close', (code) => {
+      if (code !== 0) reject(new Error(stderr.trim() || `openshell ${args.join(' ')} exited ${code}`))
+      else resolve(stdout)
+    })
+    child.on('error', reject)
+  })
+}
+
+// Mirrors TypeScript resolveSandboxRef: try direct get, then list+match by Id.
+async function resolveRestoreSandboxName(sandboxId) {
+  const stripAnsi = (s) => s.replace(/\x1b\[[0-9;]*[mGKHF]/g, '')
+  const parseField = (stdout, field) => {
+    const m = stripAnsi(stdout).match(new RegExp(`^\\s*${field}\\s*:\\s*(.+)$`, 'mi'))
+    return m?.[1]?.trim() ?? null
+  }
+  // First try direct lookup — works when sandboxId is actually a sandbox name.
+  try {
+    const stdout = await execOpenshellForRestore(['sandbox', 'get', sandboxId])
+    return parseField(stdout, 'Name') || sandboxId
+  } catch {
+    // Fall through to list-based ID lookup below.
+  }
+  // List all sandboxes and find the one whose Id matches.
+  const listOut = await execOpenshellForRestore(['sandbox', 'list'])
+  const names = listOut.trim().split('\n').slice(1)
+    .map((l) => stripAnsi(l).trim().split(/\s+/)[0]).filter(Boolean)
+  for (const name of names) {
+    try {
+      const stdout = await execOpenshellForRestore(['sandbox', 'get', name])
+      if (parseField(stdout, 'Id') === sandboxId) return parseField(stdout, 'Name') || name
+    } catch { /* ignore individual lookup failures */ }
+  }
+  throw new Error(`sandbox not found: ${sandboxId}`)
+}
+
+// openshell sandbox exec pipes stdin through gRPC which has a 1 MiB message limit,
+// making it unusable for archives > 1 MiB. Instead: write the archive to a VPS
+// temp file, docker cp it into the container (no gRPC), then restore with docker exec.
+function spawnAsync(cmd, args) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'] })
+    let stdout = '', stderr = ''
+    child.stdout.on('data', (d) => { stdout += d })
+    child.stderr.on('data', (d) => { stderr += d })
+    child.on('close', (code) => resolve({ code, stdout, stderr: stderr.trim() }))
+    child.on('error', reject)
+  })
+}
+
+function findSandboxContainer(sandboxId) {
+  return new Promise((resolve, reject) => {
+    const child = spawn('docker', ['ps', '--format', '{{.Names}}', '--filter', `name=${sandboxId}`], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
+    let stdout = ''
+    child.stdout.on('data', (d) => { stdout += d })
+    child.on('close', (code) => {
+      if (code !== 0) return reject(new Error('docker ps failed'))
+      const name = stdout.trim().split('\n').map((s) => s.trim()).find(Boolean)
+      if (!name) return reject(new Error(`no running container found for sandbox ${sandboxId}`))
+      resolve(name)
+    })
+    child.on('error', reject)
+  })
+}
+
+async function runRestoreExec(sandboxId, payload, targetPath, replace) {
+  const token = crypto.randomBytes(16).toString('hex')
+  const hostTmp = pathJoin(tmpdir(), `openshell-restore-${token}.tar.gz`)
+  const containerTmp = `/tmp/openshell-restore-${token}.tar.gz`
+  await fsWriteFile(hostTmp, payload)
+  try {
+    const containerName = await findSandboxContainer(sandboxId)
+    const cp = await spawnAsync('docker', ['cp', hostTmp, `${containerName}:${containerTmp}`])
+    if (cp.code !== 0) throw new Error(`docker cp failed: ${cp.stderr}`)
+    // Make the file readable by the sandbox user (docker cp creates root-owned files).
+    await spawnAsync('docker', ['exec', '-u', 'root', containerName, 'chmod', '644', containerTmp])
+    const qt = shellQuoteRestore(targetPath)
+    // --warning=no-unknown-keyword: silence macOS PAX header keywords (SCHILY.fflags etc.)
+    // --exclude='._*': skip macOS AppleDouble resource-fork sidecar files
+    // tar exits 1 for "some files differ" (non-fatal warnings), 2 for fatal errors.
+    // Use newline-separated commands (not &&) so ec=$? always runs; treat exit 1 as success.
+    const tarFlags = `--warning=no-unknown-keyword --exclude='._*'`
+    const script = [
+      `tmp=${shellQuoteRestore(containerTmp)}`,
+      `tar -tzf "$tmp" ${tarFlags} >/tmp/openshell-restore-list.$$ 2>/dev/null || { ec=$?; test "$ec" -eq 1 || { rm -f "$tmp" /tmp/openshell-restore-list.$$; exit "$ec"; }; }`,
+      `tar -tvzf "$tmp" ${tarFlags} >/tmp/openshell-restore-verbose.$$ 2>/dev/null || { ec=$?; test "$ec" -eq 1 || { rm -f "$tmp" /tmp/openshell-restore-list.$$ /tmp/openshell-restore-verbose.$$; exit "$ec"; }; }`,
+      `while IFS= read -r e; do case "$e" in ""|/*|../*|*/../*|*"/..") rm -f "$tmp" /tmp/openshell-restore-list.$$ /tmp/openshell-restore-verbose.$$; exit 42;; esac; done < /tmp/openshell-restore-list.$$`,
+      `while IFS= read -r e; do case "$e" in [-d]*) :;; *) rm -f "$tmp" /tmp/openshell-restore-list.$$ /tmp/openshell-restore-verbose.$$; exit 43;; esac; done < /tmp/openshell-restore-verbose.$$`,
+      `mkdir -p ${qt}`,
+      replace ? `find ${qt} -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +` : ':',
+      `if grep -q '^payload/' /tmp/openshell-restore-list.$$; then tar -xzf "$tmp" -C ${qt} --strip-components=1 --wildcards 'payload/*' ${tarFlags} 2>/dev/null; else tar -xzf "$tmp" -C ${qt} ${tarFlags} 2>/dev/null; fi`,
+      `ec=$?`,
+      `rm -f /tmp/openshell-restore-list.$$ /tmp/openshell-restore-verbose.$$ 2>/dev/null`,
+      `test "$ec" -le 1 || exit "$ec"`,
+    ].join('\n')
+    const exec = await spawnAsync('docker', ['exec', '-u', 'sandbox', containerName, 'sh', '-lc', script])
+    if (exec.code === 42) throw new Error('archive contains unsafe paths')
+    if (exec.code === 43) throw new Error('archive contains unsupported entry types')
+    if (exec.code !== 0) throw new Error(exec.stderr || 'failed to restore sandbox archive')
+    // Best-effort cleanup of container temp file (sandbox user may not own it).
+    await spawnAsync('docker', ['exec', '-u', 'root', containerName, 'rm', '-f', containerTmp]).catch(() => {})
+  } finally {
+    await fsUnlink(hostTmp).catch(() => {})
+  }
+}
+
+async function handleRestoreRequest(req, res, sandboxId) {
+  if (!isAuthenticatedUpgrade(req)) {
+    res.writeHead(401, { 'content-type': 'application/json; charset=utf-8' })
+    res.end(JSON.stringify({ ok: false, error: 'Unauthorized' }))
+    return
+  }
+  try {
+    const rawBody = await collectIncomingBody(req)
+    const contentType = req.headers['content-type'] || ''
+    let form
+    try {
+      form = await new Request('http://localhost/__restore', {
+        method: 'POST', headers: { 'content-type': contentType }, body: rawBody,
+      }).formData()
+    } catch (e) {
+      res.writeHead(400, { 'content-type': 'application/json; charset=utf-8' })
+      res.end(JSON.stringify({ ok: false, error: `Failed to parse upload: ${e?.message}` }))
+      return
+    }
+    const archiveFile = form.get('archive')
+    if (!archiveFile || !(archiveFile instanceof File)) {
+      res.writeHead(400, { 'content-type': 'application/json; charset=utf-8' })
+      res.end(JSON.stringify({ ok: false, error: 'archive is required' }))
+      return
+    }
+    const rawTarget = form.get('targetPath')
+    const rawReplace = form.get('replace')
+    const targetPath = typeof rawTarget === 'string' && rawTarget.trim() ? rawTarget.trim() : '/sandbox'
+    const replace = rawReplace === 'true' || rawReplace === '1'
+    const normalized = targetPath.startsWith('/') ? targetPath : '/sandbox/' + targetPath
+    if (!ALLOWED_SANDBOX_ROOTS.some((r) => normalized === r || normalized.startsWith(r + '/'))) {
+      res.writeHead(400, { 'content-type': 'application/json; charset=utf-8' })
+      res.end(JSON.stringify({ ok: false, error: 'sandbox path must be under /sandbox or /tmp' }))
+      return
+    }
+    const payload = Buffer.from(await archiveFile.arrayBuffer())
+    if (payload.byteLength > MAX_RESTORE_FILE_BYTES) {
+      res.writeHead(400, { 'content-type': 'application/json; charset=utf-8' })
+      res.end(JSON.stringify({ ok: false, error: `archive is too large; max transfer size is ${Math.floor(MAX_RESTORE_FILE_BYTES / 1024 / 1024)} MiB` }))
+      return
+    }
+    let sandboxName
+    try {
+      sandboxName = await resolveRestoreSandboxName(sandboxId)
+    } catch {
+      res.writeHead(404, { 'content-type': 'application/json; charset=utf-8' })
+      res.end(JSON.stringify({ ok: false, error: `sandbox not found: ${sandboxId}` }))
+      return
+    }
+    await runRestoreExec(sandboxId, payload, normalized, replace)
+    const mode = replace ? 'replace' : 'merge'
+    res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
+    res.end(JSON.stringify({
+      ok: true,
+      restored: { sandboxName, archiveName: archiveFile.name, targetPath: normalized, bytes: payload.byteLength, mode },
+      note: `Restored ${archiveFile.name} into ${normalized} (${mode}).`,
+    }))
+  } catch (e) {
+    const message = e?.message || 'Failed to restore sandbox backup'
+    const status = /required|path|large|unsafe|archive/.test(message) ? 400 : 500
+    res.writeHead(status, { 'content-type': 'application/json; charset=utf-8' })
+    res.end(JSON.stringify({ ok: false, error: message }))
+  }
+}
 
 await startLocalTerminalServerIfNeeded()
 startInterSandboxChatSidecar()
@@ -499,7 +776,19 @@ const handleUpgrade = typeof app.getUpgradeHandler === 'function'
   ? app.getUpgradeHandler()
   : null
 
-const server = http.createServer((req, res) => handle(req, res))
+const server = http.createServer((req, res) => {
+  const restoreMatch = req.method === 'POST' && RESTORE_ROUTE_RE.exec(req.url || '')
+  if (restoreMatch) {
+    handleRestoreRequest(req, res, restoreMatch[1]).catch((e) => {
+      if (!res.headersSent) {
+        res.writeHead(500, { 'content-type': 'application/json; charset=utf-8' })
+        res.end(JSON.stringify({ ok: false, error: e?.message || 'Failed to restore' }))
+      }
+    })
+    return
+  }
+  handle(req, res)
+})
 const dashboardWsProxyServer = dashboardWsProxyPort
   ? http.createServer((_, res) => {
       res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' })
@@ -511,13 +800,26 @@ const dashboardWss = new WebSocketServer({ noServer: true })
 
 function copyDashboardWebSocketHeaders(req, controlUiOrigin) {
   const headers = copyHeaders(req)
+  // OpenClaw's gateway treats the presence of ANY forwarded-style header as
+  // proof of a proxied (non-local) client and then refuses loopback origins
+  // outside its configured allowlist (isLocalDirectRequest in its origin
+  // check). This upstream hop is a host-local tunnel the controller has
+  // already authenticated, so present it as the direct local client it is.
+  for (const key of Object.keys(headers)) {
+    const lower = key.toLowerCase()
+    if (lower === 'forwarded' || lower === 'x-real-ip' || lower.startsWith('x-forwarded-')) delete headers[key]
+  }
   const cookie = filterCookieHeader(req.headers.cookie)
   const dashboardToken = readCookieValue(req.headers.cookie, openClawDashboardTokenCookieName)
   if (cookie) headers.cookie = cookie
   else delete headers.cookie
   headers.origin = controlUiOrigin
   headers.referer = `${controlUiOrigin}/`
-  if (dashboardToken && !headers.authorization) headers.authorization = `Bearer ${dashboardToken}`
+  // Cookie wins over any client-supplied Authorization header for the same
+  // reason it wins over ?token= in withDashboardTokenQuery: the SPA can hold a
+  // stale bearer in localStorage and replay it on WS upgrades, which then
+  // overrides the fresh openclaw_dashboard_token cookie set by /dashboard/open.
+  if (dashboardToken) headers.authorization = `Bearer ${dashboardToken}`
   return headers
 }
 
@@ -729,6 +1031,7 @@ function tunnelDashboardUpgrade(req, socket, head, upstreamWsUrl, instanceId, co
     socket.pipe(upstreamSocket, { end: false })
     upstreamSocket.pipe(socket, { end: false })
     upstreamSocket.resume()
+    socket.allowHalfOpen = true
     socket.resume()
     logBridge('dashboard-tunnel-open', {
       path: req.url || '/',
@@ -772,7 +1075,18 @@ function tunnelDashboardUpgrade(req, socket, head, upstreamWsUrl, instanceId, co
     })
   })
 
-  socket.on('error', () => upstreamSocket.destroy())
+  socket.on('error', (e) => {
+    logBridge('dashboard-tunnel-client-error', {
+      path: req.url || '/',
+      upstreamUrl: upstreamWsUrl.toString(),
+      instanceId,
+      code: e?.code,
+      message: e?.message,
+      upstreamBytes,
+      clientBytes,
+    })
+    upstreamSocket.destroy()
+  })
   socket.on('close', (hadError) => {
     logBridge('dashboard-tunnel-client-close', {
       path: req.url || '/',
@@ -891,9 +1205,88 @@ clientWss.on('connection', (client, req) => {
   })
 })
 
+// ── Hermes dashboard proxy (NemoClaw v0.17+) ───────────────────────────────
+// Mirror of app/api/sandbox/[sandboxId]/hermes/dashboard/proxy (HTTP). The HTTP
+// route can't handle WS upgrades, so the chat/events/pty sockets are tunnelled
+// here. Hermes v0.17 authorises WS via single-use ws-tickets in the query string,
+// so this is pure transport (plus the session-token header for parity); the
+// upstream is the desktop-mode forward at http://<bridgeIp>:<port>.
+const hermesProxyAccessDir = process.env.HERMES_REMOTE_ACCESS_DIR || '/etc/openshell/hermes-access'
+const hermesProxyPathRe = /^\/api\/sandbox\/([^/]+)\/hermes\/dashboard\/proxy(?:\/|$)/
+
+function readHermesProxyAccess(sandboxId) {
+  try {
+    const file = pathJoin(hermesProxyAccessDir, `${sandboxId}.json`)
+    if (!existsSync(file)) return null
+    return JSON.parse(readFileSync(file, 'utf8'))
+  } catch {
+    return null
+  }
+}
+
+function handleHermesProxyUpgrade(req, socket, head) {
+  const fullUrl = req.url || '/'
+  const match = hermesProxyPathRe.exec(fullUrl.split('?')[0])
+  if (!match) { socket.destroy(); return }
+  const sandboxId = decodeURIComponent(match[1])
+  const access = readHermesProxyAccess(sandboxId)
+  if (!access || !access.port) {
+    socket.end('HTTP/1.1 404 Not Found\r\nConnection: close\r\nContent-Length: 0\r\n\r\n')
+    return
+  }
+  const host = (access.bridgeIp && String(access.bridgeIp).trim()) || '127.0.0.1'
+  const prefix = `/api/sandbox/${encodeURIComponent(sandboxId)}/hermes/dashboard/proxy`
+  const afterPrefix = fullUrl.startsWith(prefix) ? (fullUrl.slice(prefix.length) || '/') : '/'
+  const upstreamPath = afterPrefix.startsWith('/') ? afterPrefix : `/${afterPrefix}`
+
+  socket.pause()
+  const upstreamSocket = net.connect({ host, port: Number(access.port) })
+  const skip = new Set(['host', 'x-forwarded-prefix', 'x-hermes-session-token', 'origin'])
+  const lines = [`GET ${upstreamPath} HTTP/1.1`, `Host: ${host}:${access.port}`]
+  for (let i = 0; i < req.rawHeaders.length; i += 2) {
+    const k = req.rawHeaders[i]
+    if (skip.has(String(k).toLowerCase())) continue
+    lines.push(`${k}: ${req.rawHeaders[i + 1]}`)
+  }
+  lines.push(`X-Forwarded-Prefix: ${prefix}`)
+  lines.push(`X-Hermes-Session-Token: ${access.token}`)
+  lines.push(`Origin: http://${host}:${access.port}`)
+  const requestHead = lines.join('\r\n') + '\r\n\r\n'
+
+  let opened = false
+  upstreamSocket.once('connect', () => {
+    opened = true
+    upstreamSocket.write(requestHead)
+    if (head?.length) upstreamSocket.write(head)
+    socket.pipe(upstreamSocket, { end: false })
+    upstreamSocket.pipe(socket, { end: false })
+    upstreamSocket.resume()
+    socket.allowHalfOpen = true
+    socket.resume()
+    logBridge('hermes-dashboard-tunnel-open', { path: fullUrl, sandboxId, upstream: `${host}:${access.port}` })
+  })
+  upstreamSocket.on('error', (error) => {
+    logBridge('hermes-dashboard-tunnel-error', { sandboxId, reason: error instanceof Error ? error.message : 'upstream error' })
+    if (!opened && !socket.destroyed) socket.end('HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\nContent-Length: 0\r\n\r\n')
+    else socket.destroy()
+  })
+  socket.on('error', () => upstreamSocket.destroy())
+  upstreamSocket.on('close', () => socket.destroy())
+  socket.on('close', () => upstreamSocket.destroy())
+}
+
 server.on('upgrade', (req, socket, head) => {
+  if (hermesProxyPathRe.test((req.url || '').split('?')[0])) {
+    if (!isAuthenticatedUpgrade(req) && !isOAuthSandboxUpgradeAuthorized(req)) {
+      rejectUnauthorizedUpgrade(req, socket, req.url || '/')
+      return
+    }
+    handleHermesProxyUpgrade(req, socket, head)
+    return
+  }
+
   if ((req.url || '').startsWith(terminalProxyPath)) {
-    if (!isAuthenticatedUpgrade(req)) {
+    if (!isAuthenticatedUpgrade(req) && !isOAuthSandboxUpgradeAuthorized(req)) {
       rejectUnauthorizedUpgrade(req, socket, req.url || '/')
       return
     }
@@ -911,7 +1304,7 @@ server.on('upgrade', (req, socket, head) => {
     (req.url || '').startsWith(legacyDashboardProxyPrefix) ||
     (req.url || '').startsWith(instancesProxyPrefix)
   ) {
-    if (!isAuthenticatedUpgrade(req)) {
+    if (!isAuthenticatedUpgrade(req) && !isOAuthSandboxUpgradeAuthorized(req)) {
       rejectUnauthorizedUpgrade(req, socket, req.url || '/')
       return
     }
@@ -933,7 +1326,7 @@ server.on('upgrade', (req, socket, head) => {
 if (dashboardWsProxyServer) {
   dashboardWsProxyServer.on('upgrade', (req, socket, head) => {
     if ((req.url || '').startsWith(terminalProxyPath)) {
-      if (!isAuthenticatedUpgrade(req)) {
+      if (!isAuthenticatedUpgrade(req) && !isOAuthSandboxUpgradeAuthorized(req)) {
         rejectUnauthorizedUpgrade(req, socket, req.url || '/')
         return
       }
@@ -951,7 +1344,7 @@ if (dashboardWsProxyServer) {
       (req.url || '').startsWith(legacyDashboardProxyPrefix) ||
       (req.url || '').startsWith(instancesProxyPrefix)
     ) {
-      if (!isAuthenticatedUpgrade(req)) {
+      if (!isAuthenticatedUpgrade(req) && !isOAuthSandboxUpgradeAuthorized(req)) {
         rejectUnauthorizedUpgrade(req, socket, req.url || '/')
         return
       }

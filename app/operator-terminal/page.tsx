@@ -61,38 +61,9 @@ const defaultFallback = (sandboxId: string | null) => `ssh openshell-${sandboxId
 const defaultLoginShell = (sandboxId: string | null) => `env PATH=$HOME/.local/bin:$PATH bash -l -c 'ssh openshell-${sandboxId || 'my-assistant'}'`
 const DEFAULT_SHELL_HINT = 'If your non-interactive shell misses local tooling, retry from a login shell or prepend PATH=$HOME/.local/bin:$PATH before ssh.'
 
-function shellQuote(value: string) {
-  return `'${value.replace(/'/g, `'"'"'`)}'`
-}
-
-function escapeRegExp(value: string) {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-}
-
-function buildHermesTerminalConnectCommand(sandboxId: string) {
-  const target = shellQuote(sandboxId)
-  const alias = shellQuote(`openshell-${sandboxId}`)
-  const message = shellQuote(`[OpenShell Control] Connecting to Hermes sandbox ${sandboxId}...`)
-  return [
-    `printf '\\n%s\\n' ${message}`,
-    `if command -v nemohermes >/dev/null 2>&1; then nemohermes ${target} connect; elif command -v nemoclaw >/dev/null 2>&1; then nemoclaw ${target} connect; else ssh ${alias}; fi`,
-  ].join('; ')
-}
-
-const HERMES_AGENT_COMMAND = "if command -v hermes >/dev/null 2>&1; then hermes; else echo 'Hermes CLI not found in this shell. Check that the terminal is attached to a Hermes sandbox.' >&2; fi"
-
-function isHermesAttachReadyOutput(output: string, sandboxId: string) {
-  const escapedSandboxId = escapeRegExp(sandboxId)
-  return (
-    new RegExp(`(?:^|\\n)sandbox@${escapedSandboxId}:[^\\n]*[$#]\\s*$`).test(output) ||
-    /(?:^|\n)sandbox@[^:\s]+:[^\n]*[$#]\s*$/.test(output)
-  )
-}
-
 function OperatorTerminalInner() {
   const searchParams = useSearchParams()
   const sandboxId = searchParams.get('sandboxId')
-  const launchMode = searchParams.get('launch')
   const requestedDashboardSessionId = searchParams.get('dashboardSessionId')
   const [dashboardSessionId, setDashboardSessionId] = useState(
     () => requestedDashboardSessionId?.trim() || HYDRATION_SAFE_DASHBOARD_SESSION_ID
@@ -106,6 +77,21 @@ function OperatorTerminalInner() {
   const [liveSession, setLiveSession] = useState<LiveTerminalSession | null>(null)
   const [terminalReady, setTerminalReady] = useState(false)
   const [showRecovery, setShowRecovery] = useState(false)
+  const [isFullscreen, setIsFullscreen] = useState(false)
+
+  useEffect(() => {
+    if (!isFullscreen) return
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setIsFullscreen(false)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [isFullscreen])
+
+  useEffect(() => {
+    const id = requestAnimationFrame(() => fitAddonRef.current?.fit())
+    return () => cancelAnimationFrame(id)
+  }, [isFullscreen])
 
   const terminalContainerRef = useRef<HTMLDivElement | null>(null)
   const terminalRef = useRef<XTermInstance | null>(null)
@@ -115,18 +101,14 @@ function OperatorTerminalInner() {
   const liveSessionRequestRef = useRef<Promise<void> | null>(null)
   const reconnectCounterRef = useRef(0)
   const resizeObserverRef = useRef<ResizeObserver | null>(null)
-  const hermesLaunchSentRef = useRef(false)
-  const hermesAgentSentRef = useRef(false)
-  const hermesAttachBufferRef = useRef('')
 
   useEffect(() => {
     setDashboardSessionId(ensureDashboardSessionId(requestedDashboardSessionId))
   }, [requestedDashboardSessionId])
 
-  const shouldLaunchHermes = launchMode === 'hermes' && Boolean(sandboxId)
-  const terminalDescription = shouldLaunchHermes
-    ? 'Live operator terminal for Hermes. The dashboard connects to the sandbox and starts the Hermes CLI.'
-    : sandboxId ? 'Live operator terminal for the selected sandbox, brokered through the dashboard-owned terminal bridge.' : 'Live operator terminal for host mode, brokered through the dashboard-owned terminal bridge.'
+  const terminalDescription = sandboxId
+    ? 'Live operator terminal attached directly to the sandbox shell.'
+    : 'Live operator terminal for host mode, brokered through the dashboard-owned terminal bridge.'
 
   const refreshReadiness = useCallback(async () => {
     if (!sandboxId) {
@@ -156,9 +138,6 @@ function OperatorTerminalInner() {
     if (reset) {
       reconnectCounterRef.current += 1
       liveSessionIdRef.current = ''
-      hermesLaunchSentRef.current = false
-      hermesAgentSentRef.current = false
-      hermesAttachBufferRef.current = ''
       socketRef.current?.close()
       socketRef.current = null
     }
@@ -202,12 +181,6 @@ function OperatorTerminalInner() {
       liveSessionRequestRef.current = null
     }
   }, [dashboardSessionId, sandboxId])
-
-  useEffect(() => {
-    hermesLaunchSentRef.current = false
-    hermesAgentSentRef.current = false
-    hermesAttachBufferRef.current = ''
-  }, [launchMode, sandboxId])
 
   useEffect(() => { refreshReadiness() }, [refreshReadiness])
   useEffect(() => { ensureLiveSession() }, [ensureLiveSession])
@@ -295,9 +268,7 @@ function OperatorTerminalInner() {
     socket.addEventListener('open', () => {
       setTerminalState('connected')
       const transportLabel = liveSession.transport ? ` via ${liveSession.transport}` : ''
-      setTerminalStatus(shouldLaunchHermes
-        ? `Live terminal connected for ${liveSession.sandboxId}${transportLabel}; launching Hermes…`
-        : `Live terminal connected for ${liveSession.sandboxId}${transportLabel}.`)
+      setTerminalStatus(`Live terminal connected for ${liveSession.sandboxId}${transportLabel}.`)
       try {
         fitAddonRef.current?.fit()
       } catch {
@@ -305,14 +276,6 @@ function OperatorTerminalInner() {
       }
       term.focus()
       socket.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }))
-      if (shouldLaunchHermes && sandboxId && !hermesLaunchSentRef.current) {
-        hermesLaunchSentRef.current = true
-        window.setTimeout(() => {
-          if (socket.readyState === WebSocket.OPEN) {
-            socket.send(JSON.stringify({ type: 'input', data: `\n\n${buildHermesTerminalConnectCommand(sandboxId)}\n` }))
-          }
-        }, 250)
-      }
     })
 
     socket.addEventListener('message', (event) => {
@@ -323,18 +286,6 @@ function OperatorTerminalInner() {
           term.write(message.replay)
         } else if (message.type === 'data' && typeof message.data === 'string') {
           term.write(message.data)
-          if (shouldLaunchHermes && sandboxId && !hermesAgentSentRef.current) {
-            hermesAttachBufferRef.current = `${hermesAttachBufferRef.current}${message.data}`.slice(-8000)
-            if (isHermesAttachReadyOutput(hermesAttachBufferRef.current, sandboxId)) {
-              hermesAgentSentRef.current = true
-              setTerminalStatus(`Hermes sandbox ${sandboxId} attached; starting Hermes CLI…`)
-              window.setTimeout(() => {
-                if (socket.readyState === WebSocket.OPEN) {
-                  socket.send(JSON.stringify({ type: 'input', data: `\n\n${HERMES_AGENT_COMMAND}\n` }))
-                }
-              }, 350)
-            }
-          }
         } else if (message.type === 'exit') {
           setTerminalState('error')
           setTerminalStatus(`Terminal exited with code ${message.exitCode ?? 'unknown'}.`)
@@ -361,7 +312,7 @@ function OperatorTerminalInner() {
       socket.close()
       if (socketRef.current === socket) socketRef.current = null
     }
-  }, [liveSession, terminalReady, shouldLaunchHermes, sandboxId])
+  }, [liveSession, terminalReady, sandboxId])
 
   const readiness = useMemo(() => {
     if (!sandboxId) return { tone: 'border-[var(--status-pending)] text-[var(--status-pending)]', label: 'HOST MODE', detail: 'No sandbox query was provided. The dashboard terminal stays in host mode and keeps dashboard-session diagnostics for reconnect behavior.' }
@@ -408,12 +359,42 @@ function OperatorTerminalInner() {
           </div>
         </section>
 
-        <section className="panel p-6 space-y-4">
+        <section className={isFullscreen
+          ? "fixed inset-0 z-50 bg-[var(--background)] p-4 flex flex-col gap-3"
+          : "panel p-6 space-y-4"}>
           <div className="flex items-center justify-between gap-3 flex-wrap">
-            <div><h3 className="text-sm font-semibold uppercase tracking-wider">Live Terminal</h3></div>
-            <div className="text-[11px] text-[var(--foreground-dim)] font-mono">{terminalStatus}</div>
+            <div className="flex items-center gap-3">
+              <h3 className="text-sm font-semibold uppercase tracking-wider">Live Terminal</h3>
+              {isFullscreen && sandboxId && (
+                <span className="text-[11px] font-mono text-[var(--foreground-dim)]">/ {sandboxId}</span>
+              )}
+            </div>
+            <div className="flex items-center gap-3">
+              <div className="text-[11px] text-[var(--foreground-dim)] font-mono">{terminalStatus}</div>
+              <button
+                type="button"
+                onClick={() => setIsFullscreen((current) => !current)}
+                aria-label={isFullscreen ? 'Exit fullscreen' : 'Enter fullscreen'}
+                title={isFullscreen ? 'Exit fullscreen (Esc)' : 'Enter fullscreen'}
+                className="flex items-center justify-center w-8 h-8 rounded-sm border border-[var(--border-subtle)] text-[var(--foreground-dim)] hover:border-[var(--nvidia-green)] hover:text-[var(--nvidia-green)] transition-colors"
+              >
+                {isFullscreen ? (
+                  <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="square" strokeLinejoin="miter" aria-hidden="true">
+                    <path d="M9 4v5H4 M15 4v5h5 M9 20v-5H4 M15 20v-5h5" />
+                  </svg>
+                ) : (
+                  <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="square" strokeLinejoin="miter" aria-hidden="true">
+                    <path d="M4 9V4h5 M20 9V4h-5 M4 15v5h5 M20 15v5h-5" />
+                  </svg>
+                )}
+              </button>
+            </div>
           </div>
-          <div className="rounded-sm border border-[var(--border-subtle)] bg-black p-3"><div ref={terminalContainerRef} className="h-[68vh] min-h-[460px] w-full" /></div>
+          <div className={isFullscreen
+            ? "rounded-sm border border-[var(--border-subtle)] bg-black p-3 flex-1 min-h-0"
+            : "rounded-sm border border-[var(--border-subtle)] bg-black p-3"}>
+            <div ref={terminalContainerRef} className={isFullscreen ? "h-full w-full" : "h-[68vh] min-h-[460px] w-full"} />
+          </div>
           <div className="flex items-center gap-3 flex-wrap">
             <button onClick={() => ensureLiveSession({ reset: true })} disabled={terminalState === 'connecting'} className="px-3 py-2 rounded-sm border border-[var(--border-subtle)] text-xs font-mono uppercase tracking-wider hover:border-[var(--nvidia-green)] disabled:opacity-50 disabled:cursor-not-allowed">{terminalState === 'connecting' ? 'Connecting…' : 'Reconnect Live Terminal'}</button>
             <button onClick={refreshReadiness} disabled={!sandboxId} className="px-3 py-2 rounded-sm border border-[var(--border-subtle)] text-xs font-mono uppercase tracking-wider hover:border-[var(--nvidia-green)] disabled:opacity-50 disabled:cursor-not-allowed">Refresh Readiness</button>

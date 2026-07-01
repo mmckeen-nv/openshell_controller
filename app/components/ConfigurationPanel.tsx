@@ -16,6 +16,8 @@ interface NetworkBinary { path: string }
 interface NetworkPolicyBlock { key: string; name: string; endpoints: NetworkEndpoint[]; binaries: NetworkBinary[] }
 type OpenShellPolicy = OpenShellPolicyShape
 
+type BaselineStatus = { name: string; available: boolean }
+
 type BlueprintOption = {
   id: string
   label: string
@@ -23,6 +25,7 @@ type BlueprintOption = {
   type: "blueprint" | "custom" | "image"
   source: string
   supportsTailscale?: boolean
+  baseline?: BaselineStatus
 }
 
 interface ConfigurationPanelProps {
@@ -90,7 +93,9 @@ export default function ConfigurationPanel({ sandboxId, mode = 'existing', onCre
   const [sandboxName, setSandboxName] = useState<string>('')
   const [enableTailscale, setEnableTailscale] = useState<boolean>(false)
   const [createGpuMode, setCreateGpuMode] = useState<CreateGpuMode>("none")
-  const [createInferenceMode, setCreateInferenceMode] = useState<CreateInferenceMode>("vllm")
+  const [quickDeployAgent, setQuickDeployAgent] = useState<'openclaw' | 'hermes' | 'custom'>('openclaw')
+  const [useBaseline, setUseBaseline] = useState<boolean>(true)
+  const [createInferenceMode, setCreateInferenceMode] = useState<CreateInferenceMode>("auto")
   const [createInferenceModel, setCreateInferenceModel] = useState<string>("")
   const [createInferenceEndpointUrl, setCreateInferenceEndpointUrl] = useState<string>("")
   const [createNvidiaApiKey, setCreateNvidiaApiKey] = useState<string>("")
@@ -130,6 +135,9 @@ export default function ConfigurationPanel({ sandboxId, mode = 'existing', onCre
   const activePreset = selectedPreset ? getSecurityPreset(selectedPreset) : null
   const activeBlueprint = blueprints.find((bp) => bp.id === selectedBlueprint)
   const isNemoClawOnboardBlueprint = selectedBlueprint === 'nemoclaw-blueprint' || selectedBlueprint === 'nemoclaw-hermes' || selectedBlueprint === 'nemoclaw-deepagents-code'
+  const freshBlueprintAgent: 'openclaw' | 'hermes' = selectedBlueprint === 'nemoclaw-hermes' ? 'hermes' : 'openclaw'
+  const freshBaseline = isNemoClawOnboardBlueprint ? activeBlueprint?.baseline : undefined
+  const canUseBaseline = Boolean(freshBaseline?.available)
 
   function applyPreset(presetId: SecurityPresetId) {
     const preset = getSecurityPreset(presetId); if (!preset) return
@@ -148,7 +156,18 @@ export default function ConfigurationPanel({ sandboxId, mode = 'existing', onCre
           endpointUrl: createInferenceEndpointUrl.trim(),
           apiKey: (createInferenceMode === 'nvidia' || createInferenceMode === 'compatible') ? createNvidiaApiKey.trim() : '',
         }
-        const res = await fetch('/api/sandbox/create', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ blueprint: selectedBlueprint, sandboxName: sandboxName.trim(), enableTailscale, gpuMode: createGpuMode, createInference, policy: assembledPolicy, preset: selectedPreset || null }) })
+        // When the user picks a Fresh blueprint and a baseline sandbox is
+        // available (and they've left "use baseline" checked), rewrite the
+        // wire payload to the existing redeploy-image blueprint pinned to the
+        // baseline sandbox. The server handles --from cloning end-to-end.
+        const baselineActive = isNemoClawOnboardBlueprint && canUseBaseline && useBaseline
+        const effectiveBlueprint = baselineActive ? 'redeploy-image' : selectedBlueprint
+        const effectiveAgent =
+          effectiveBlueprint === 'redeploy-image'
+            ? (baselineActive ? freshBlueprintAgent : quickDeployAgent)
+            : undefined
+        const sourceSandboxName = baselineActive ? freshBaseline?.name : undefined
+        const res = await fetch('/api/sandbox/create', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ blueprint: effectiveBlueprint, sandboxName: sandboxName.trim(), enableTailscale, gpuMode: createGpuMode, createInference, policy: assembledPolicy, preset: selectedPreset || null, agent: effectiveAgent, sourceSandboxName }) })
         const data = await res.json()
         if (!res.ok) throw new Error([data.error, data.verification?.summary, data.verification?.error, data.stdout, data.stderr].filter(Boolean).join('\n\n'))
         const createdSandboxId = data.verification?.details?.id || data.verification?.details?.name || data.sandboxName
@@ -243,9 +262,53 @@ export default function ConfigurationPanel({ sandboxId, mode = 'existing', onCre
                 </label>
               </div>
             </div>
+            {isNemoClawOnboardBlueprint && freshBaseline && (
+              <div className="space-y-3 rounded-sm border border-[var(--border-subtle)] bg-[var(--background)] p-4">
+                <div className="flex items-start gap-3">
+                  <input
+                    type="checkbox"
+                    checked={canUseBaseline && useBaseline}
+                    onChange={(e) => setUseBaseline(e.target.checked)}
+                    disabled={!canUseBaseline}
+                    className="mt-0.5 h-4 w-4 accent-[var(--nvidia-green)]"
+                  />
+                  <span className="flex-1">
+                    <span className="block text-xs font-semibold uppercase tracking-wider text-[var(--foreground)]">
+                      Use prebuilt baseline {canUseBaseline ? '(fast — ~30s)' : '(not available on this host)'}
+                    </span>
+                    <span className="mt-1 block text-[11px] text-[var(--foreground-dim)] font-mono">
+                      {freshBaseline.name}
+                    </span>
+                    <span className="mt-1 block text-[11px] text-[var(--foreground-dim)]">
+                      {canUseBaseline
+                        ? `Skips the 12-15 min Docker rebuild by cloning the prebuilt ${freshBlueprintAgent}-baseline sandbox. Uncheck to rebuild the image layers from source.`
+                        : `No prebuilt ${freshBlueprintAgent}-baseline sandbox is running on this host. The manidae-cloud install scripts pre-create one — without it, a full rebuild will run.`}
+                    </span>
+                  </span>
+                </div>
+              </div>
+            )}
             {selectedBlueprint === 'redeploy-image' && (
-              <div className="rounded-sm border border-[var(--border-subtle)] bg-[var(--background)] p-4">
-                <p className="text-xs text-[var(--foreground-dim)]">Quick Deploy uses the default running NemoClaw image and skips the Docker rebuild. Use Fresh NemoClaw Image when you need to rebuild the image layers.</p>
+              <div className="space-y-4 rounded-sm border border-[var(--border-subtle)] bg-[var(--background)] p-4">
+                <p className="text-xs text-[var(--foreground-dim)]">Quick Deploy clones the running image of an existing sandbox and skips the Docker rebuild. Use Fresh NemoClaw Image when you need to rebuild the image layers.</p>
+                <div>
+                  <h6 className="text-xs font-semibold uppercase tracking-wider text-[var(--foreground)]">Agent</h6>
+                  <p className="mt-1 text-xs text-[var(--foreground-dim)]">Pick which kind of running sandbox to clone from. The newest matching one is used as the source.</p>
+                </div>
+                <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+                  <label className={`flex items-start gap-3 rounded-sm border p-3 text-sm text-[var(--foreground)] ${quickDeployAgent === 'openclaw' ? 'border-[var(--nvidia-green)] bg-[rgba(118,185,0,0.08)]' : 'border-[var(--border-subtle)] bg-[var(--background-tertiary)]'}`}>
+                    <input type="radio" name="quick-deploy-agent" checked={quickDeployAgent === 'openclaw'} onChange={() => setQuickDeployAgent('openclaw')} className="mt-0.5 h-4 w-4 accent-[var(--nvidia-green)]" />
+                    <span><span className="block text-xs font-mono uppercase tracking-wider">OpenClaw</span><span className="mt-1 block text-[11px] text-[var(--foreground-dim)]">Clone the most recent OpenClaw sandbox.</span></span>
+                  </label>
+                  <label className={`flex items-start gap-3 rounded-sm border p-3 text-sm text-[var(--foreground)] ${quickDeployAgent === 'hermes' ? 'border-[var(--nvidia-green)] bg-[rgba(118,185,0,0.08)]' : 'border-[var(--border-subtle)] bg-[var(--background-tertiary)]'}`}>
+                    <input type="radio" name="quick-deploy-agent" checked={quickDeployAgent === 'hermes'} onChange={() => setQuickDeployAgent('hermes')} className="mt-0.5 h-4 w-4 accent-[var(--nvidia-green)]" />
+                    <span><span className="block text-xs font-mono uppercase tracking-wider">Hermes</span><span className="mt-1 block text-[11px] text-[var(--foreground-dim)]">Clone the most recent Hermes sandbox.</span></span>
+                  </label>
+                  <label className={`flex items-start gap-3 rounded-sm border p-3 text-sm text-[var(--foreground)] ${quickDeployAgent === 'custom' ? 'border-[var(--nvidia-green)] bg-[rgba(118,185,0,0.08)]' : 'border-[var(--border-subtle)] bg-[var(--background-tertiary)]'}`}>
+                    <input type="radio" name="quick-deploy-agent" checked={quickDeployAgent === 'custom'} onChange={() => setQuickDeployAgent('custom')} className="mt-0.5 h-4 w-4 accent-[var(--nvidia-green)]" />
+                    <span><span className="block text-xs font-mono uppercase tracking-wider">Custom</span><span className="mt-1 block text-[11px] text-[var(--foreground-dim)]">Clone the most recent Custom sandbox. Bare image, no NemoClaw runtime.</span></span>
+                  </label>
+                </div>
               </div>
             )}
             {activeBlueprint?.supportsTailscale && (

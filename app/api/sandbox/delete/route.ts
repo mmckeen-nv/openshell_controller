@@ -3,6 +3,7 @@ import { execFile } from "node:child_process"
 import { promisify } from "node:util"
 import { resolveSandboxRef } from "@/app/lib/openshellHost"
 import { OPENSHELL_BIN, hostCommandEnv } from "@/app/lib/hostCommands"
+import { readHermesRemoteAccess, unexposeHermesRemote } from "@/app/lib/hermesRemote"
 
 const execFileAsync = promisify(execFile)
 
@@ -224,6 +225,19 @@ export async function POST(request: Request) {
   try {
     const body = await request.json()
     const target = await resolveDeleteTarget(parseDeleteTarget(body), parseDeleteAgent(body))
+
+    // Tear down the Hermes remote-desktop exposure (Traefik rule, forward
+    // unit, UFW, access record) before the sandbox goes away. Best effort:
+    // a teardown failure must not block the delete itself.
+    let hermesRemoteTeardown: { ok: boolean; error?: string } | null = null
+    if (readHermesRemoteAccess(target.sandboxName)) {
+      hermesRemoteTeardown = await unexposeHermesRemote(target.sandboxName)
+      if (!hermesRemoteTeardown.ok) {
+        console.log(`[sandbox/delete] hermes-remote teardown failed sandbox=${target.sandboxName} error=${hermesRemoteTeardown.error}`)
+      }
+    }
+
+    // Upstream #26: wipe persistent sandbox state before delete.
     const stateWipe = await wipePersistentSandboxState(target.sandboxName, target.agent)
     const result = await deleteSandbox(target.sandboxName)
     const deleteOutput = [result.error, result.stdout, result.stderr].filter(Boolean).join("\n")
@@ -261,6 +275,7 @@ export async function POST(request: Request) {
       stateWipe,
       openShell: result,
       deletion,
+      hermesRemoteTeardown,
       note: deleted ? "Sandbox delete completed." : "Sandbox delete command completed, but inventory still reports the sandbox.",
     }, { status: deleted ? 200 : 202 })
   } catch (error) {

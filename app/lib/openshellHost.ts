@@ -417,6 +417,22 @@ async function execSandboxSsh(sandboxName: string, command: string, timeoutMs = 
   })
 }
 
+export async function prebuildHermesDashboardWebUi(sandboxName: string): Promise<{ built: boolean; skipped: boolean; error?: string }> {
+  const cmd = [
+    'test -d /opt/hermes/hermes_cli/web_dist && echo already_built',
+    '|| (cd /opt/hermes/web',
+    '&& (npm ci --prefer-offline --no-audit --no-fund --silent 2>/dev/null || npm install --no-audit --no-fund --silent 2>/dev/null)',
+    '&& npm run build --silent && echo build_ok)',
+  ].join(' ')
+  try {
+    const { stdout } = await execSandboxSsh(sandboxName, cmd, 120000)
+    const skipped = stdout.includes('already_built')
+    return { built: !skipped, skipped }
+  } catch (error) {
+    return { built: false, skipped: false, error: error instanceof Error ? error.message : String(error) }
+  }
+}
+
 async function ensureRemoteSandboxOpenClawDashboard(sandboxName: string) {
   const command = [
     `curl -fsS --max-time 2 http://127.0.0.1:${SANDBOX_DASHBOARD_REMOTE_PORT}/ >/dev/null 2>&1`,

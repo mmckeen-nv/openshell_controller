@@ -10,7 +10,14 @@ NC='\033[0m'
 
 OPENSHELL_VERSION="${OPENSHELL_VERSION:-v0.0.71}"
 OPENSHELL_INSTALL_URL="${OPENSHELL_INSTALL_URL:-https://raw.githubusercontent.com/NVIDIA/OpenShell/main/install.sh}"
-NEMOCLAW_INSTALL_REF="${NEMOCLAW_INSTALL_REF:-${NEMOCLAW_INSTALL_TAG:-main}}"
+# NemoClaw v0.0.69 was the first release whose base image bundled Hermes v0.17.0 (was
+# v0.14.0 through v0.0.68); v0.0.71 keeps it (Hermes v2026.6.19). v0.17 fixes the
+# proxied-dashboard WebSocket auth (ws_tickets) and makes
+# scripts/hermes-remote/upgrade-hermes.sh a no-op (it only runs for hermes <0.16).
+# OpenShell moves to v0.0.71 (NemoClaw v0.0.71 declares min/max_openshell_version 0.0.71);
+# 0.0.71 provisions gateway mTLS natively (self-signed certs, Ed25519 JWT,
+# allow_unauthenticated_users=false) — no host-side DISABLE_TLS/ensure-mtls patching needed.
+NEMOCLAW_INSTALL_REF="${NEMOCLAW_INSTALL_REF:-${NEMOCLAW_INSTALL_TAG:-v0.0.71}}"
 NEMOCLAW_SOURCE_URL="${NEMOCLAW_SOURCE_URL:-https://github.com/NVIDIA/NemoClaw.git}"
 OPENCLAW_VERSION="${OPENCLAW_VERSION:-2026.5.27}"
 NEMOCLAW_BASE_IMAGE="${NEMOCLAW_BASE_IMAGE:-ghcr.io/nvidia/nemoclaw/sandbox-base:latest}"
@@ -135,6 +142,24 @@ install_nemoclaw() {
   fi
   git -C "$source_dir" -c advice.detachedHead=false checkout --quiet --detach FETCH_HEAD
   [[ -n "$source_dir" && -f "$source_dir/install.sh" ]] || fail "Could not find NemoClaw install.sh in source checkout."
+
+  # NemoClaw upstream Dockerfile/Dockerfile.base pin Debian package versions
+  # (procps=2:4.0.4-9, e2fsprogs=1.47.2-3+b11, tmux=3.5a-3) even though the
+  # base image is Ubuntu 24.04 noble, where those exact versions don't exist.
+  # The pinned `apt-get install` then fails with exit 100, breaking every
+  # `nemoclaw onboard` on a freshly-deployed VPS. Unpin them so apt picks
+  # whatever's available in noble. Re-apply this whenever NemoClaw is
+  # re-extracted; the in-tree Dockerfiles are version-controlled upstream
+  # and our patch lives only in this installer.
+  for _dockerfile in "$source_dir/Dockerfile" "$source_dir/Dockerfile.base"; do
+    if [[ -f "$_dockerfile" ]]; then
+      sed -i.bak \
+        -e 's/procps=2:4\.0\.4-9/procps/g' \
+        -e 's/e2fsprogs=1\.47\.2-3+b11/e2fsprogs/g' \
+        -e 's/tmux=3\.5a-3/tmux/g' \
+        "$_dockerfile" && rm -f "${_dockerfile}.bak"
+    fi
+  done
 
   if [[ -z "${NVIDIA_INFERENCE_API_KEY:-}" && -n "${NVIDIA_API_KEY:-}" ]]; then
     export NVIDIA_INFERENCE_API_KEY="$NVIDIA_API_KEY"

@@ -2,6 +2,8 @@
 import { useEffect, useState } from 'react'
 import type { ReactNode } from 'react'
 import ConfigurationPanel from './ConfigurationPanel'
+import HermesRemotePanel from './HermesRemotePanel'
+import OpenClawRemotePanel from './OpenClawRemotePanel'
 import SandboxArchivePanel from './SandboxArchivePanel'
 import SandboxFilesPanel from './SandboxFilesPanel'
 import SandboxInferencePanel from './SandboxInferencePanel'
@@ -29,7 +31,7 @@ interface SandboxListProps {
   dashboardSessionId: string
 }
 
-type DrawerKey = 'operations' | 'files' | 'inference' | 'policy' | 'archive' | 'mcp'
+type DrawerKey = 'operations' | 'files' | 'inference' | 'policy' | 'archive' | 'mcp' | 'hermesRemote' | 'openclawRemote'
 type McpServerAccess = {
   id: string
   name: string
@@ -79,24 +81,57 @@ function openDashboardUrl(url: string, openInNewTab: boolean) {
 
 function displaySandboxAgent(agent?: string) {
   if (agent === 'hermes') return 'Hermes'
+  if (agent === 'custom') return 'Custom'
   return 'OpenClaw'
+}
+
+function CopyLinkButton({ label, copied, onClick }: { label: string; copied: boolean; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-label={label}
+      title={label}
+      className={`inline-flex items-center justify-center w-9 px-2 rounded-sm border text-[var(--foreground-dim)] hover:border-[var(--nvidia-green)] hover:text-[var(--nvidia-green)] transition-colors ${copied ? 'border-[var(--nvidia-green)] text-[var(--nvidia-green)]' : 'border-[var(--border-subtle)]'}`}
+    >
+      {copied ? (
+        <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="square" strokeLinejoin="miter" aria-hidden="true">
+          <path d="M5 12l5 5L20 7" />
+        </svg>
+      ) : (
+        <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="square" strokeLinejoin="miter" aria-hidden="true">
+          <rect x="9" y="9" width="11" height="11" rx="1" />
+          <path d="M5 15V5a1 1 0 0 1 1-1h10" />
+        </svg>
+      )}
+    </button>
+  )
 }
 
 function SandboxTypeLogo({ agent }: { agent?: string }) {
   const isHermes = agent === 'hermes'
-  const label = isHermes ? 'Hermes sandbox' : 'OpenClaw sandbox'
+  const isCustom = agent === 'custom'
+  const label = isHermes ? 'Hermes sandbox' : isCustom ? 'Custom sandbox' : 'OpenClaw sandbox'
   const logoSrc = isHermes ? HERMES_SANDBOX_LOGO : OPENCLAW_SANDBOX_LOGO
+  const borderBg = isHermes
+    ? 'border-sky-300/60 bg-sky-500/15'
+    : isCustom
+      ? 'border-[var(--border-subtle)] bg-[var(--background-tertiary)]'
+      : 'border-rose-300/60 bg-rose-500/15'
   return (
     <span
       aria-label={label}
       title={label}
-      className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-md border shadow-inner ${
-        isHermes
-          ? 'border-sky-300/60 bg-sky-500/15'
-          : 'border-rose-300/60 bg-rose-500/15'
-      }`}
+      className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-md border shadow-inner ${borderBg}`}
     >
-      <span aria-hidden="true" className="h-6 w-6 bg-contain bg-center bg-no-repeat" style={{ backgroundImage: `url(${logoSrc})` }} />
+      {isCustom ? (
+        <svg className="h-4 w-4 text-[var(--foreground-dim)]" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="square" strokeLinejoin="miter" aria-hidden="true">
+          <rect x="3" y="4" width="18" height="14" rx="1" />
+          <path d="M7 9l3 3-3 3M13 15h4" />
+        </svg>
+      ) : (
+        <span aria-hidden="true" className="h-6 w-6 bg-contain bg-center bg-no-repeat" style={{ backgroundImage: `url(${logoSrc})` }} />
+      )}
     </span>
   )
 }
@@ -200,7 +235,7 @@ export default function SandboxList({
   dashboardSessionId,
 }: SandboxListProps) {
   const [dashboardMessage, setDashboardMessage] = useState<string>('')
-  const [restartInProgress, setRestartInProgress] = useState(false)
+const [restartInProgress, setRestartInProgress] = useState(false)
   const [permissionMessage, setPermissionMessage] = useState('')
   const [permissionFeeds, setPermissionFeeds] = useState<Record<string, PermissionFeed>>({})
   const [dismissedPermissionAlerts, setDismissedPermissionAlerts] = useState<DismissedPermissionAlerts>(() => loadDismissedPermissionAlerts())
@@ -216,6 +251,8 @@ export default function SandboxList({
     policy: false,
     archive: false,
     mcp: false,
+    hermesRemote: false,
+    openclawRemote: false,
   })
   const [telemetry, setTelemetry] = useState<TelemetryData>({
     cpu: 0, memory: 0, disk: 0, timestamp: new Date().toISOString()
@@ -324,14 +361,35 @@ export default function SandboxList({
     mcpServers.filter((server) => sandboxCanAccessMcpServer(sandbox, server))
   )
   const selectedSandboxIsHermes = selectedSandbox?.agent === 'hermes'
+  const selectedSandboxIsCustom = selectedSandbox?.agent === 'custom'
+  const selectedSandboxIsOpenClaw = Boolean(selectedSandbox) && !selectedSandboxIsHermes && !selectedSandboxIsCustom
 
-  const connectToHermes = (sandbox: SandboxInventoryItem) => {
+  const connectToSandboxTerminal = (sandbox: SandboxInventoryItem) => {
     const route = buildOperatorTerminalRoute({
       sandboxId: sandbox.name,
       dashboardSessionId,
-      launch: 'hermes',
     })
     window.open(route, '_blank', 'noopener,noreferrer')
+  }
+
+  const [copiedLinkFor, setCopiedLinkFor] = useState<string | null>(null)
+  const copyShareableLink = async (kind: 'terminal' | 'openclaw' | 'hermes', sandbox: SandboxInventoryItem) => {
+    const origin = typeof window !== 'undefined' ? window.location.origin : ''
+    const url = kind === 'terminal'
+      ? `${origin}/operator-terminal?sandboxId=${encodeURIComponent(sandbox.name)}`
+      : kind === 'hermes'
+        // The Hermes dashboard proxy lives under /api/sandbox/[sandboxId]/... — the same
+        // path the middleware gates by email/IdP — so a shared link to it is access-controlled
+        // exactly like the Hermes terminal (recipient logs in via the IdP with an authorized email).
+        ? `${origin}/api/sandbox/${encodeURIComponent(sandbox.name)}/hermes/dashboard/proxy/`
+        : `${origin}/launch/dashboard?sandboxId=${encodeURIComponent(sandbox.name)}`
+    try {
+      await navigator.clipboard.writeText(url)
+      setCopiedLinkFor(`${kind}:${sandbox.name}`)
+      window.setTimeout(() => setCopiedLinkFor((current) => current === `${kind}:${sandbox.name}` ? null : current), 1800)
+    } catch {
+      setDashboardMessage(`Copy this link: ${url}`)
+    }
   }
 
   const updateMcpServerAccess = async (
@@ -634,44 +692,80 @@ export default function SandboxList({
             <>
               <DrawerSection
                 title={`${selectedSandbox.name} - Operations`}
-                summary={selectedSandboxIsHermes ? "Terminal, restart, refresh, and live telemetry." : "Dashboard, terminal, restart, refresh, and live telemetry."}
+                summary={selectedSandboxIsCustom ? "Terminal, restart, refresh, and live telemetry." : "Dashboard, terminal, restart, refresh, and live telemetry."}
                 open={openDrawers.operations}
                 onToggle={() => toggleDrawer('operations')}
               >
                 <div className="space-y-6">
                   <div className="flex flex-wrap items-center gap-3 max-sm:[&>button]:w-full">
-                    {!selectedSandboxIsHermes ? (
+                    {/* Every sandbox type gets terminal access. */}
+                    <span className="inline-flex items-stretch gap-1">
                       <button
-                        onClick={async () => {
-                          try {
-                            const searchParams = new URLSearchParams()
-                            searchParams.set('sandboxId', selectedSandbox.name)
-                            searchParams.set('inventoryCount', String(sandboxes.length))
-                            const res = await fetch(`/api/openshell/dashboard/open?${searchParams.toString()}`)
-                            const data = await res.json()
-                            setDashboardMessage(renderDashboardTruthMessage(data))
-                            if (data.reachable && data.launchUrl) {
-                              openDashboardUrl(data.launchUrl, data.openInNewTab)
-                            } else if (data.reachable && data.proxiedUrl) {
-                              openDashboardUrl(data.proxiedUrl, data.openInNewTab)
-                            } else if (data.reachable && data.dashboardUrl && !data.loopbackOnly) {
-                              openDashboardUrl(data.dashboardUrl, data.openInNewTab)
+                        onClick={() => connectToSandboxTerminal(selectedSandbox)}
+                        className="action-button px-3 py-2"
+                      >
+                        Connect to Terminal
+                      </button>
+                      <CopyLinkButton
+                        label={copiedLinkFor === `terminal:${selectedSandbox.name}` ? 'Copied!' : 'Copy shareable terminal link'}
+                        copied={copiedLinkFor === `terminal:${selectedSandbox.name}`}
+                        onClick={() => copyShareableLink('terminal', selectedSandbox)}
+                      />
+                    </span>
+                    {/* OpenClaw sandboxes additionally expose the OpenClaw gateway dashboard. */}
+                    {!selectedSandboxIsHermes && !selectedSandboxIsCustom && (
+                      <span className="inline-flex items-stretch gap-1">
+                        <button
+                          onClick={async () => {
+                            try {
+                              const searchParams = new URLSearchParams()
+                              searchParams.set('sandboxId', selectedSandbox.name)
+                              searchParams.set('inventoryCount', String(sandboxes.length))
+                              const res = await fetch(`/api/openshell/dashboard/open?${searchParams.toString()}`)
+                              const data = await res.json()
+                              setDashboardMessage(renderDashboardTruthMessage(data))
+                              if (data.reachable && data.launchUrl) {
+                                openDashboardUrl(data.launchUrl, data.openInNewTab)
+                              } else if (data.reachable && data.proxiedUrl) {
+                                openDashboardUrl(data.proxiedUrl, data.openInNewTab)
+                              } else if (data.reachable && data.dashboardUrl && !data.loopbackOnly) {
+                                openDashboardUrl(data.dashboardUrl, data.openInNewTab)
+                              }
+                            } catch (error) {
+                              setDashboardMessage('Failed to resolve OpenClaw Dashboard endpoint.')
                             }
-                          } catch (error) {
-                            setDashboardMessage('Failed to resolve OpenClaw Dashboard endpoint.')
+                          }}
+                          className="action-button px-3 py-2"
+                        >
+                          Start OpenClaw Gateway Dashboard
+                        </button>
+                        <CopyLinkButton
+                          label={copiedLinkFor === `openclaw:${selectedSandbox.name}` ? 'Copied!' : 'Copy shareable dashboard link'}
+                          copied={copiedLinkFor === `openclaw:${selectedSandbox.name}`}
+                          onClick={() => copyShareableLink('openclaw', selectedSandbox)}
+                        />
+                      </span>
+                    )}
+                    {/* Hermes sandboxes additionally expose the Hermes web dashboard (proxied through the controller). */}
+                    {selectedSandboxIsHermes && (
+                      <span className="inline-flex items-stretch gap-1">
+                        <button
+                          onClick={() =>
+                            openDashboardUrl(
+                              `/api/sandbox/${encodeURIComponent(selectedSandbox.name)}/hermes/dashboard/proxy/`,
+                              true,
+                            )
                           }
-                        }}
-                        className="action-button px-3 py-2"
-                      >
-                        Start OpenClaw Gateway Dashboard
-                      </button>
-                    ) : (
-                      <button
-                        onClick={() => connectToHermes(selectedSandbox)}
-                        className="action-button px-3 py-2"
-                      >
-                        Connect to Hermes
-                      </button>
+                          className="action-button px-3 py-2"
+                        >
+                          Open Hermes Dashboard
+                        </button>
+                        <CopyLinkButton
+                          label={copiedLinkFor === `hermes:${selectedSandbox.name}` ? 'Copied!' : 'Copy shareable dashboard link'}
+                          copied={copiedLinkFor === `hermes:${selectedSandbox.name}`}
+                          onClick={() => copyShareableLink('hermes', selectedSandbox)}
+                        />
+                      </span>
                     )}
                     <button
                       onClick={restartSandbox}
@@ -719,6 +813,28 @@ export default function SandboxList({
                   </div>
                 </div>
               </DrawerSection>
+
+              {selectedSandboxIsHermes && (
+                <DrawerSection
+                  title="Remote Desktop Access"
+                  summary="Connect the Hermes Desktop app to this sandbox over a public URL."
+                  open={openDrawers.hermesRemote}
+                  onToggle={() => toggleDrawer('hermesRemote')}
+                >
+                  <HermesRemotePanel sandboxName={selectedSandbox.name} />
+                </DrawerSection>
+              )}
+
+              {selectedSandboxIsOpenClaw && (
+                <DrawerSection
+                  title="Mobile App Gateway Access"
+                  summary="Connect the OpenClaw Android/iOS app to this sandbox's gateway over a public URL."
+                  open={openDrawers.openclawRemote}
+                  onToggle={() => toggleDrawer('openclawRemote')}
+                >
+                  <OpenClawRemotePanel sandboxName={selectedSandbox.name} />
+                </DrawerSection>
+              )}
 
               <DrawerSection
                 title="File Transfer"

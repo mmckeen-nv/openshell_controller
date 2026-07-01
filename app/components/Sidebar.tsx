@@ -324,7 +324,7 @@ export default function Sidebar({
           <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
             <path strokeLinecap="square" strokeLinejoin="miter" strokeWidth={2} d="M12 12a4 4 0 100-8 4 4 0 000 8zm-7 9a7 7 0 0114 0" />
           </svg>
-          <span className="text-sm max-lg:text-[11px] max-lg:leading-tight">Account</span>
+          <span className="text-sm max-lg:text-[11px] max-lg:leading-tight">Security</span>
         </a>
       </nav>
 

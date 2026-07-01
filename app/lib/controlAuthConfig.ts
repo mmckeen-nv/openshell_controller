@@ -1,3 +1,8 @@
+// Writes operator credentials (password + HMAC secret + recovery token) into
+// .env.local and refreshes process.env in the running process. The middleware
+// (Node runtime) reads process.env fresh per request, so updates take effect
+// without a process restart.
+
 import { randomBytes } from "node:crypto"
 import { existsSync } from "node:fs"
 import { readFile, writeFile } from "node:fs/promises"

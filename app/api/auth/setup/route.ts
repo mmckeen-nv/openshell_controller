@@ -7,6 +7,7 @@ import {
   verifyRecoveryToken,
   verifySessionCookieValue,
 } from "@/app/lib/controlAuth"
+import { oauthEmail } from "@/app/lib/auth/context"
 import { updateLocalAuthCredentials } from "@/app/lib/controlAuthConfig"
 import { checkRateLimit, clearRateLimit, rateLimitKey, recordRateLimitFailure } from "@/app/lib/rateLimit"
 
@@ -38,6 +39,13 @@ export async function POST(request: NextRequest) {
   }
 
   const signedIn = await verifySessionCookieValue(request.cookies.get(settings.cookieName)?.value)
+  // Block OAuth (IDP) users from elevating to operator via the password
+  // change path. Only the operator session may rotate the operator password.
+  const idpEmail = await oauthEmail(request)
+  if (idpEmail && !signedIn) {
+    return NextResponse.json({ ok: false, error: "Operator session required to change the password." }, { status: 403 })
+  }
+
   const currentPasswordOk = currentPassword ? await verifyPassword(currentPassword) : false
   const recoveryOk = recoveryToken ? await verifyRecoveryToken(recoveryToken) : false
   const firstRun = !settings.configured
@@ -49,10 +57,15 @@ export async function POST(request: NextRequest) {
 
   clearRateLimit(limitKey)
   const result = await updateLocalAuthCredentials(password)
+  // Node-runtime middleware reads process.env (and the file-backed access
+  // store) fresh per request, so password rotation no longer requires a
+  // process restart. The response includes willRestart for backwards
+  // compatibility with clients that branched on it.
   const response = NextResponse.json({
     ok: true,
     recoveryToken: result.recoveryToken,
     note: "Password updated. Save the new recovery token from .env.local.",
+    willRestart: false,
   })
   response.cookies.set(settings.cookieName, await createSessionCookieValue(), sessionCookieOptionsForRequest(request))
   return response

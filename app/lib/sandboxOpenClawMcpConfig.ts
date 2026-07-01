@@ -1,13 +1,9 @@
 import { spawn } from "node:child_process"
-import { HOST_PATH } from "./hostCommands"
+import { OPENSHELL_BIN, hostCommandEnv } from "./hostCommands"
 
 export const OPENSHELL_CONTROL_MCP_SERVER_NAME = "openshell-control"
 export const OPENCLAW_CONFIG_PATH = "/sandbox/.openclaw/openclaw.json"
 const OPENCLAW_CONFIG_HASH_PATH = "/sandbox/.openclaw/.config-hash"
-
-const DOCKER_BIN = process.env.DOCKER_BIN || "docker"
-const OPENSHELL_CLUSTER_CONTAINER = process.env.OPENSHELL_CLUSTER_CONTAINER || "openshell-cluster-nemoclaw"
-const OPENSHELL_NAMESPACE = process.env.OPENSHELL_SANDBOX_NAMESPACE || "openshell"
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value)
@@ -17,10 +13,10 @@ function normalizeBrokerBaseUrl(value: string) {
   return value.replace(/\/+$/, "")
 }
 
-function runDockerKubectl(args: string[], input?: string) {
+function runSandboxExec(sandboxName: string, command: string[], input?: string) {
   return new Promise<{ stdout: string; stderr: string; code: number | null }>((resolve, reject) => {
-    const child = spawn(DOCKER_BIN, ["exec", ...(input ? ["-i"] : []), OPENSHELL_CLUSTER_CONTAINER, "kubectl", ...args], {
-      env: { ...process.env, PATH: HOST_PATH },
+    const child = spawn(OPENSHELL_BIN, ["sandbox", "exec", "-n", sandboxName, "--", ...command], {
+      env: hostCommandEnv({ OPENSHELL_GATEWAY: process.env.OPENSHELL_GATEWAY || "nemoclaw" }),
       stdio: ["pipe", "pipe", "pipe"],
     })
     let stdout = ""
@@ -35,8 +31,11 @@ function runDockerKubectl(args: string[], input?: string) {
 }
 
 async function readOpenClawConfig(sandboxName: string) {
-  const result = await runDockerKubectl(["exec", "-n", OPENSHELL_NAMESPACE, sandboxName, "--", "cat", OPENCLAW_CONFIG_PATH])
-  if (result.code !== 0) throw new Error(result.stderr || "Failed to read OpenClaw config")
+  const result = await runSandboxExec(sandboxName, ["cat", OPENCLAW_CONFIG_PATH])
+  if (result.code !== 0) {
+    if (/no such file or directory/i.test(result.stderr)) return null
+    throw new Error(result.stderr || "Failed to read OpenClaw config")
+  }
   const parsed = JSON.parse(result.stdout)
   if (!isRecord(parsed)) throw new Error("OpenClaw config must be a JSON object")
   return parsed
@@ -44,24 +43,28 @@ async function readOpenClawConfig(sandboxName: string) {
 
 async function writeOpenClawConfig(sandboxName: string, config: Record<string, unknown>) {
   const payload = `${JSON.stringify(config, null, 2)}\n`
+  // Write via 444 temp file + atomic rename so the destination is never
+  // momentarily writable. Joined with `;` (not && — operator precedence
+  // with `|| true` would swallow failures) and newline-free (openshell
+  // sandbox exec rejects argv entries containing newlines).
   const script = [
-    `cat > ${OPENCLAW_CONFIG_PATH}`,
-    `chmod 444 ${OPENCLAW_CONFIG_PATH}`,
-    `chown root:root ${OPENCLAW_CONFIG_PATH}`,
-    `sha256sum ${OPENCLAW_CONFIG_PATH} > ${OPENCLAW_CONFIG_HASH_PATH}`,
-    `chmod 444 ${OPENCLAW_CONFIG_HASH_PATH}`,
-    `chown root:root ${OPENCLAW_CONFIG_HASH_PATH}`,
-  ].join(" && ")
-  const result = await runDockerKubectl(
-    ["exec", "-i", "-n", OPENSHELL_NAMESPACE, sandboxName, "--", "sh", "-lc", script],
-    payload,
-  )
+    "set -e",
+    `tmp="$(mktemp ${OPENCLAW_CONFIG_PATH}.XXXXXX)"`,
+    `cat > "$tmp"`,
+    `chmod 444 "$tmp"`,
+    `mv -f "$tmp" ${OPENCLAW_CONFIG_PATH}`,
+    `tmp2="$(mktemp ${OPENCLAW_CONFIG_HASH_PATH}.XXXXXX)"`,
+    `sha256sum ${OPENCLAW_CONFIG_PATH} > "$tmp2"`,
+    `chmod 444 "$tmp2"`,
+    `mv -f "$tmp2" ${OPENCLAW_CONFIG_HASH_PATH}`,
+  ].join("; ")
+  const result = await runSandboxExec(sandboxName, ["sh", "-lc", script], payload)
   if (result.code !== 0) throw new Error(result.stderr || "Failed to write OpenClaw MCP config")
 }
 
 async function restartOpenClawGatewayIfRunning(sandboxName: string) {
   const script = "for p in /proc/[0-9]*; do cmd=$(tr '\\0' ' ' < \"$p/cmdline\" 2>/dev/null || true); case \"$cmd\" in *'openclaw gateway'*) kill \"${p##*/}\" 2>/dev/null || true;; esac; done"
-  await runDockerKubectl(["exec", "-n", OPENSHELL_NAMESPACE, sandboxName, "--", "sh", "-lc", script])
+  await runSandboxExec(sandboxName, ["sh", "-lc", script])
 }
 
 export function buildOpenClawMcpServerConfig(brokerBaseUrl: string, token: string) {
@@ -81,6 +84,14 @@ export async function syncSandboxOpenClawMcpConfig(
   token: string,
 ) {
   const current = await readOpenClawConfig(sandboxName)
+  if (!current) {
+    return {
+      path: OPENCLAW_CONFIG_PATH,
+      serverName: OPENSHELL_CONTROL_MCP_SERVER_NAME,
+      skipped: true,
+      reason: "OpenClaw is not installed in this sandbox; MCP broker is wired only through the sandbox manifest.",
+    }
+  }
   const mcp = isRecord(current.mcp) ? { ...current.mcp } : {}
   const servers = isRecord(mcp.servers) ? { ...mcp.servers } : {}
   const serverConfig = buildOpenClawMcpServerConfig(brokerBaseUrl, token)
@@ -104,6 +115,15 @@ export async function syncSandboxOpenClawMcpConfig(
 
 export async function revokeSandboxOpenClawMcpConfig(sandboxName: string) {
   const current = await readOpenClawConfig(sandboxName)
+  if (!current) {
+    return {
+      path: OPENCLAW_CONFIG_PATH,
+      serverName: OPENSHELL_CONTROL_MCP_SERVER_NAME,
+      removed: false,
+      skipped: true,
+      reason: "OpenClaw is not installed in this sandbox; nothing to revoke from openclaw.json.",
+    }
+  }
   const mcp = isRecord(current.mcp) ? { ...current.mcp } : {}
   const servers = isRecord(mcp.servers) ? { ...mcp.servers } : {}
   delete servers[OPENSHELL_CONTROL_MCP_SERVER_NAME]

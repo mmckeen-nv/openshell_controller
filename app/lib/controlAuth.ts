@@ -1,5 +1,21 @@
-const COOKIE_NAME = "openshell_control_session"
-const SESSION_TTL_SECONDS = 12 * 60 * 60
+// Thin compatibility layer over app/lib/auth/. Kept so existing callers
+// (route handlers, middleware) keep working with no edits. New code should
+// import directly from `@/app/lib/auth/...` instead.
+//
+// Sandbox access lookup now reads through the file-backed store with a CSV
+// env-var fallback (see app/lib/auth/sandboxAccessStore.ts), so changes to
+// the access list no longer require a controller restart.
+
+import { hmacSign, verifyOperatorSession, mintHS256JWT, verifyOAuthJWT } from "./auth/edge"
+import {
+  base64UrlEncode,
+  COOKIE_NAME,
+  SESSION_TTL_SECONDS,
+  parseSandboxAccessCSV,
+  isEmailAuthorizedForSandbox as _isEmailAuthorizedForSandbox,
+} from "./auth/policy.mjs"
+import { getOperatorSecret, getOAuthSecret as _getOAuthSecret, isAuthDisabled, isAuthConfigured } from "./auth/context"
+import { getSandboxAccessMap as readSandboxAccessMap } from "./auth/sandboxAccessStore"
 
 type CookieSecurityRequest = {
   headers: Pick<Headers, "get">
@@ -12,23 +28,6 @@ type SessionPayload = {
   sub: string
   iat: number
   exp: number
-}
-
-function base64UrlEncode(value: string) {
-  return btoa(value).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "")
-}
-
-function base64UrlDecode(value: string) {
-  const padded = value.replace(/-/g, "+").replace(/_/g, "/").padEnd(Math.ceil(value.length / 4) * 4, "=")
-  return atob(padded)
-}
-
-function getSecret() {
-  return process.env.OPENSHELL_CONTROL_AUTH_SECRET || process.env.OPENSHELL_CONTROL_PASSWORD || ""
-}
-
-function isDisabled() {
-  return /^(1|true|yes|on)$/i.test(process.env.OPENSHELL_CONTROL_AUTH_DISABLED || "")
 }
 
 function envFlag(value: string | undefined) {
@@ -62,34 +61,12 @@ export function shouldUseSecureSessionCookie(request?: CookieSecurityRequest) {
   return publicBaseUsesHttps()
 }
 
-async function hmac(payload: string) {
-  const key = await crypto.subtle.importKey(
-    "raw",
-    new TextEncoder().encode(getSecret()),
-    { name: "HMAC", hash: "SHA-256" },
-    false,
-    ["sign"],
-  )
-  const signature = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(payload))
-  const bytes = Array.from(new Uint8Array(signature), (byte) => String.fromCharCode(byte)).join("")
-  return base64UrlEncode(bytes)
-}
-
-function constantTimeEqual(left: string, right: string) {
-  if (left.length !== right.length) return false
-  let diff = 0
-  for (let index = 0; index < left.length; index += 1) {
-    diff |= left.charCodeAt(index) ^ right.charCodeAt(index)
-  }
-  return diff === 0
-}
-
 export function getAuthSettings() {
   return {
     cookieName: COOKIE_NAME,
     ttlSeconds: SESSION_TTL_SECONDS,
-    disabled: isDisabled(),
-    configured: Boolean(process.env.OPENSHELL_CONTROL_PASSWORD || isDisabled()),
+    disabled: isAuthDisabled(),
+    configured: isAuthConfigured(),
   }
 }
 
@@ -101,25 +78,24 @@ export async function createSessionCookieValue() {
     exp: now + SESSION_TTL_SECONDS,
   }
   const encodedPayload = base64UrlEncode(JSON.stringify(payload))
-  return `${encodedPayload}.${await hmac(encodedPayload)}`
+  const signature = await hmacSign(getOperatorSecret(), encodedPayload)
+  return `${encodedPayload}.${signature}`
 }
 
 export async function verifySessionCookieValue(value: string | undefined) {
-  const settings = getAuthSettings()
-  if (settings.disabled) return true
-  if (!settings.configured || !value) return false
+  if (isAuthDisabled()) return true
+  if (!isAuthConfigured() || !value) return false
+  const payload = await verifyOperatorSession(value, getOperatorSecret())
+  return Boolean(payload)
+}
 
-  const [payload, signature] = value.split(".")
-  if (!payload || !signature) return false
-  const expected = await hmac(payload)
-  if (!constantTimeEqual(signature, expected)) return false
-
-  try {
-    const parsed = JSON.parse(base64UrlDecode(payload)) as Partial<SessionPayload>
-    return typeof parsed.exp === "number" && parsed.exp > Math.floor(Date.now() / 1000)
-  } catch {
-    return false
+function constantTimeEqual(left: string, right: string) {
+  if (left.length !== right.length) return false
+  let diff = 0
+  for (let index = 0; index < left.length; index += 1) {
+    diff |= left.charCodeAt(index) ^ right.charCodeAt(index)
   }
+  return diff === 0
 }
 
 export async function verifyPassword(password: string) {
@@ -148,3 +124,56 @@ export function sessionCookieOptionsForRequest(request: CookieSecurityRequest) {
     secure: shouldUseSecureSessionCookie(request),
   }
 }
+
+/**
+ * Returns the OAuth JWT signing secret. Compat alias kept under the historical
+ * `getCFAuthSecret` name for legacy callers; new code should import
+ * `getOAuthSecret` from `@/app/lib/auth/context`.
+ */
+export function getOAuthSecret() {
+  return _getOAuthSecret()
+}
+/** @deprecated use {@link getOAuthSecret} */
+export const getCFAuthSecret = getOAuthSecret
+
+export async function verifyOAuthSessionJWT(token: string | undefined) {
+  return verifyOAuthJWT(token || "", getOAuthSecret())
+}
+/** @deprecated use {@link verifyOAuthSessionJWT} */
+export const verifyCFAuthorizationJWT = verifyOAuthSessionJWT
+
+/**
+ * Reads the sandbox-access map. Backed by a JSON file when present, with the
+ * SANDBOX_ACCESS_USERS env var as a fallback. Either source is parsed via the
+ * shared policy helpers so the format stays in sync between Edge and Node.
+ */
+export function getSandboxAccessMap(): Map<string, Set<string>> {
+  const fromStore = readSandboxAccessMap()
+  if (fromStore && fromStore.size > 0) return fromStore
+  return parseSandboxAccessCSV(process.env.SANDBOX_ACCESS_USERS || "")
+}
+
+export function isUserAuthorizedForSandbox(email: string, sandboxId: string | null): boolean {
+  return _isEmailAuthorizedForSandbox(getSandboxAccessMap(), email, sandboxId)
+}
+
+/**
+ * Mints the session JWT we set on the browser as `oauth_session` after a
+ * successful OAuth callback. Payload follows the same shape as the original
+ * `CF_Authorization` cookie so legacy readers (and the file format below)
+ * continue to work.
+ */
+export async function mintOAuthSessionJWT(email: string, scopes: string[] = [], ttlSeconds: number = 86400) {
+  const secret = getOAuthSecret()
+  const now = Math.floor(Date.now() / 1000)
+  const payload = {
+    sub: email,
+    email,
+    scopes,
+    iat: now,
+    exp: now + ttlSeconds,
+  }
+  return mintHS256JWT(secret, payload)
+}
+/** @deprecated use {@link mintOAuthSessionJWT} */
+export const mintCFAuthorizationJWT = mintOAuthSessionJWT

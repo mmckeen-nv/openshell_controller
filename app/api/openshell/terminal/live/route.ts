@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server'
+import { isUserAuthorizedForSandbox } from '@/app/lib/controlAuth'
 import { inspectSandbox } from '@/app/lib/openshellHost'
 import { resolveRuntimeAuthority } from '@/app/lib/runtimeAuthority'
 
@@ -104,6 +105,19 @@ export async function POST(request: Request) {
     const dashboardSessionId = typeof body?.dashboardSessionId === 'string' && body.dashboardSessionId.trim()
       ? body.dashboardSessionId.trim()
       : 'dashboard-host'
+
+    // OAuth (IDP) users are gated by SANDBOX_ACCESS_USERS. The middleware
+    // sets x-forwarded-user only for verified IDP callers (it strips any
+    // client-supplied value in other paths) so trusting it here is safe.
+    const idpUser = request.headers.get('x-forwarded-user')?.trim().toLowerCase()
+    if (idpUser) {
+      if (!sandboxId || !isUserAuthorizedForSandbox(idpUser, sandboxId)) {
+        return NextResponse.json(
+          { ok: false, error: `Forbidden: no access to sandbox ${sandboxId || '(none)'}` },
+          { status: 403 },
+        )
+      }
+    }
 
     const requestedSandboxId = sandboxId || 'host'
 

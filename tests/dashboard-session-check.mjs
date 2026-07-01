@@ -17,10 +17,10 @@ assert.match(
   /searchParams\.set\('dashboardSessionId', params\.dashboardSessionId\)/,
   'operator terminal route builder must thread dashboardSessionId'
 )
-assert.match(
+assert.doesNotMatch(
   helperSource,
   /searchParams\.set\('launch', params\.launch\)/,
-  'operator terminal route builder must thread explicit launch modes'
+  'operator terminal route builder must NOT thread a launch mode — terminal-server.mjs attaches directly to the sandbox shell so no in-page wrapper is needed'
 )
 
 const routeSource = await readFile(routePath, 'utf8')
@@ -143,8 +143,8 @@ assert.equal(
   '/operator-terminal?dashboardSessionId=dash-123'
 )
 assert.equal(
-  buildOperatorTerminalRoute({ sandboxId: 'my-hermes', dashboardSessionId: 'dash-123', launch: 'hermes' }),
-  '/operator-terminal?sandboxId=my-hermes&dashboardSessionId=dash-123&launch=hermes'
+  buildOperatorTerminalRoute({ sandboxId: 'my-hermes', dashboardSessionId: 'dash-123' }),
+  '/operator-terminal?sandboxId=my-hermes&dashboardSessionId=dash-123'
 )
 
 console.log('dashboard-session-check: PASS route/session scope assertions')

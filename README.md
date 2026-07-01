@@ -45,10 +45,10 @@ It is currently built for active development and lab use. It includes a simple p
 
 ## Compatibility Targets
 
-This dashboard is validated against the current NVIDIA NemoClaw repo and the OpenShell version range declared in NemoClaw's `nemoclaw-blueprint/blueprint.yaml`, not the older April 2026 point releases. Current NemoClaw `main` pins OpenShell exactly to `0.0.71`, so the bundled refresh helper defaults to:
+This dashboard is validated against the current NVIDIA NemoClaw repo and the OpenShell version range declared in NemoClaw's `nemoclaw-blueprint/blueprint.yaml`, not the older April 2026 point releases. NemoClaw `v0.0.71` pins OpenShell exactly to `0.0.71` (native gateway mTLS), so the bundled refresh helper defaults to:
 
 - OpenShell installer release: `v0.0.71` (`OPENSHELL_VERSION=v0.0.71`)
-- NemoClaw source ref: `main` (`NEMOCLAW_INSTALL_REF=main`)
+- NemoClaw source ref: `v0.0.71` (`NEMOCLAW_INSTALL_REF=v0.0.71`) — keeps the Hermes v0.17.0 base (v0.0.69 was the first to bundle it)
 - OpenClaw base-image build target: `2026.5.27` (`OPENCLAW_VERSION=2026.5.27`) unless overridden
 
 Runtime/toolchain versions used during development:
@@ -98,7 +98,7 @@ Install or refresh the locked OpenShell/NemoClaw pair first:
 ./install_versioned_nemoclaw_openshell.sh
 ```
 
-That helper defaults to `OPENSHELL_VERSION=v0.0.71`, `NEMOCLAW_INSTALL_REF=main`, and `OPENCLAW_VERSION=2026.5.27`.
+That helper defaults to `OPENSHELL_VERSION=v0.0.71`, `NEMOCLAW_INSTALL_REF=v0.0.71`, and `OPENCLAW_VERSION=2026.5.27`.
 
 Then install the dashboard from the repository root:
 
@@ -425,6 +425,40 @@ Known limitations:
 Before exposing this outside a trusted lab network, replace auth with a real identity provider, add role-based access control, add audit logging, use TLS, and review every shell-out path.
 
 ## Troubleshooting
+
+### Gateway down — `openshell sandbox list` returns "Connection refused"
+
+The OpenShell Docker-driver gateway is a background process managed by NemoClaw. If it crashes or is killed, every `openshell sandbox` command fails with:
+
+```
+Error: × transport error
+  ╰─▶ Connection refused (os error 111)
+```
+
+All sandbox containers are also stopped when the gateway shuts down.
+
+**Recovery — one command:**
+
+```bash
+PATH=/root/.nvm/versions/node/v22.22.3/bin:/root/.local/bin:$PATH \
+HOME=/root \
+OPENSHELL_GATEWAY=nemoclaw \
+nemoclaw <any-sandbox-name> recover
+```
+
+Replace `<any-sandbox-name>` with any name from `nemoclaw list` (e.g. `my-first-hermes`). The `recover` sub-command restarts the host gateway as a side-effect. Once it prints `✓ Docker-driver gateway is healthy`, `openshell sandbox list` works again and the sandboxes are back to Ready.
+
+`HOME` must be set — NemoClaw needs it to locate `~/.local/state/nemoclaw/`. It is always set correctly inside the controller's systemd unit, but bare SSH sessions may lack it.
+
+After the gateway is back, individual sandbox Hermes/OpenClaw gateways may need their own recovery if the inner gateway process also died:
+
+```bash
+# repeat for each sandbox that shows degraded health
+PATH=/root/.nvm/versions/node/v22.22.3/bin:/root/.local/bin:$PATH \
+HOME=/root \
+OPENSHELL_GATEWAY=nemoclaw \
+nemoclaw <sandbox-name> recover
+```
 
 Check OpenShell:
 

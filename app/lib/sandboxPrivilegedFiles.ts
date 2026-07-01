@@ -1,18 +1,14 @@
 import { spawn } from "node:child_process"
-import { HOST_PATH } from "./hostCommands"
-
-const DOCKER_BIN = process.env.DOCKER_BIN || "docker"
-const OPENSHELL_CLUSTER_CONTAINER = process.env.OPENSHELL_CLUSTER_CONTAINER || "openshell-cluster-nemoclaw"
-const OPENSHELL_NAMESPACE = process.env.OPENSHELL_SANDBOX_NAMESPACE || "openshell"
+import { OPENSHELL_BIN, hostCommandEnv } from "./hostCommands"
 
 function shellQuote(value: string) {
   return `'${value.replace(/'/g, `'\\''`)}'`
 }
 
-function runDockerKubectl(args: string[], input?: Buffer | string) {
+function runSandboxExec(sandboxName: string, command: string[], input?: Buffer | string) {
   return new Promise<{ stdout: string; stderr: string; code: number | null }>((resolve, reject) => {
-    const child = spawn(DOCKER_BIN, ["exec", ...(input ? ["-i"] : []), OPENSHELL_CLUSTER_CONTAINER, "kubectl", ...args], {
-      env: { ...process.env, PATH: HOST_PATH },
+    const child = spawn(OPENSHELL_BIN, ["sandbox", "exec", "-n", sandboxName, "--", ...command], {
+      env: hostCommandEnv({ OPENSHELL_GATEWAY: process.env.OPENSHELL_GATEWAY || "nemoclaw" }),
       stdio: ["pipe", "pipe", "pipe"],
     })
     let stdout = ""
@@ -38,10 +34,7 @@ export async function writeSandboxFilePrivileged(
     `chmod ${shellQuote(mode)} ${shellQuote(targetPath)}`,
     `chown root:root ${shellQuote(targetPath)} 2>/dev/null || true`,
   ].join(" && ")
-  const result = await runDockerKubectl(
-    ["exec", "-i", "-n", OPENSHELL_NAMESPACE, sandboxName, "--", "sh", "-lc", script],
-    payload,
-  )
+  const result = await runSandboxExec(sandboxName, ["sh", "-lc", script], payload)
   if (result.code !== 0) throw new Error(result.stderr || `failed to write ${targetPath}`)
   return {
     sandboxName,
@@ -50,7 +43,20 @@ export async function writeSandboxFilePrivileged(
   }
 }
 
+async function sandboxHasOpenClaw(sandboxName: string) {
+  const probe = await runSandboxExec(sandboxName, ["sh", "-lc", "test -f /sandbox/.openclaw/openclaw.json"])
+  return probe.code === 0
+}
+
 export async function repairOpenClawExecApprovalsFile(sandboxName: string) {
+  if (!(await sandboxHasOpenClaw(sandboxName))) {
+    return {
+      sandboxName,
+      path: "/sandbox/.openclaw/exec-approvals.json",
+      skipped: true,
+      reason: "OpenClaw is not installed in this sandbox; nothing to repair.",
+    }
+  }
   const normalizeScript = [
     `const fs = require("fs")`,
     `const approval = "/sandbox/.openclaw/exec-approvals.json"`,
@@ -71,9 +77,7 @@ export async function repairOpenClawExecApprovalsFile(sandboxName: string) {
     `chown sandbox:sandbox /sandbox/.openclaw/exec-approvals.json 2>/dev/null || chown 998:998 /sandbox/.openclaw/exec-approvals.json`,
     `chmod 0600 /sandbox/.openclaw/exec-approvals.json`,
   ].join(" && ")
-  const result = await runDockerKubectl(
-    ["exec", "-n", OPENSHELL_NAMESPACE, sandboxName, "--", "sh", "-lc", script],
-  )
+  const result = await runSandboxExec(sandboxName, ["sh", "-lc", script])
   if (result.code !== 0) throw new Error(result.stderr || "failed to repair OpenClaw exec approvals file")
   return {
     sandboxName,
@@ -104,9 +108,7 @@ export async function stabilizeOpenClawGatewayConfig(sandboxName: string) {
     `openclaw gateway stop >/dev/null 2>&1 || true`,
     `if command -v gosu >/dev/null 2>&1; then nohup gosu sandbox openclaw gateway run >/sandbox/.openclaw-data/logs/gateway.log 2>&1 & else nohup openclaw gateway run >/sandbox/.openclaw-data/logs/gateway.log 2>&1 & fi`,
   ].join(" && ")
-  const result = await runDockerKubectl(
-    ["exec", "-n", OPENSHELL_NAMESPACE, sandboxName, "--", "sh", "-lc", script],
-  )
+  const result = await runSandboxExec(sandboxName, ["sh", "-lc", script])
   if (result.code !== 0) throw new Error(result.stderr || "failed to stabilize OpenClaw gateway config")
   return {
     sandboxName,
@@ -146,9 +148,7 @@ export async function repairOpenClawWorkspacePermissions(sandboxName: string) {
     `chown sandbox:sandbox /sandbox/.openclaw /sandbox/.openclaw/exec-approvals.json 2>/dev/null || chown 998:998 /sandbox/.openclaw /sandbox/.openclaw/exec-approvals.json`,
     `chmod 0755 /sandbox/.openclaw && chmod 0600 /sandbox/.openclaw/exec-approvals.json`,
   ].join(" && ")
-  const result = await runDockerKubectl(
-    ["exec", "-n", OPENSHELL_NAMESPACE, sandboxName, "--", "sh", "-lc", script],
-  )
+  const result = await runSandboxExec(sandboxName, ["sh", "-lc", script])
   if (result.code !== 0) throw new Error(result.stderr || "failed to repair OpenClaw mutable paths")
   return {
     sandboxName,

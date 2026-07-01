@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 
 type ActivityEntry = {
   id: string
@@ -10,6 +10,9 @@ type ActivityEntry = {
   sandboxName?: string
   status?: "success" | "error" | "info" | "warning"
 }
+
+const PAGE_SIZE = 10
+const FETCH_LIMIT = 100
 
 function toneClass(status?: ActivityEntry["status"]) {
   if (status === "success") return "bg-[var(--status-running-bg)] text-[var(--status-running)]"
@@ -21,13 +24,17 @@ function toneClass(status?: ActivityEntry["status"]) {
 export default function ActivityPanel() {
   const [entries, setEntries] = useState<ActivityEntry[]>([])
   const [loading, setLoading] = useState(false)
+  const [page, setPage] = useState(0)
 
   async function loadActivity() {
     try {
       setLoading(true)
-      const response = await fetch("/api/activity?limit=40", { cache: "no-store" })
+      const response = await fetch(`/api/activity?limit=${FETCH_LIMIT}`, { cache: "no-store" })
       const data = await response.json()
-      if (Array.isArray(data?.entries)) setEntries(data.entries)
+      if (Array.isArray(data?.entries)) {
+        setEntries(data.entries)
+        setPage(0)
+      }
     } finally {
       setLoading(false)
     }
@@ -36,6 +43,15 @@ export default function ActivityPanel() {
   useEffect(() => {
     loadActivity()
   }, [])
+
+  const pageCount = Math.max(1, Math.ceil(entries.length / PAGE_SIZE))
+  const safePage = Math.min(page, pageCount - 1)
+  const pageEntries = useMemo(
+    () => entries.slice(safePage * PAGE_SIZE, safePage * PAGE_SIZE + PAGE_SIZE),
+    [entries, safePage],
+  )
+  const rangeStart = entries.length === 0 ? 0 : safePage * PAGE_SIZE + 1
+  const rangeEnd = Math.min(entries.length, (safePage + 1) * PAGE_SIZE)
 
   return (
     <section className="panel p-5">
@@ -55,7 +71,7 @@ export default function ActivityPanel() {
       </div>
 
       <div className="mt-4 space-y-2">
-        {entries.map((entry) => (
+        {pageEntries.map((entry) => (
           <div key={entry.id} className="rounded-sm border border-[var(--border-subtle)] bg-[var(--background)] p-3">
             <div className="flex items-start justify-between gap-4">
               <div className="min-w-0">
@@ -76,6 +92,35 @@ export default function ActivityPanel() {
           </div>
         )}
       </div>
+
+      {entries.length > PAGE_SIZE && (
+        <div className="mt-4 flex items-center justify-between gap-3 text-xs text-[var(--foreground-dim)]">
+          <span>
+            Showing {rangeStart}–{rangeEnd} of {entries.length}
+          </span>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setPage((p) => Math.max(0, p - 1))}
+              disabled={safePage === 0}
+              className="action-button px-3 py-1.5 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              Newer
+            </button>
+            <span className="font-mono text-[var(--foreground)]">
+              Page {safePage + 1} / {pageCount}
+            </span>
+            <button
+              type="button"
+              onClick={() => setPage((p) => Math.min(pageCount - 1, p + 1))}
+              disabled={safePage >= pageCount - 1}
+              className="action-button px-3 py-1.5 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              Older
+            </button>
+          </div>
+        </div>
+      )}
     </section>
   )
 }

@@ -3,9 +3,17 @@ import { execFile, spawn } from "node:child_process"
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs"
 import path from "node:path"
 import { promisify } from "node:util"
-import { inspectSandbox, resolveSandboxRef } from "@/app/lib/openshellHost"
+import { inspectSandbox, prebuildHermesDashboardWebUi, resolveSandboxRef } from "@/app/lib/openshellHost"
+import { exposeHermesRemote, hermesRemoteMode } from "@/app/lib/hermesRemote"
 import { recordActivity } from "@/app/lib/activityLog"
 import { repairOpenClawExecApprovalsFile } from "@/app/lib/sandboxPrivilegedFiles"
+import { exportSandboxPolicyToFile as exportPolicy } from "@/app/lib/sandboxCreate/policy"
+import {
+  bucketCandidatesByAgent,
+  type QuickDeployAgent,
+  type RegistryShape,
+} from "@/app/lib/sandboxCreate/agentFilter"
+import { readSandboxContainerImageMap, type SandboxImageMap } from "@/app/lib/sandboxContainerImage"
 import {
   commandExists,
   HOST_PATH,
@@ -24,6 +32,16 @@ const DOCKER_BIN = process.env.DOCKER_BIN || "docker"
 const OPENSHELL_CLUSTER_CONTAINER = process.env.OPENSHELL_CLUSTER_CONTAINER || "openshell-cluster-nemoclaw"
 const OPENSHELL_NAMESPACE = process.env.OPENSHELL_SANDBOX_NAMESPACE || "openshell"
 const NEMOCLAW_REGISTRY_FILE = path.join(process.env.HOME || "/tmp", ".nemoclaw", "sandboxes.json")
+
+// Prebuilt baseline sandboxes. Produced once per VPS by manidae-cloud's install
+// scripts (one `nemoclaw onboard` per agent) and left running. The existing
+// `redeploy-image` blueprint flow finds them via `openshell sandbox list`, so
+// the first Quick Deploy on a fresh box can clone from a baseline instead of
+// waiting 12-15 min for the in-image docker build.
+const BASELINE_SANDBOX_NAMES = {
+  openclaw: "openclaw-baseline",
+  hermes: "hermes-baseline",
+} as const
 
 function validateSandboxName(name: string) {
   if (!name || typeof name !== "string") throw new Error("sandbox name is required")
@@ -54,6 +72,23 @@ const NO_PENDING_DEVICE_REQUESTS = /no pending device pairing requests/i
 
 function elapsedMs(start: number) {
   return Date.now() - start
+}
+
+// Last N chars of stderr, single-lined for journalctl-friendly logging.
+// The actionable error is almost always at the tail of the stream (e.g.
+// "pull access denied" on a Docker FROM failure). 2KB is enough for the
+// last few hundred lines without blowing log volume.
+function stderrTail(stderr: string | undefined | null, limit = 2048) {
+  if (!stderr) return ""
+  const trimmed = String(stderr).trim()
+  if (!trimmed) return ""
+  const tail = trimmed.length > limit ? trimmed.slice(-limit) : trimmed
+  return tail.replace(/\s+/g, " ").trim()
+}
+
+function logStderr(tag: string, file: string, stderr: string | undefined | null) {
+  const excerpt = stderrTail(stderr)
+  if (excerpt) console.log(`[sandbox/create] ${tag} file=${file} stderrTail=${JSON.stringify(excerpt)}`)
 }
 
 function appendNote(...parts: Array<string | false | null | undefined>) {
@@ -214,13 +249,19 @@ function openShellGpuArgs(mode: CreateGpuMode) {
   return mode === "required" ? ["--gpu"] : []
 }
 
-function buildNemoClawCreateCommand(gpuMode: CreateGpuMode, agent: NemoClawAgent): NemoClawCreateCommand {
+function buildNemoClawCreateCommand(gpuMode: CreateGpuMode, agent: NemoClawAgent, sandboxName?: string): NemoClawCreateCommand {
   if (NEMOCLAW_BIN && commandExists(NEMOCLAW_BIN)) {
+    // Forward the operator-supplied sandbox name to `nemoclaw onboard --name`.
+    // Without this, nemoclaw silently picks its default (`my-assistant`),
+    // creates a sandbox under THAT name, and the controller's subsequent
+    // `openshell sandbox get <name>` polls fail forever.
+    const nameArgs = sandboxName ? ["--name", sandboxName] : []
     const args = [
       "onboard",
       "--non-interactive",
       "--recreate-sandbox",
       "--yes-i-accept-third-party-software",
+      ...nameArgs,
       ...nemoClawAgentArgs(agent),
       ...nemoClawGpuArgs(gpuMode),
     ]
@@ -319,6 +360,31 @@ async function listOpenShellSandboxNames() {
   }
 }
 
+async function getBaselineSandboxesStatus() {
+  const liveNames = new Set(await listOpenShellSandboxNames())
+  // Only openclaw/hermes have baseline images in this fork; upstream widened
+  // NemoClawAgent to include langchain-deepagents-code, which has no baseline,
+  // so narrow the iterated set to the agents present in BASELINE_SANDBOX_NAMES.
+  const agents: Array<"openclaw" | "hermes"> = ["openclaw", "hermes"]
+  return Object.fromEntries(agents.map((agent) => {
+    const name = BASELINE_SANDBOX_NAMES[agent]
+    return [agent, { name, available: liveNames.has(name) }]
+  })) as Record<NemoClawAgent, { name: string; available: boolean }>
+}
+
+async function resolveSourceDockerImage(sandboxName: string): Promise<string | null> {
+  try {
+    const { stdout } = await execFileAsync(DOCKER_BIN, [
+      "ps",
+      "--filter", `name=openshell-${sandboxName}`,
+      "--format", "{{.Image}}",
+    ], { env: hostCommandEnv(), timeout: 10000, maxBuffer: 1024 * 1024 })
+    return String(stdout).trim().split(/\r?\n/)[0] || null
+  } catch {
+    return null
+  }
+}
+
 async function resolveSourcePodImageFromRef(sourceSandboxRef: string) {
   const requested = sourceSandboxRef.trim()
   const source = await resolveSandboxRef(requested)
@@ -326,6 +392,7 @@ async function resolveSourcePodImageFromRef(sourceSandboxRef: string) {
   const sourceImage = await readPodImage(sourceName, '{.spec.containers[?(@.name=="agent")].image}')
     .catch(() => null)
     || await readPodImage(sourceName, "{.spec.containers[0].image}").catch(() => null)
+    || await resolveSourceDockerImage(sourceName)
 
   if (!sourceImage) {
     throw new Error(`Could not resolve the running image for source sandbox '${sourceName}'.`)
@@ -339,22 +406,36 @@ async function resolveSourcePodImageFromRef(sourceSandboxRef: string) {
   }
 }
 
-async function resolveSourcePodImage(sourceSandboxRef: string | null | undefined, targetSandboxName: string) {
+function agentDisplayName(agent: QuickDeployAgent) {
+  if (agent === "hermes") return "Hermes"
+  if (agent === "openclaw") return "OpenClaw"
+  return "Custom"
+}
+
+async function resolveSourcePodImage(
+  sourceSandboxRef: string | null | undefined,
+  targetSandboxName: string,
+  requestedAgent: QuickDeployAgent | null,
+  imageMap: SandboxImageMap,
+) {
   if (sourceSandboxRef && typeof sourceSandboxRef === "string" && sourceSandboxRef.trim()) {
     return await resolveSourcePodImageFromRef(sourceSandboxRef)
   }
 
   const registry = readNemoClawRegistry()
   const registeredEntries = Object.entries(registry.sandboxes ?? {})
-  const newestRegisteredNames = registeredEntries
     .sort(([, a], [, b]) => String(b?.createdAt ?? "").localeCompare(String(a?.createdAt ?? "")))
-    .map(([key, value]) => value?.name || key)
+
+  const agentFilter: QuickDeployAgent | null =
+    requestedAgent === "hermes" || requestedAgent === "openclaw" || requestedAgent === "custom" ? requestedAgent : null
   const liveNames = await listOpenShellSandboxNames()
-  const candidates = Array.from(new Set([
+  const seeds = [
     registry.defaultSandbox || undefined,
-    ...newestRegisteredNames,
+    ...registeredEntries.map(([key, value]) => value?.name || key),
     ...liveNames,
-  ].filter((candidate): candidate is string => Boolean(candidate && candidate !== targetSandboxName))))
+  ].filter((candidate): candidate is string => Boolean(candidate && candidate !== targetSandboxName))
+
+  const { candidates } = bucketCandidatesByAgent(seeds, registry as RegistryShape, agentFilter, imageMap)
 
   for (const candidate of candidates) {
     try {
@@ -364,7 +445,19 @@ async function resolveSourcePodImage(sourceSandboxRef: string | null | undefined
     }
   }
 
-  throw new Error("No running NemoClaw sandbox image was found for quick deploy. Create one Fresh NemoClaw Image first, or pass sourceSandboxName explicitly.")
+  throw new Error(
+    agentFilter
+      ? `No running ${agentDisplayName(agentFilter)} sandbox image was found for quick deploy. Create a Fresh ${agentDisplayName(agentFilter)} sandbox first, or pass sourceSandboxName explicitly.`
+      : "No running NemoClaw sandbox image was found for quick deploy. Create one Fresh NemoClaw Image first, or pass sourceSandboxName explicitly.",
+  )
+}
+
+async function exportSandboxPolicyToFile(sourceSandboxName: string): Promise<string | null> {
+  return exportPolicy(
+    sourceSandboxName,
+    OPENSHELL_BIN,
+    hostCommandEnv({ OPENSHELL_GATEWAY: process.env.OPENSHELL_GATEWAY || "nemoclaw" }),
+  )
 }
 
 function registerNemoClawImageRedeploy(sourceName: string, sandboxName: string) {
@@ -408,6 +501,28 @@ function registerNemoClawImageRedeploy(sourceName: string, sandboxName: string) 
       registryFile: NEMOCLAW_REGISTRY_FILE,
       error: error instanceof Error ? error.message : "Failed to update the local NemoClaw registry",
     }
+  }
+}
+
+function patchNemoClawRegistryAgent(sandboxName: string, agent: string) {
+  try {
+    const current = existsSync(NEMOCLAW_REGISTRY_FILE)
+      ? JSON.parse(readFileSync(NEMOCLAW_REGISTRY_FILE, "utf8"))
+      : {}
+    const sandboxes = current && typeof current.sandboxes === "object" && current.sandboxes !== null
+      ? current.sandboxes
+      : {}
+    const entry = sandboxes[sandboxName]
+    if (!entry || entry.agent === agent) return { ok: true as const, patched: false }
+    sandboxes[sandboxName] = { ...entry, agent }
+    const next = { ...current, sandboxes }
+    mkdirSync(path.dirname(NEMOCLAW_REGISTRY_FILE), { recursive: true })
+    const tempPath = `${NEMOCLAW_REGISTRY_FILE}.tmp.${process.pid}.${Date.now()}`
+    writeFileSync(tempPath, `${JSON.stringify(next, null, 2)}\n`, { mode: 0o600 })
+    renameSync(tempPath, NEMOCLAW_REGISTRY_FILE)
+    return { ok: true as const, patched: true }
+  } catch (error) {
+    return { ok: false as const, error: error instanceof Error ? error.message : "Failed to patch NemoClaw registry agent" }
   }
 }
 
@@ -466,6 +581,7 @@ async function runCommand(file: string, args: string[], env: NodeJS.ProcessEnv, 
     console.log(
       `[sandbox/create] command:error file=${file} elapsedMs=${elapsedMs(startedAt)} message=${message} stdoutBytes=${String(error?.stdout || "").length} stderrBytes=${String(error?.stderr || "").length}`,
     )
+    logStderr("command:error-stderr", file, error?.stderr)
     return {
       ok: false as const,
       stdout: String(error?.stdout || "").trim(),
@@ -523,6 +639,7 @@ async function runCreateCommandBounded(file: string, args: string[], env: NodeJS
     child.on("error", (error) => {
       const message = error instanceof Error ? error.message : String(error ?? "Command failed")
       console.log(`[sandbox/create] bounded-command:error file=${file} elapsedMs=${elapsedMs(startedAt)} message=${message}`)
+      logStderr("bounded-command:error-stderr", file, stderr)
       finish({
         completed: false,
         timedOut: false,
@@ -536,6 +653,7 @@ async function runCreateCommandBounded(file: string, args: string[], env: NodeJS
 
     child.on("close", (code, signal) => {
       console.log(`[sandbox/create] bounded-command:close file=${file} elapsedMs=${elapsedMs(startedAt)} code=${code} signal=${signal} stdoutBytes=${stdout.length} stderrBytes=${stderr.length}`)
+      if (code !== 0) logStderr("bounded-command:close-stderr", file, stderr)
       finish({
         completed: true,
         timedOut: false,
@@ -569,7 +687,7 @@ async function runCreateCommandBounded(file: string, args: string[], env: NodeJS
   })
 }
 
-async function runCreateCommandUntilReady(file: string, args: string[], env: NodeJS.ProcessEnv, sandboxName: string, timeoutMs: number, intervalMs: number) {
+async function runCreateCommandUntilReady(file: string, args: string[], env: NodeJS.ProcessEnv, sandboxName: string, timeoutMs: number, intervalMs: number, cwd?: string) {
   const startedAt = Date.now()
   console.log(`[sandbox/create] ready-command:start file=${file} args=${JSON.stringify(args)} timeoutMs=${timeoutMs}`)
 
@@ -586,6 +704,7 @@ async function runCreateCommandUntilReady(file: string, args: string[], env: Nod
   }>((resolve) => {
     const child = spawn(file, args, {
       env,
+      cwd,
       stdio: ["ignore", "pipe", "pipe"],
     })
 
@@ -623,6 +742,7 @@ async function runCreateCommandUntilReady(file: string, args: string[], env: Nod
     child.on("error", (error) => {
       const message = error instanceof Error ? error.message : String(error ?? "Command failed")
       console.log(`[sandbox/create] ready-command:error file=${file} elapsedMs=${elapsedMs(startedAt)} message=${message}`)
+      logStderr("ready-command:error-stderr", file, stderr)
       finish({
         completed: false,
         timedOut: false,
@@ -637,6 +757,7 @@ async function runCreateCommandUntilReady(file: string, args: string[], env: Nod
 
     child.on("close", (code, signal) => {
       console.log(`[sandbox/create] ready-command:close file=${file} elapsedMs=${elapsedMs(startedAt)} code=${code} signal=${signal} stdoutBytes=${stdout.length} stderrBytes=${stderr.length}`)
+      if (code !== 0) logStderr("ready-command:close-stderr", file, stderr)
       finish({
         completed: true,
         timedOut: false,
@@ -732,6 +853,78 @@ async function approveOpenClawDeviceRequests(sandboxName: string) {
   }
 }
 
+// ── FORK-ONLY (BYOVPS): see CLAUDE.md §3 conflict table + §11 token architecture.
+// This function does not exist in upstream — it was added by the fork to seed
+// the OpenClaw gateway token at sandbox creation. Verification logic added on
+// top of that to close the doctor-rotation race documented in §11.
+async function ensureOpenClawGatewayToken(sandboxName: string) {
+  // 1. Run doctor (may rotate the JSON token + trigger gateway restart)
+  // 2. Read the token from JSON
+  // 3. Verify the token is accepted by the live gateway via a WS handshake
+  //    against the gateway's in-sandbox port (18789). Retry up to 10× over
+  //    ~15 s to cover the gateway-restart window. If the gateway never
+  //    accepts the JSON token, the dashboard would fail with "Auth did not
+  //    match" — surface that here so the caller can react (eg log + alert)
+  //    instead of letting the user discover it in the browser.
+  // The verification is harmless when the gateway already accepts the token
+  // (single WS handshake, ~50 ms). The retry only fires on the slow path.
+  const script = [
+    "openclaw doctor --generate-gateway-token >/dev/null 2>&1 || true",
+    'token=$(node -e \'const fs=require("fs"); try { const c=JSON.parse(fs.readFileSync("/sandbox/.openclaw/openclaw.json","utf8")); process.stdout.write(String(c?.gateway?.auth?.token||c?.gateway?.token||"")); } catch(e) {}\')',
+    // Poll the gateway WS handshake up to 10× to confirm the JSON token is live.
+    // The gateway's in-sandbox port is OPENCLAW_GATEWAY_PORT (default 18789).
+    'gw_port="${OPENCLAW_GATEWAY_PORT:-18789}"',
+    'gw_accepted=0',
+    'for _i in $(seq 1 10); do',
+    '  code=$(curl -sf -m 2 -o /dev/null -w "%{http_code}" \\',
+    '    -H "Connection: Upgrade" -H "Upgrade: websocket" \\',
+    '    -H "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==" -H "Sec-WebSocket-Version: 13" \\',
+    '    -H "Authorization: Bearer ${token}" \\',
+    '    "http://127.0.0.1:${gw_port}/?token=${token}" 2>/dev/null)',
+    '  if [ "$code" = "101" ]; then gw_accepted=1; break; fi',
+    '  sleep 1.5',
+    'done',
+    'printf "%s\\n%s" "$token" "$gw_accepted"',
+  ].join("; ")
+
+  const result = await runCreateCommandBounded(OPENSHELL_BIN, [
+    "sandbox",
+    "exec",
+    "-n",
+    sandboxName,
+    "--",
+    "sh",
+    "-lc",
+    script,
+  ], hostCommandEnv({
+    OPENSHELL_GATEWAY: process.env.OPENSHELL_GATEWAY || "nemoclaw",
+  }), 60000)
+
+  // The script prints "<token>\n<gw_accepted>" — the second line is "1" when
+  // the gateway has accepted the token (= dashboard will not show "Auth did
+  // not match" on first open).
+  const lines = (result.stdout || "").split(/\r?\n/)
+  const token = (lines[0] || "").trim()
+  const gatewayAccepted = (lines[1] || "").trim() === "1"
+  const tokenPresent = Boolean(token) && !/\s/.test(token)
+
+  return {
+    attempted: true,
+    tokenPresent,
+    gatewayAccepted,
+    completed: result.completed,
+    timedOut: result.timedOut,
+    exitCode: result.exitCode,
+    signal: result.signal,
+    error: result.error,
+    note: !tokenPresent
+      ? "Tried to generate OpenClaw gateway auth token but the sandbox config still has no token; dashboard proxy will fail until this is fixed."
+      : gatewayAccepted
+      ? "Ensured OpenClaw gateway auth token in /sandbox/.openclaw/openclaw.json and confirmed the live gateway accepts it."
+      : "OpenClaw gateway auth token written to /sandbox/.openclaw/openclaw.json but the live gateway did not accept it within 15 s. Dashboard may show 'Auth did not match' on first open until the gateway restarts.",
+  }
+}
+
 async function waitForSandboxReady(sandboxName: string, timeoutMs: number, intervalMs: number) {
   const startedAt = Date.now()
   let lastVerification: SandboxVerification | null = null
@@ -761,8 +954,10 @@ async function waitForSandboxReady(sandboxName: string, timeoutMs: number, inter
 }
 
 export async function GET() {
+  const baselineStatus = await getBaselineSandboxesStatus()
   return NextResponse.json({
     ok: true,
+    baselineSandboxes: baselineStatus,
     blueprints: [
       {
         id: "nemoclaw-blueprint",
@@ -771,6 +966,7 @@ export async function GET() {
         type: "blueprint",
         source: "~/NemoClaw/nemoclaw-blueprint/blueprint.yaml",
         supportsTailscale: true,
+        baseline: baselineStatus.openclaw,
       },
       {
         id: "nemoclaw-hermes",
@@ -779,6 +975,7 @@ export async function GET() {
         type: "blueprint",
         source: "~/NemoClaw/agents/hermes/Dockerfile",
         supportsTailscale: false,
+        baseline: baselineStatus.hermes,
       },
       {
         id: "nemoclaw-deepagents-code",
@@ -836,7 +1033,7 @@ export async function POST(request: Request) {
     if (isNemoClawOnboardBlueprint(blueprint)) {
       const agent = nemoClawAgentForBlueprint(blueprint)
       const isOpenClawAgent = agent === "openclaw"
-      const createCommand = buildNemoClawCreateCommand(gpuMode, agent)
+      const createCommand = buildNemoClawCreateCommand(gpuMode, agent, sandboxName)
       const env: NodeJS.ProcessEnv = hostCommandEnv({
         NEMOCLAW_SANDBOX_NAME: sandboxName,
         NEMOCLAW_AGENT: agent,
@@ -846,6 +1043,16 @@ export async function POST(request: Request) {
         OPENSHELL_GATEWAY: process.env.OPENSHELL_GATEWAY || "nemoclaw",
       })
 
+      // When Ollama is configured, route NemoClaw to the local Ollama provider
+      // so it never falls back to NVIDIA NIM even if NEMOCLAW_PROVIDER was
+      // omitted from .env.local.
+      if (process.env.OLLAMA_BASE_URL && !env.NEMOCLAW_PROVIDER) {
+        env.NEMOCLAW_PROVIDER = "ollama"
+        if (process.env.OLLAMA_MODEL && !env.NEMOCLAW_MODEL) {
+          env.NEMOCLAW_MODEL = process.env.OLLAMA_MODEL
+        }
+      }
+
       if (!enableTailscale) {
         env.NVIDIA_INFERENCE_API_KEY = env.NVIDIA_INFERENCE_API_KEY || env.NVIDIA_API_KEY || "optional-local-mode"
         env.NVIDIA_API_KEY = env.NVIDIA_API_KEY || env.NVIDIA_INFERENCE_API_KEY
@@ -853,14 +1060,48 @@ export async function POST(request: Request) {
 
       applyCreateInferenceEnv(env, createInference, body)
 
-      const result = await runCommand(
-        createCommand.file,
-        createCommand.mode === "legacy-setup" ? [...createCommand.args, sandboxName] : createCommand.args,
-        env,
-        NEMOCLAW_CWD,
-      )
+      // OpenClaw: SIGTERM as soon as the sandbox is Ready — this skips nemoclaw's step 8/8
+      // policy application which reliably times out and exits 1 even on success.
+      // Hermes: must run to completion. The agent_setup step (after sandbox-ready) is where
+      // nemoclaw configures the Hermes API server inside the sandbox; killing early leaves
+      // Hermes half-installed and unregistered. The fallback below still tolerates a
+      // non-zero exit if the sandbox itself comes up Ready.
+      const createCommandArgs = createCommand.mode === "legacy-setup"
+        ? [...createCommand.args, sandboxName]
+        : createCommand.args
+      // First-time NemoClaw image builds are slow — the in-image docker build is
+      // 80+ steps including a full NPM install and OpenClaw npm install/build.
+      // On under-provisioned VPSs (4 vCPU / 8 GiB, no swap) this routinely
+      // takes 12-15 minutes. The previous 10 / 15 min ceilings caused our
+      // bounded command to SIGTERM the onboard mid-build, leaving the sandbox
+      // in a half-baked state. Bump both paths to 20 minutes. Subsequent
+      // builds reuse the cached layers and finish in ~30 seconds — the cap
+      // only matters for the very first sandbox on a fresh box.
+      const FIRST_BUILD_TIMEOUT_MS = 20 * 60 * 1000
+      const result = agent === "hermes"
+        ? await runCreateCommandBounded(createCommand.file, createCommandArgs, env, FIRST_BUILD_TIMEOUT_MS)
+        : await runCreateCommandUntilReady(
+            createCommand.file,
+            createCommandArgs,
+            env,
+            sandboxName,
+            FIRST_BUILD_TIMEOUT_MS,
+            5000,
+            NEMOCLAW_CWD,
+          )
 
-      if (!result.ok) {
+      // If the command exited non-zero before the sandbox was detected as Ready, do one
+      // final readiness poll before giving up — the sandbox may have just beaten the interval.
+      const readiness = await waitForSandboxReady(sandboxName, 90000, 2000)
+      const verification = readiness.verification ?? {
+        verified: false,
+        summary: "Sandbox readiness polling produced no verification result.",
+        error: "Sandbox readiness polling produced no verification result.",
+      }
+      const created = readiness.verified
+      if (created) patchNemoClawRegistryAgent(sandboxName, agent)
+
+      if (!created && result.error && !result.timedOut) {
         await recordCreateActivity({
           type: "sandbox.create.error",
           status: "error",
@@ -882,21 +1123,40 @@ export async function POST(request: Request) {
         }, { status: 500 })
       }
 
-      const readiness = await waitForSandboxReady(sandboxName, 90000, 2000)
-      const verification = readiness.verification ?? {
-        verified: false,
-        summary: "Sandbox readiness polling produced no verification result.",
-        error: "Sandbox readiness polling produced no verification result.",
-      }
-      const created = readiness.verified
       const execApprovalsRepair = created && isOpenClawAgent ? await repairOpenClawExecApprovalsFile(sandboxName).catch((error) => ({
         sandboxName,
         path: "/sandbox/.openclaw/exec-approvals.json",
         error: error instanceof Error ? error.message : "Failed to repair OpenClaw exec approvals file",
       })) : null
       const deviceApproval = created && isOpenClawAgent ? await approveOpenClawDeviceRequests(sandboxName) : null
+      const gatewayToken = created && isOpenClawAgent ? await ensureOpenClawGatewayToken(sandboxName).catch((error) => ({
+        attempted: true,
+        tokenPresent: false,
+        gatewayAccepted: false,
+        completed: false,
+        timedOut: false,
+        exitCode: null as number | null,
+        signal: null as string | null,
+        error: error instanceof Error ? error.message : "Failed to ensure OpenClaw gateway auth token.",
+        note: "Failed to ensure OpenClaw gateway auth token; dashboard proxy will fail until this is fixed.",
+      })) : null
+      // Pre-build the Hermes dashboard web UI dependencies on sandbox creation.
+      const hermesDashboardBuild = created && agent === "hermes"
+        ? await prebuildHermesDashboardWebUi(sandboxName).catch((error) => ({
+            built: false,
+            skipped: false,
+            error: error instanceof Error ? error.message : "Hermes dashboard web UI pre-build failed",
+          }))
+        : null
+      // Expose the dashboard for the Hermes Desktop app (HERMES_REMOTE_MODE
+      // gates this; non-fatal so a proxy/Traefik hiccup never fails creation —
+      // the UI offers a retry via POST /api/sandbox/<name>/hermes-remote).
+      const hermesRemote = created && agent === "hermes" && hermesRemoteMode() !== "off"
+        ? await exposeHermesRemote(sandboxName)
+        : null
+      const forcedReady = "forcedReady" in result ? result.forcedReady : false
       console.log(
-        `[sandbox/create] request:complete sandbox=${sandboxName} created=${created} agent=${agent} readinessAttempts=${readiness.attempts} deviceApproval=${deviceApproval?.approved ?? false} elapsedMs=${elapsedMs(requestStartedAt)}`,
+        `[sandbox/create] request:complete sandbox=${sandboxName} created=${created} agent=${agent} forcedReady=${forcedReady} readinessAttempts=${readiness.attempts} deviceApproval=${deviceApproval?.approved ?? false} elapsedMs=${elapsedMs(requestStartedAt)}`,
       )
       await recordCreateActivity({
         type: created ? "sandbox.create.success" : "sandbox.create.warning",
@@ -921,7 +1181,13 @@ export async function POST(request: Request) {
         enableTailscale,
         gpuMode,
         createInference,
-        createCommand,
+        createCommand: {
+          ...createCommand,
+          forcedReady,
+          timedOut: result.timedOut,
+          exitCode: result.exitCode,
+          signal: result.signal,
+        },
         hostPath: HOST_PATH,
         readiness: {
           attempts: readiness.attempts,
@@ -929,15 +1195,20 @@ export async function POST(request: Request) {
         },
         execApprovalsRepair,
         deviceApproval,
+        gatewayToken,
+        hermesDashboardBuild,
+        hermesRemote,
         stdout: result.stdout,
         stderr: result.stderr,
         note: created
           ? appendNote(
               agent === "hermes"
                 ? "NemoClaw Hermes workflow completed. Hermes exposes an API endpoint from the sandbox rather than an OpenClaw browser dashboard."
-                : enableTailscale
-                  ? "NemoClaw blueprint workflow completed with Tailscale-enabled prerequisites. Existing healthy OpenShell gateways are reused before any new gateway start is attempted."
-                  : "NemoClaw blueprint workflow completed in local/default mode. Existing healthy OpenShell gateways are reused before any new gateway start is attempted.",
+                : forcedReady
+                  ? "NemoClaw blueprint workflow: sandbox reached Ready state and the onboard command was stopped early."
+                  : enableTailscale
+                    ? "NemoClaw blueprint workflow completed with Tailscale-enabled prerequisites. Existing healthy OpenShell gateways are reused before any new gateway start is attempted."
+                    : "NemoClaw blueprint workflow completed in local/default mode. Existing healthy OpenShell gateways are reused before any new gateway start is attempted.",
               gpuMode === "none"
                 ? "GPU passthrough was disabled for this create run."
                 : gpuMode === "required"
@@ -992,9 +1263,10 @@ export async function POST(request: Request) {
         error: error instanceof Error ? error.message : "Failed to repair OpenClaw exec approvals file",
       })) : null
       const deviceApproval = created ? await approveOpenClawDeviceRequests(sandboxName) : null
+      const gatewayToken = created ? await ensureOpenClawGatewayToken(sandboxName).catch(() => null) : null
       const policyPrepared = Boolean(policy)
       console.log(
-        `[sandbox/create] request:complete sandbox=${sandboxName} created=${created} createTimedOut=${createAttempt.timedOut} readinessAttempts=${readiness.attempts} deviceApproval=${deviceApproval?.approved ?? false} elapsedMs=${elapsedMs(requestStartedAt)}`,
+        `[sandbox/create] request:complete sandbox=${sandboxName} created=${created} createTimedOut=${createAttempt.timedOut} readinessAttempts=${readiness.attempts} deviceApproval=${deviceApproval?.approved ?? false} gatewayTokenPresent=${gatewayToken?.tokenPresent ?? false} elapsedMs=${elapsedMs(requestStartedAt)}`,
       )
       await recordCreateActivity({
         type: created ? "sandbox.create.success" : "sandbox.create.warning",
@@ -1030,6 +1302,7 @@ export async function POST(request: Request) {
         },
         execApprovalsRepair,
         deviceApproval,
+        gatewayToken,
         policyPrepared,
         note: created
           ? appendNote(
@@ -1051,27 +1324,57 @@ export async function POST(request: Request) {
 
     if (blueprint === "redeploy-image") {
       const sourceSandboxName = typeof body?.sourceSandboxName === "string" ? body.sourceSandboxName.trim() : ""
-      const source = await resolveSourcePodImage(sourceSandboxName, sandboxName)
+      const requestedAgentRaw = typeof body?.agent === "string" ? body.agent.trim().toLowerCase() : ""
+      const requestedAgent: QuickDeployAgent | null =
+        requestedAgentRaw === "hermes" ? "hermes" :
+        requestedAgentRaw === "openclaw" ? "openclaw" :
+        requestedAgentRaw === "custom" ? "custom" : null
+      const imageMap = await readSandboxContainerImageMap()
+      const source = await resolveSourcePodImage(sourceSandboxName, sandboxName, requestedAgent, imageMap)
       const sourceImage = source.image
-      const basePolicyPath = resolveNemoClawBasePolicyPath()
+      const isCustomAgent = requestedAgent === "custom"
+      // For OpenClaw/Hermes clones, inherit the source's effective policy.
+      // Hermes sandboxes need /opt/hermes in the read_only set (which the
+      // static openclaw-sandbox.yaml template lacks); without this, Landlock
+      // denies execute on the hermes binary in the redeployed sandbox. Fall
+      // back to the static policy if export fails. For Custom clones we
+      // intentionally skip --policy (and -- nemoclaw-start) — bare openshell
+      // sandboxes don't carry a NemoClaw policy and shouldn't start under
+      // NemoClaw's runtime hook.
+      const inheritedPolicyPath = isCustomAgent ? null : await exportSandboxPolicyToFile(source.name)
+      const basePolicyPath = isCustomAgent ? null : (inheritedPolicyPath ?? resolveNemoClawBasePolicyPath())
+      const policySource: "source-sandbox" | "base-template" | "none" = isCustomAgent
+        ? "none"
+        : inheritedPolicyPath ? "source-sandbox" : "base-template"
       const env: NodeJS.ProcessEnv = hostCommandEnv({
         OPENSHELL_GATEWAY: process.env.OPENSHELL_GATEWAY || "nemoclaw",
       })
 
-      const createAttempt = await runCreateCommandUntilReady(OPENSHELL_BIN, [
-        "sandbox",
-        "create",
-        "--name",
-        sandboxName,
-        ...openShellGpuArgs(gpuMode),
-        "--from",
-        sourceImage,
-        "--policy",
-        basePolicyPath,
-        "--auto-providers",
-        "--",
-        "nemoclaw-start",
-      ], env, sandboxName, 120000, 2000)
+      const createArgs = isCustomAgent
+        ? [
+            "sandbox",
+            "create",
+            "--name",
+            sandboxName,
+            ...openShellGpuArgs(gpuMode),
+            "--from",
+            sourceImage,
+          ]
+        : [
+            "sandbox",
+            "create",
+            "--name",
+            sandboxName,
+            ...openShellGpuArgs(gpuMode),
+            "--from",
+            sourceImage,
+            "--policy",
+            basePolicyPath as string,
+            "--auto-providers",
+            "--",
+            "nemoclaw-start",
+          ]
+      const createAttempt = await runCreateCommandUntilReady(OPENSHELL_BIN, createArgs, env, sandboxName, 120000, 2000)
 
       const readiness = createAttempt.readyVerification?.verified
         ? {
@@ -1087,15 +1390,28 @@ export async function POST(request: Request) {
         error: "Sandbox readiness polling produced no verification result.",
       }
       const created = readiness.verified
-      const registry = created ? registerNemoClawImageRedeploy(source.name, sandboxName) : null
-      const execApprovalsRepair = created ? await repairOpenClawExecApprovalsFile(sandboxName).catch((error) => ({
+      const registry = (created && !isCustomAgent) ? registerNemoClawImageRedeploy(source.name, sandboxName) : null
+      const sourceAgent: QuickDeployAgent = (() => {
+        const map = readNemoClawRegistry().sandboxes ?? {}
+        const entry = (map[source.name] ?? map[source.id ?? ""]) as { agent?: string } | undefined
+        const value = typeof entry?.agent === "string" ? entry.agent.trim() : ""
+        if (value === "hermes" || value === "openclaw") return value
+        // No registry entry → check image to disambiguate Custom from "ambiguous NemoClaw".
+        const image = imageMap.get(source.name)
+        if (image && !/openshell\/sandbox-from/i.test(image)) return "custom"
+        return "openclaw"
+      })()
+      const effectiveAgent: QuickDeployAgent = requestedAgent ?? sourceAgent
+      const isOpenClawAgent = effectiveAgent === "openclaw"
+      const execApprovalsRepair = created && isOpenClawAgent ? await repairOpenClawExecApprovalsFile(sandboxName).catch((error) => ({
         sandboxName,
         path: "/sandbox/.openclaw/exec-approvals.json",
         error: error instanceof Error ? error.message : "Failed to repair OpenClaw exec approvals file",
       })) : null
-      const deviceApproval = created ? await approveOpenClawDeviceRequests(sandboxName) : null
+      const deviceApproval = created && isOpenClawAgent ? await approveOpenClawDeviceRequests(sandboxName) : null
+      const gatewayToken = created && isOpenClawAgent ? await ensureOpenClawGatewayToken(sandboxName).catch(() => null) : null
       console.log(
-        `[sandbox/create] request:complete sandbox=${sandboxName} created=${created} mode=redeploy-image createTimedOut=${createAttempt.timedOut} readinessAttempts=${readiness.attempts} deviceApproval=${deviceApproval?.approved ?? false} elapsedMs=${elapsedMs(requestStartedAt)}`,
+        `[sandbox/create] request:complete sandbox=${sandboxName} created=${created} mode=redeploy-image agent=${effectiveAgent} policySource=${policySource} createTimedOut=${createAttempt.timedOut} readinessAttempts=${readiness.attempts} deviceApproval=${deviceApproval?.approved ?? false} gatewayTokenPresent=${gatewayToken?.tokenPresent ?? false} elapsedMs=${elapsedMs(requestStartedAt)}`,
       )
 
       const createFailed = createAttempt.completed && createAttempt.exitCode !== 0 && !created
@@ -1119,6 +1435,8 @@ export async function POST(request: Request) {
         sourceSandboxId: source.id,
         sourceImage,
         basePolicyPath,
+        policySource,
+        agent: effectiveAgent,
         created,
         verified: verification.verified,
         verification,
@@ -1141,6 +1459,7 @@ export async function POST(request: Request) {
         registry,
         execApprovalsRepair,
         deviceApproval,
+        gatewayToken,
         note: created
           ? appendNote(
               `Sandbox created by redeploying the running image from '${source.name}' instead of rebuilding it.`,

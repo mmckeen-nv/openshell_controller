@@ -1,5 +1,12 @@
 import { NextRequest, NextResponse } from "next/server"
-import { createSessionCookieValue, getAuthSettings, sessionCookieOptionsForRequest, verifyRecoveryToken } from "@/app/lib/controlAuth"
+import {
+  createSessionCookieValue,
+  getAuthSettings,
+  sessionCookieOptionsForRequest,
+  verifyRecoveryToken,
+  verifySessionCookieValue,
+} from "@/app/lib/controlAuth"
+import { oauthEmail } from "@/app/lib/auth/context"
 import { updateLocalAuthCredentials } from "@/app/lib/controlAuthConfig"
 import { checkRateLimit, clearRateLimit, rateLimitKey, recordRateLimitFailure } from "@/app/lib/rateLimit"
 
@@ -20,6 +27,14 @@ export async function POST(request: NextRequest) {
     )
   }
 
+  const settings = getAuthSettings()
+  const signedIn = await verifySessionCookieValue(request.cookies.get(settings.cookieName)?.value)
+  // Block OAuth (IDP) users from elevating to operator via the recovery path.
+  const idpEmail = await oauthEmail(request)
+  if (idpEmail && !signedIn) {
+    return NextResponse.json({ ok: false, error: "Operator session required to reset the password." }, { status: 403 })
+  }
+
   if (password.length < 8) {
     return NextResponse.json({ ok: false, error: "Password must be at least 8 characters." }, { status: 400 })
   }
@@ -31,11 +46,12 @@ export async function POST(request: NextRequest) {
 
   clearRateLimit(limitKey)
   const result = await updateLocalAuthCredentials(password)
-  const settings = getAuthSettings()
+  // No restart required — see /api/auth/setup for the rationale.
   const response = NextResponse.json({
     ok: true,
     recoveryToken: result.recoveryToken,
     note: "Password reset. Save the new recovery token from .env.local.",
+    willRestart: false,
   })
   response.cookies.set(settings.cookieName, await createSessionCookieValue(), sessionCookieOptionsForRequest(request))
   return response

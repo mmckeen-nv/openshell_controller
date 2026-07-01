@@ -1,6 +1,10 @@
 import { NextResponse } from 'next/server'
-import { getDefaultOpenClawDashboardInstanceId } from '@/app/lib/openshellHost'
-import { OPENCLAW_DASHBOARD_TOKEN_COOKIE } from '@/app/lib/openclawDashboardToken'
+import { getDefaultOpenClawDashboardInstanceId, probeOpenClawDashboard } from '@/app/lib/openshellHost'
+import {
+  OPENCLAW_DASHBOARD_TOKEN_COOKIE,
+  extractOpenClawDashboardToken,
+  setOpenClawDashboardTokenCookie,
+} from '@/app/lib/openclawDashboardToken'
 import { resolveRuntimeAuthority } from '@/app/lib/runtimeAuthority'
 
 const LEGACY_PROXY_PREFIX = '/api/openshell/dashboard/proxy'
@@ -95,9 +99,16 @@ function buildTargetUrl(requestUrl: URL) {
   return { target, proxyPrefix, controlUiOrigin, authorityMode, bridgeActive }
 }
 
-function copyRequestHeaders(request: Request, target: URL, controlUiOrigin: string) {
+function copyRequestHeaders(
+  request: Request,
+  target: URL,
+  controlUiOrigin: string,
+  tokenOverride?: string | null,
+) {
   const headers = new Headers()
-  const dashboardToken = readCookieValue(request.headers.get('cookie'), OPENCLAW_DASHBOARD_TOKEN_COOKIE)
+  const dashboardToken = tokenOverride !== undefined
+    ? tokenOverride
+    : readCookieValue(request.headers.get('cookie'), OPENCLAW_DASHBOARD_TOKEN_COOKIE)
 
   request.headers.forEach((value, key) => {
     const lowerKey = key.toLowerCase()
@@ -246,17 +257,80 @@ function bootstrapScriptResponse(proxyPrefix: string) {
     };
     const settings = readSettings();
 
-    settings.gatewayUrl = gatewayUrl;
+    // Purge stale scoped settings for other gateway URLs so OpenClaw does not
+    // detect a URL change and show the "Change Gateway URL" confirmation modal.
+    try {
+      const keysToRemove = [];
+      for (let i = 0; i < window.localStorage.length; i++) {
+        const k = window.localStorage.key(i);
+        if (k && k.startsWith(settingsPrefix) && !settingsKeys.includes(k) && k !== settingsPrefix + 'default' && k !== settingsKey) {
+          keysToRemove.push(k);
+        }
+      }
+      for (const k of keysToRemove) window.localStorage.removeItem(k);
+    } catch {}
+
+    const effectiveGatewayUrl = token
+      ? gatewayUrl + (gatewayUrl.includes('?') ? '&' : '?') + 'token=' + encodeURIComponent(token)
+      : gatewayUrl;
+    settings.gatewayUrl = effectiveGatewayUrl;
     const serializedSettings = JSON.stringify(settings);
     window.localStorage.setItem(settingsKey, serializedSettings);
     for (const key of settingsKeys) window.localStorage.setItem(key, serializedSettings);
     window.sessionStorage.removeItem(tokenKey);
+    // ── FORK BEGIN: BYOVPS sessionStorage token-scope cleanup (#2478) ──
+    // See CLAUDE.md §3 conflict table + §11 token architecture. The SPA
+    // writes sessionStorage[tokenPrefix + <scope>] for both the wss://
+    // gatewayUrl scope AND an https:// page-origin scope derived from
+    // window.location. After multiple failed dashboard opens, these scoped
+    // keys accumulate stale tokens that the SPA replays in the application-
+    // level WS connect frame — server.mjs cookie-wins only covers the WS
+    // handshake, not the in-frame token. Wipe ANY existing
+    // tokenPrefix:<scope> key whose scope path matches this proxyPrefix.
+    // On upstream merge: if this block conflicts, see the conflict-pattern
+    // entry for "bootstrapScriptResponse in shared.ts" in CLAUDE.md §3.
+    try {
+      const sessionKeysToWipe = [];
+      for (let i = 0; i < window.sessionStorage.length; i++) {
+        const k = window.sessionStorage.key(i);
+        if (k && k.startsWith(tokenPrefix) && k.includes(proxyPrefix)) {
+          sessionKeysToWipe.push(k);
+        }
+      }
+      for (const k of sessionKeysToWipe) window.sessionStorage.removeItem(k);
+    } catch {}
+    // ── FORK END ──
     if (token) {
       for (const scope of gatewayScopes) window.sessionStorage.setItem(tokenPrefix + scope, token);
+      // ── FORK BEGIN: page-origin scope write (#2478) ──
+      // Also write under the https:// (page-origin) scope so the SPA's own
+      // sessionStorage lookup keyed off window.location finds the fresh token.
+      try {
+        const pageScope = window.location.protocol + '//' + window.location.host + proxyPrefix;
+        window.sessionStorage.setItem(tokenPrefix + pageScope, token);
+      } catch {}
+      // ── FORK END ──
     }
   } catch {
     // Best-effort compatibility bridge for OpenClaw's persisted UI settings.
   }
+
+  // Auto-confirm the "Change Gateway URL" modal — this modal appears when OpenClaw detects
+  // a URL change between sandbox sessions, but we always trust the URL set by this proxy.
+  try {
+    const interval = setInterval(() => {
+      if (!document.body.textContent?.includes('Change Gateway URL')) return;
+      const buttons = document.querySelectorAll('button');
+      for (const btn of buttons) {
+        if (btn.textContent?.trim() === 'Confirm') {
+          btn.click();
+          clearInterval(interval);
+          break;
+        }
+      }
+    }, 100);
+    setTimeout(() => clearInterval(interval), 10000);
+  } catch {}
 })();
 `
 
@@ -312,9 +386,34 @@ export async function proxyOpenClawDashboard(request: Request) {
     upstreamInit.duplex = 'half'
   }
 
-  const upstream = await fetch(target.toString(), {
+  let upstream = await fetch(target.toString(), {
     ...upstreamInit,
   })
+
+  // Self-heal stale dashboard token: when a sandbox is deleted and recreated with
+  // the same name, the openclaw_dashboard_token cookie still holds the previous
+  // sandbox's bearer. Upstream then rejects every request with 401/403. Re-probe
+  // the live sandbox for the current token, retry once, and refresh the cookie
+  // so subsequent calls (including the WS upgrade) use the new value.
+  let refreshedToken: string | null = null
+  if (
+    (upstream.status === 401 || upstream.status === 403) &&
+    !shouldSendBody
+  ) {
+    const probe = await probeOpenClawDashboard(resolution.instanceId)
+    const candidate = extractOpenClawDashboardToken(probe.bootstrapUrl)
+    if (candidate) {
+      const retryHeaders = copyRequestHeaders(request, target, controlUiOrigin, candidate)
+      const retry = await fetch(target.toString(), {
+        ...upstreamInit,
+        headers: retryHeaders,
+      })
+      if (retry.ok) {
+        upstream = retry
+        refreshedToken = candidate
+      }
+    }
+  }
 
   const responseHeaders = copyResponseHeaders(upstream)
   responseHeaders.set('x-openclaw-authority-mode', authorityMode)
@@ -329,16 +428,20 @@ export async function proxyOpenClawDashboard(request: Request) {
   if (contentType.includes('text/html')) {
     const body = rewriteHtml(await upstream.text(), proxyPrefix)
     responseHeaders.set('content-type', contentType)
-    return new NextResponse(body, {
+    const htmlResponse = new NextResponse(body, {
       status: upstream.status,
       headers: responseHeaders,
     })
+    if (refreshedToken) setOpenClawDashboardTokenCookie(htmlResponse, request, proxyPrefix, refreshedToken)
+    return htmlResponse
   }
 
-  return new NextResponse(upstream.body, {
+  const response = new NextResponse(upstream.body, {
     status: upstream.status,
     headers: responseHeaders,
   })
+  if (refreshedToken) setOpenClawDashboardTokenCookie(response, request, proxyPrefix, refreshedToken)
+  return response
 }
 
 export function proxyErrorResponse(error: unknown) {
