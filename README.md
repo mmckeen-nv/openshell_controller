@@ -236,7 +236,7 @@ Behind a reverse proxy, route WebSocket upgrades for the dashboard proxy paths t
 
 ## Hermes Notes
 
-With NemoClaw `v0.0.37`, the create flow includes a Fresh Hermes Sandbox option. It uses NemoClaw onboard with `--agent hermes`; the existing Fresh NemoClaw Image and Quick Deploy paths remain OpenClaw-oriented.
+The create flow includes managed NemoClaw agent options beyond the default OpenClaw sandbox. Fresh Hermes Sandbox uses NemoClaw onboard with `--agent hermes`; Fresh Deep Agents Code Sandbox uses `--agent langchain-deepagents-code` for the upstream LangChain Deep Agents Code terminal harness. The existing Fresh NemoClaw Image and Quick Deploy paths remain OpenClaw-oriented.
 
 ## Remote Controller Nodes
 
@@ -258,7 +258,8 @@ The UI supports per-sandbox route profiles and can apply them live to OpenClaw w
 Supported provider categories in the UI:
 
 - Ollama
-- NVIDIA NIM
+- NVIDIA hosted API with `nvapi-*` credentials through NemoClaw's `build` provider
+- OpenAI-compatible NVIDIA/enterprise inference endpoints through NemoClaw's `custom` provider with `NEMOCLAW_ENDPOINT_URL`, `COMPATIBLE_API_KEY`, and `NEMOCLAW_PROVIDER_KEY`
 - vLLM
 - external HTTP-compatible endpoints
 

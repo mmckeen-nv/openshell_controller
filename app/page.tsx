@@ -147,7 +147,7 @@ export default function Dashboard() {
       const response = await fetch('/api/sandbox/delete', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sandboxName }),
+        body: JSON.stringify({ sandboxName, agent: sandbox?.agent || 'openclaw' }),
       })
       const data = await response.json()
       if (!response.ok) throw new Error([data.error, data.stdout, data.stderr].filter(Boolean).join('\n\n') || 'Failed to destroy sandbox')

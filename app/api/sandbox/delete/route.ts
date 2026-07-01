@@ -7,6 +7,57 @@ import { readHermesRemoteAccess, unexposeHermesRemote } from "@/app/lib/hermesRe
 
 const execFileAsync = promisify(execFile)
 
+const PERSISTENT_STATE_TARGETS: Record<string, { dir: string; targets: string[] }> = {
+  openclaw: {
+    dir: "/sandbox/.openclaw",
+    targets: [
+      "agents",
+      "extensions",
+      "workspace",
+      "skills",
+      "hooks",
+      "identity",
+      "devices",
+      "canvas",
+      "cron",
+      "memory",
+      "telegram",
+      "wechat",
+      "whatsapp",
+      "credentials",
+      "openclaw.json",
+      "workspace-*",
+    ],
+  },
+  hermes: {
+    dir: "/sandbox/.hermes",
+    targets: [
+      "memories",
+      "sessions",
+      "skills",
+      "plugins",
+      "cron",
+      "logs",
+      "skins",
+      "plans",
+      "workspace",
+      "profiles",
+      "cache",
+      "pairing",
+      "platforms",
+      "weixin",
+      "SOUL.md",
+      ".hermes_history",
+      "runtime/state.db",
+      "workspace-*",
+    ],
+  },
+  "langchain-deepagents-code": {
+    dir: "/sandbox/.deepagents",
+    targets: [".state", "skills", "agent/skills", "config.toml", "hooks.json", "workspace-*"],
+  },
+}
+
 function elapsedMs(start: number) {
   return Date.now() - start
 }
@@ -30,13 +81,19 @@ function parseDeleteTarget(body: any) {
   return raw
 }
 
-async function resolveDeleteTarget(ref: string) {
+function parseDeleteAgent(body: any) {
+  const raw = typeof body?.agent === "string" ? body.agent.trim() : "openclaw"
+  return PERSISTENT_STATE_TARGETS[raw] ? raw : "openclaw"
+}
+
+async function resolveDeleteTarget(ref: string, agent: string) {
   try {
     const sandbox = await resolveSandboxRef(ref)
     return {
       requested: ref,
       sandboxName: validateSandboxName(sandbox.name),
       sandboxId: sandbox.id,
+      agent,
       resolved: true,
     }
   } catch (error) {
@@ -44,6 +101,7 @@ async function resolveDeleteTarget(ref: string) {
       requested: ref,
       sandboxName: validateSandboxName(ref),
       sandboxId: null,
+      agent: "openclaw",
       resolved: false,
       resolveError: error instanceof Error ? error.message : String(error ?? "Sandbox lookup failed"),
     }
@@ -71,6 +129,48 @@ async function deleteSandbox(sandboxName: string) {
       stdout: String(error?.stdout || "").trim(),
       stderr: String(error?.stderr || "").trim(),
       error: message,
+    }
+  }
+}
+
+function shellQuote(value: string) {
+  return `'${value.replace(/'/g, `'"'"'`)}'`
+}
+
+function isSafeManifestRelativePath(value: string) {
+  return Boolean(value) && !value.startsWith("/") && !value.split("/").includes("..")
+}
+
+async function wipePersistentSandboxState(sandboxName: string, agent: string | null | undefined) {
+  const agentName = agent || "openclaw"
+  const contract = PERSISTENT_STATE_TARGETS[agentName] || PERSISTENT_STATE_TARGETS.openclaw
+  const targets = contract.targets.filter(isSafeManifestRelativePath)
+  if (targets.length === 0) return { ok: true as const, skipped: true as const, reason: "no safe state targets" }
+
+  const startedAt = Date.now()
+  const script = `cd ${shellQuote(contract.dir)} 2>/dev/null || exit 0; rm -rf -- ${targets
+    .map((target) => (target === "workspace-*" ? target : shellQuote(target)))
+    .join(" ")}`
+  console.log(`[sandbox/delete] state-wipe:start sandbox=${sandboxName} agent=${agentName}`)
+  try {
+    const { stdout, stderr } = await execFileAsync(OPENSHELL_BIN, ["sandbox", "exec", "-n", sandboxName, "--", "sh", "-lc", script], {
+      env: hostCommandEnv({
+        OPENSHELL_GATEWAY: process.env.OPENSHELL_GATEWAY || "nemoclaw",
+      }),
+      timeout: 30000,
+      maxBuffer: 1024 * 1024,
+    })
+    console.log(`[sandbox/delete] state-wipe:done sandbox=${sandboxName} elapsedMs=${elapsedMs(startedAt)}`)
+    return { ok: true as const, stdout: String(stdout).trim(), stderr: String(stderr).trim() }
+  } catch (error: any) {
+    const message = error instanceof Error ? error.message : String(error ?? "Persistent state wipe failed")
+    console.warn(`[sandbox/delete] state-wipe:warning sandbox=${sandboxName} elapsedMs=${elapsedMs(startedAt)} message=${message}`)
+    return {
+      ok: false as const,
+      stdout: String(error?.stdout || "").trim(),
+      stderr: String(error?.stderr || "").trim(),
+      error: message,
+      warning: "Could not wipe persistent sandbox state before delete; re-onboarding with the same name may resurface old files.",
     }
   }
 }
@@ -124,7 +224,7 @@ export async function POST(request: Request) {
   console.log("[sandbox/delete] request:start")
   try {
     const body = await request.json()
-    const target = await resolveDeleteTarget(parseDeleteTarget(body))
+    const target = await resolveDeleteTarget(parseDeleteTarget(body), parseDeleteAgent(body))
 
     // Tear down the Hermes remote-desktop exposure (Traefik rule, forward
     // unit, UFW, access record) before the sandbox goes away. Best effort:
@@ -137,6 +237,8 @@ export async function POST(request: Request) {
       }
     }
 
+    // Upstream #26: wipe persistent sandbox state before delete.
+    const stateWipe = await wipePersistentSandboxState(target.sandboxName, target.agent)
     const result = await deleteSandbox(target.sandboxName)
     const deleteOutput = [result.error, result.stdout, result.stderr].filter(Boolean).join("\n")
     const openShellAlreadyGone = !result.ok && isSandboxNotFound(deleteOutput)
@@ -150,6 +252,7 @@ export async function POST(request: Request) {
         sandboxId: target.sandboxId,
         resolved: target.resolved,
         resolveError: target.resolveError,
+        stateWipe,
         error: result.error,
         stdout: result.stdout,
         stderr: result.stderr,
@@ -169,6 +272,7 @@ export async function POST(request: Request) {
       stdout: result.stdout,
       stderr: result.stderr,
       openShellAlreadyGone,
+      stateWipe,
       openShell: result,
       deletion,
       hermesRemoteTeardown,

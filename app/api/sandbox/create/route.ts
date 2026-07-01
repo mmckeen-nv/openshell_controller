@@ -110,13 +110,14 @@ type NemoClawCreateCommand = {
   mode: "cli-onboard" | "legacy-setup"
 }
 
-type CreateInferenceMode = "auto" | "vllm" | "nim"
+type CreateInferenceMode = "auto" | "vllm" | "nvidia" | "compatible" | "nim"
 type CreateGpuMode = "none" | "auto" | "required"
-type NemoClawAgent = "openclaw" | "hermes"
+type NemoClawAgent = "openclaw" | "hermes" | "langchain-deepagents-code"
 
 type CreateInferenceSettings = {
   mode: CreateInferenceMode
   model: string
+  endpointUrl: string
   hasApiKey: boolean
   envSummary: string[]
 }
@@ -136,20 +137,44 @@ function parseCreateGpuMode(body: any): CreateGpuMode {
 function parseCreateInferenceSettings(body: any): CreateInferenceSettings {
   const raw = body?.createInference && typeof body.createInference === "object" ? body.createInference : {}
   const requestedMode = typeof raw.mode === "string" ? raw.mode : "vllm"
-  const mode: CreateInferenceMode = requestedMode === "vllm" || requestedMode === "nim" ? requestedMode : "auto"
+  const mode: CreateInferenceMode = requestedMode === "vllm" || requestedMode === "nvidia" || requestedMode === "compatible" || requestedMode === "nim" ? requestedMode : "auto"
   const model = typeof raw.model === "string" ? raw.model.trim() : ""
+  const endpointUrl = typeof raw.endpointUrl === "string" ? raw.endpointUrl.trim() : ""
   const apiKey = typeof raw.apiKey === "string" ? raw.apiKey.trim() : ""
 
   return {
-    mode,
+    mode: mode === "nim" ? "nvidia" : mode,
     model,
+    endpointUrl,
     hasApiKey: Boolean(apiKey),
     envSummary: [],
   }
 }
 
+function isNvapiKey(apiKey: string) {
+  return /^nvapi-/i.test(apiKey)
+}
+
+function applyCompatibleEndpointEnv(env: NodeJS.ProcessEnv, settings: CreateInferenceSettings, apiKey: string) {
+  if (!settings.endpointUrl) {
+    throw new Error("OpenAI-compatible NemoClaw onboarding requires an endpoint URL (NEMOCLAW_ENDPOINT_URL).")
+  }
+  env.NEMOCLAW_PROVIDER = "custom"
+  env.NEMOCLAW_ENDPOINT_URL = settings.endpointUrl
+  env.COMPATIBLE_API_KEY = apiKey || "dummy"
+  env.NEMOCLAW_PROVIDER_KEY = env.COMPATIBLE_API_KEY
+  settings.envSummary.push(
+    "NEMOCLAW_PROVIDER=custom",
+    "NEMOCLAW_ENDPOINT_URL=<provided>",
+    apiKey ? "COMPATIBLE_API_KEY=<provided>" : "COMPATIBLE_API_KEY=<dummy-no-auth>",
+    apiKey ? "NEMOCLAW_PROVIDER_KEY=<provided>" : "NEMOCLAW_PROVIDER_KEY=<dummy-no-auth>",
+  )
+}
+
 function applyCreateInferenceEnv(env: NodeJS.ProcessEnv, settings: CreateInferenceSettings, body: any) {
   if (settings.mode === "auto") return settings
+
+  const apiKey = typeof body?.createInference?.apiKey === "string" ? body.createInference.apiKey.trim() : ""
 
   env.NEMOCLAW_EXPERIMENTAL = "1"
   settings.envSummary.push("NEMOCLAW_EXPERIMENTAL=1")
@@ -159,10 +184,32 @@ function applyCreateInferenceEnv(env: NodeJS.ProcessEnv, settings: CreateInferen
     settings.envSummary.push("NEMOCLAW_PROVIDER=vllm")
   }
 
+  if (settings.mode === "nvidia") {
+    if (apiKey && !isNvapiKey(apiKey)) {
+      if (settings.endpointUrl) {
+        applyCompatibleEndpointEnv(env, settings, apiKey)
+      } else {
+        throw new Error("Hosted NVIDIA Build onboarding requires an nvapi-* NVIDIA API key. For OpenAI-compatible NVIDIA inference keys, select the OpenAI-compatible endpoint mode and provide NEMOCLAW_ENDPOINT_URL.")
+      }
+    } else {
+      env.NEMOCLAW_PROVIDER = "build"
+      settings.envSummary.push("NEMOCLAW_PROVIDER=build")
+      if (apiKey) {
+        env.NVIDIA_INFERENCE_API_KEY = apiKey
+        env.NVIDIA_API_KEY = apiKey
+        env.NEMOCLAW_PROVIDER_KEY = apiKey
+        settings.envSummary.push("NVIDIA_INFERENCE_API_KEY=<provided>", "NVIDIA_API_KEY=<legacy-alias>", "NEMOCLAW_PROVIDER_KEY=<provided>")
+      }
+    }
+  }
+
+  if (settings.mode === "compatible") {
+    applyCompatibleEndpointEnv(env, settings, apiKey)
+  }
+
   if (settings.mode === "nim") {
     env.NEMOCLAW_PROVIDER = "nim-local"
     settings.envSummary.push("NEMOCLAW_PROVIDER=nim-local")
-    const apiKey = typeof body?.createInference?.apiKey === "string" ? body.createInference.apiKey.trim() : ""
     if (apiKey) {
       env.NVIDIA_INFERENCE_API_KEY = apiKey
       env.NVIDIA_API_KEY = apiKey
@@ -186,14 +233,15 @@ function nemoClawGpuArgs(mode: CreateGpuMode) {
 }
 
 function nemoClawAgentArgs(agent: NemoClawAgent) {
-  return agent === "hermes" ? ["--agent", "hermes"] : []
+  return agent === "openclaw" ? [] : ["--agent", agent]
 }
 
 function isNemoClawOnboardBlueprint(blueprint: string) {
-  return blueprint === "nemoclaw-blueprint" || blueprint === "nemoclaw-hermes"
+  return blueprint === "nemoclaw-blueprint" || blueprint === "nemoclaw-hermes" || blueprint === "nemoclaw-deepagents-code"
 }
 
 function nemoClawAgentForBlueprint(blueprint: string): NemoClawAgent {
+  if (blueprint === "nemoclaw-deepagents-code") return "langchain-deepagents-code"
   return blueprint === "nemoclaw-hermes" ? "hermes" : "openclaw"
 }
 
@@ -221,8 +269,8 @@ function buildNemoClawCreateCommand(gpuMode: CreateGpuMode, agent: NemoClawAgent
       ? { file: NODE_BIN, args: [NEMOCLAW_BIN, ...args], mode: "cli-onboard" }
       : { file: NEMOCLAW_BIN, args, mode: "cli-onboard" }
   }
-  if (agent === "hermes") {
-    throw new Error("Hermes sandbox creation requires the current NemoClaw CLI with --agent hermes support. Set NEMOCLAW_BIN in .env.local.")
+  if (agent !== "openclaw") {
+    throw new Error(`${agent} sandbox creation requires the current NemoClaw CLI with --agent support. Set NEMOCLAW_BIN in .env.local.`)
   }
   if (NEMOCLAW_SETUP && commandExists(NEMOCLAW_SETUP)) {
     return { file: "/bin/bash", args: [NEMOCLAW_SETUP], mode: "legacy-setup" }
@@ -314,7 +362,10 @@ async function listOpenShellSandboxNames() {
 
 async function getBaselineSandboxesStatus() {
   const liveNames = new Set(await listOpenShellSandboxNames())
-  const agents: NemoClawAgent[] = ["openclaw", "hermes"]
+  // Only openclaw/hermes have baseline images in this fork; upstream widened
+  // NemoClawAgent to include langchain-deepagents-code, which has no baseline,
+  // so narrow the iterated set to the agents present in BASELINE_SANDBOX_NAMES.
+  const agents: Array<"openclaw" | "hermes"> = ["openclaw", "hermes"]
   return Object.fromEntries(agents.map((agent) => {
     const name = BASELINE_SANDBOX_NAMES[agent]
     return [agent, { name, available: liveNames.has(name) }]
@@ -925,6 +976,14 @@ export async function GET() {
         source: "~/NemoClaw/agents/hermes/Dockerfile",
         supportsTailscale: false,
         baseline: baselineStatus.hermes,
+      },
+      {
+        id: "nemoclaw-deepagents-code",
+        label: "Fresh Deep Agents Code Sandbox",
+        description: "Bootstraps LangChain Deep Agents Code using NemoClaw's terminal-agent workflow.",
+        type: "blueprint",
+        source: "~/NemoClaw/agents/langchain-deepagents-code/manifest.yaml",
+        supportsTailscale: false,
       },
       {
         id: "custom-sandbox",
