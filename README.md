@@ -45,9 +45,9 @@ It is currently built for active development and lab use. It includes a simple p
 
 ## Compatibility Targets
 
-This dashboard is validated against the current NVIDIA NemoClaw repo and the OpenShell version range declared in NemoClaw's `nemoclaw-blueprint/blueprint.yaml`, not the older April 2026 point releases. Current NemoClaw `main` pins OpenShell exactly to `0.0.71`, so the bundled refresh helper defaults to:
+This dashboard is validated against the current NVIDIA NemoClaw repo and the OpenShell version range declared in NemoClaw's `nemoclaw-blueprint/blueprint.yaml`, not the older April 2026 point releases. Current NemoClaw `main` pins OpenShell exactly to `0.0.72`, so the bundled refresh helper defaults to:
 
-- OpenShell installer release: `v0.0.71` (`OPENSHELL_VERSION=v0.0.71`)
+- OpenShell installer release: `v0.0.72` (`OPENSHELL_VERSION=v0.0.72`)
 - NemoClaw source ref: `main` (`NEMOCLAW_INSTALL_REF=main`)
 - OpenClaw base-image build target: `2026.5.27` (`OPENCLAW_VERSION=2026.5.27`) unless overridden
 

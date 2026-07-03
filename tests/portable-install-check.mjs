@@ -54,7 +54,7 @@ assert.match(installSource, /python3 -m venv "\$PROJECT_VENV"/, 'installer must 
 assert.match(installSource, /\$venv_python" -m pip install --upgrade uv/, 'installer must install uvx into the virtual environment')
 assert.match(installSource, /set_env "OPENSHELL_CONTROL_VENV"/, 'installer must persist the virtual environment path for runtime MCP launches')
 
-assert.match(versionedInstallSource, /OPENSHELL_VERSION="\$\{OPENSHELL_VERSION:-v0\.0\.71\}"/, 'versioned installer must default to the OpenShell release supported by current NemoClaw main')
+assert.match(versionedInstallSource, /OPENSHELL_VERSION="\$\{OPENSHELL_VERSION:-v0\.0\.72\}"/, 'versioned installer must default to the OpenShell release supported by current NemoClaw main')
 assert.match(versionedInstallSource, /NEMOCLAW_INSTALL_REF="\$\{NEMOCLAW_INSTALL_REF:-\$\{NEMOCLAW_INSTALL_TAG:-main\}\}"/, 'versioned installer must track the current NemoClaw main ref by default')
 assert.match(versionedInstallSource, /NEMOCLAW_SOURCE_URL="\$\{NEMOCLAW_SOURCE_URL:-https:\/\/github\.com\/NVIDIA\/NemoClaw\.git\}"/, 'versioned installer must use the NemoClaw source repository URL')
 assert.match(versionedInstallSource, /OPENCLAW_VERSION="\$\{OPENCLAW_VERSION:-2026\.5\.27\}"/, 'versioned installer must default to NemoClaw main\'s current OpenClaw build target')
