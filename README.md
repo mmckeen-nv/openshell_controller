@@ -98,7 +98,7 @@ Install or refresh the locked OpenShell/NemoClaw pair first:
 ./install_versioned_nemoclaw_openshell.sh
 ```
 
-That helper defaults to `OPENSHELL_VERSION=v0.0.71`, `NEMOCLAW_INSTALL_REF=main`, and `OPENCLAW_VERSION=2026.5.27`.
+That helper defaults to `OPENSHELL_VERSION=v0.0.72`, `NEMOCLAW_INSTALL_REF=main`, and `OPENCLAW_VERSION=2026.5.27`.
 
 Then install the dashboard from the repository root:
 
