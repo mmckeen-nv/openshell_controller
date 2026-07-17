@@ -120,7 +120,7 @@ assert.match(createRouteSource, /NEMOCLAW_ENDPOINT_URL = settings\.endpointUrl/,
 assert.match(createRouteSource, /COMPATIBLE_API_KEY = apiKey \|\| "dummy"/, 'OpenAI-compatible onboarding must pass COMPATIBLE_API_KEY or a no-auth placeholder')
 assert.match(createRouteSource, /NEMOCLAW_PROVIDER_KEY = env\.COMPATIBLE_API_KEY/, 'OpenAI-compatible onboarding must bridge the provider key without printing secrets')
 assert.match(createRouteSource, /Hosted NVIDIA Build onboarding requires an nvapi-\*/, 'blueprint create must reject non-nvapi keys for the hosted NVIDIA build provider')
-assert.match(versionedInstallerSource, /OPENSHELL_VERSION="\$\{OPENSHELL_VERSION:-v0\.0\.72\}"/, 'versioned installer must default to the OpenShell release supported by current NemoClaw main')
+assert.match(versionedInstallerSource, /OPENSHELL_VERSION="\$\{OPENSHELL_VERSION:-v0\.0\.85\}"/, 'versioned installer must default to the OpenShell release supported by current NemoClaw main')
 assert.match(versionedInstallerSource, /NEMOCLAW_INSTALL_REF="\$\{NEMOCLAW_INSTALL_REF:-\$\{NEMOCLAW_INSTALL_TAG:-main\}\}"/, 'versioned installer must track the current NemoClaw main ref by default while preserving the legacy tag override')
 assert.match(versionedInstallerSource, /OPENCLAW_VERSION="\$\{OPENCLAW_VERSION:-2026\.6\.10\}"/, 'versioned installer must pin the current NemoClaw-compatible OpenClaw base image version')
 assert.match(versionedInstallerSource, /git -C "\$source_dir" fetch[\s\S]*"\$NEMOCLAW_INSTALL_REF"/, 'versioned installer must fetch NemoClaw by git ref so branch heads and tags both work')
