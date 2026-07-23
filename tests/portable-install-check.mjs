@@ -57,7 +57,7 @@ assert.match(installSource, /set_env "OPENSHELL_CONTROL_VENV"/, 'installer must 
 assert.match(versionedInstallSource, /OPENSHELL_VERSION="\$\{OPENSHELL_VERSION:-v0\.0\.85\}"/, 'versioned installer must default to the OpenShell release supported by current NemoClaw main')
 assert.match(versionedInstallSource, /NEMOCLAW_INSTALL_REF="\$\{NEMOCLAW_INSTALL_REF:-\$\{NEMOCLAW_INSTALL_TAG:-main\}\}"/, 'versioned installer must track the current NemoClaw main ref by default')
 assert.match(versionedInstallSource, /NEMOCLAW_SOURCE_URL="\$\{NEMOCLAW_SOURCE_URL:-https:\/\/github\.com\/NVIDIA\/NemoClaw\.git\}"/, 'versioned installer must use the NemoClaw source repository URL')
-assert.match(versionedInstallSource, /OPENCLAW_VERSION="\$\{OPENCLAW_VERSION:-2026\.6\.10\}"/, 'versioned installer must default to NemoClaw main\'s current OpenClaw build target')
+assert.match(versionedInstallSource, /OPENCLAW_VERSION="\$\{OPENCLAW_VERSION:-2026\.7\.1\}"/, 'versioned installer must default to NemoClaw main\'s current OpenClaw build target')
 assert.match(versionedInstallSource, /https:\/\/raw\.githubusercontent\.com\/NVIDIA\/OpenShell\/main\/install\.sh/, 'versioned installer must use the OpenShell installer URL')
 assert.match(versionedInstallSource, /git -C "\$source_dir" fetch[\s\S]*"\$NEMOCLAW_INSTALL_REF"/, 'versioned installer must fetch NemoClaw from the selected git ref')
 assert.match(versionedInstallSource, /Requested NemoClaw install ref/, 'versioned installer must fail clearly when the selected NemoClaw ref is unavailable')
