@@ -94,9 +94,8 @@ assert.ok(
   'NemoClaw onboard must prefer the installed package root over stale legacy checkout setup paths',
 )
 assert.doesNotMatch(hostCommandsSource, /\/Users\/markmckeen|\/home\/nvidia/, 'host command resolution must not bake in developer machine paths')
-assert.match(mcpBrokerUrlSource, /discoverOpenShellDockerGateway/, 'MCP broker URL generation must discover the active OpenShell Docker gateway')
-assert.match(mcpBrokerUrlSource, /OPEN_SHELL_CONTAINER/, 'MCP broker URL generation must respect the configured cluster container')
-assert.match(mcpBrokerUrlSource, /host\.docker\.internal/, 'MCP broker URL generation must keep a fallback for hosts without Docker inspect')
+assert.match(mcpBrokerUrlSource, /host\.docker\.internal/, 'MCP broker URL generation must use the portable host alias for local controller URLs')
+assert.doesNotMatch(mcpBrokerUrlSource, /discoverOpenShellDockerGateway|OPEN_SHELL_CONTAINER|docker.*inspect/, 'MCP broker URL generation must not depend on obsolete cluster containers')
 assert.match(mcpBrokerUrlSource, /discoverSandboxProxyOrigin/, 'MCP broker URL generation must discover each sandbox proxy endpoint')
 assert.match(mcpBrokerUrlSource, /HTTP_PROXY/, 'MCP broker URL generation must use the sandbox proxy environment when available')
 assert.match(mcpBrokerClientSource, /PATH: HOST_PATH/, 'MCP stdio broker launches must inherit the shared host PATH')

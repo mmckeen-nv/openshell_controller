@@ -106,6 +106,8 @@ assert.match(createRouteSource, /readNemoClawRegistry/, 'image redeploy must dis
 assert.match(createRouteSource, /listOpenShellSandboxNames/, 'image redeploy must fall back to live OpenShell inventory when registry entries are stale')
 assert.match(createRouteSource, /resolveSourcePodImage\(sourceSandboxName, sandboxName\)/, 'image redeploy must allow optional explicit source while defaulting automatically')
 assert.match(createRouteSource, /"--from",\s*sourceImage/, 'image redeploy must pass the resolved image to openshell sandbox create')
+assert.match(createRouteSource, /registryEntry\?\.imageTag\?\.trim\(\)/, 'image redeploy must resolve the source image from NemoClaw registry metadata')
+assert.doesNotMatch(createRouteSource, /OPENSHELL_CLUSTER_CONTAINER|readPodImage|"kubectl"/, 'image redeploy must not depend on obsolete cluster containers or in-container kubectl')
 assert.match(createRouteSource, /"--auto-providers"/, 'image redeploy must use OpenShell auto providers for provider-backed images')
 assert.match(createRouteSource, /registerNemoClawImageRedeploy/, 'image redeploy must register the new sandbox without a full NemoClaw rebuild')
 assert.match(createRouteSource, /readyVerification\?: SandboxVerification/, 'ready-aware create command must carry the authoritative verification result')

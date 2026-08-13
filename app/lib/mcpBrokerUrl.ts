@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process"
 import { promisify } from "node:util"
-import { HOST_PATH, OPENSHELL_BIN, hostCommandEnv } from "./hostCommands"
+import { OPENSHELL_BIN, hostCommandEnv } from "./hostCommands"
 import { resolveSandboxRef } from "./openshellHost"
 
 const execFileAsync = promisify(execFile)
@@ -12,21 +12,6 @@ function shouldUseProxyWrappedBrokerUrl() {
   return /^(1|true|yes|on)$/i.test(process.env.OPENSHELL_CONTROL_MCP_BROKER_PROXY_URL || "")
 }
 
-async function discoverOpenShellDockerGateway() {
-  const container = process.env.OPEN_SHELL_CONTAINER || "openshell-cluster-nemoclaw"
-  const { stdout } = await execFileAsync("docker", ["inspect", container], {
-    env: { ...process.env, PATH: HOST_PATH },
-    timeout: 5000,
-    maxBuffer: 1024 * 1024,
-  })
-  const [inspect] = JSON.parse(String(stdout)) as Array<{
-    NetworkSettings?: {
-      Networks?: Record<string, { Gateway?: string }>
-    }
-  }>
-  const networks = inspect?.NetworkSettings?.Networks || {}
-  return Object.values(networks).map((network) => network.Gateway).find(Boolean) || null
-}
 
 function normalizeProxyOrigin(value: string) {
   try {
@@ -41,7 +26,7 @@ function normalizeProxyOrigin(value: string) {
 async function runOpenShell(args: string[]) {
   const { stdout } = await execFileAsync(OPENSHELL_BIN, args, {
     env: hostCommandEnv({
-      OPENSHELL_GATEWAY: process.env.OPENSHELL_GATEWAY || "nemoclaw",
+      OPENSHELL_GATEWAY: process.env.OPENSHELL_GATEWAY?.trim() || undefined,
       TERM: "dumb",
     }),
     timeout: 15000,
@@ -66,8 +51,7 @@ export async function brokerBaseUrlForSandbox(
   const origin = new URL(request.url).origin
   const publicOrigin = new URL(origin)
   if (LOCAL_HOSTNAMES.has(publicOrigin.hostname)) {
-    const gateway = await discoverOpenShellDockerGateway().catch(() => null)
-    publicOrigin.hostname = gateway || "host.docker.internal"
+    publicOrigin.hostname = "host.docker.internal"
   }
 
   const hostBrokerUrl = `${publicOrigin.toString().replace(/\/+$/, "")}/api/mcp/broker`
