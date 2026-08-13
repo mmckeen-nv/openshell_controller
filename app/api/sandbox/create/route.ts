@@ -20,9 +20,6 @@ import {
 } from "@/app/lib/hostCommands"
 
 const execFileAsync = promisify(execFile)
-const DOCKER_BIN = process.env.DOCKER_BIN || "docker"
-const OPENSHELL_CLUSTER_CONTAINER = process.env.OPENSHELL_CLUSTER_CONTAINER || "openshell-cluster-nemoclaw"
-const OPENSHELL_NAMESPACE = process.env.OPENSHELL_SANDBOX_NAMESPACE || "openshell"
 const NEMOCLAW_REGISTRY_FILE = path.join(process.env.HOME || "/tmp", ".nemoclaw", "sandboxes.json")
 
 function validateSandboxName(name: string) {
@@ -88,7 +85,7 @@ type CreateInferenceSettings = {
 }
 
 type NemoClawRegistryData = {
-  sandboxes?: Record<string, { name?: string; createdAt?: string }>
+  sandboxes?: Record<string, { name?: string; createdAt?: string; imageTag?: string }>
   defaultSandbox?: string | null
 }
 
@@ -254,27 +251,6 @@ function resolveNemoClawBasePolicyPath() {
   return found
 }
 
-async function readPodImage(sandboxName: string, jsonpath: string) {
-  const { stdout } = await execFileAsync(DOCKER_BIN, [
-    "exec",
-    OPENSHELL_CLUSTER_CONTAINER,
-    "kubectl",
-    "get",
-    "pod",
-    sandboxName,
-    "-n",
-    OPENSHELL_NAMESPACE,
-    "-o",
-    `jsonpath=${jsonpath}`,
-  ], {
-    env: hostCommandEnv(),
-    timeout: 10000,
-    maxBuffer: 1024 * 1024,
-  })
-
-  return String(stdout).trim().split(/\s+/)[0] || null
-}
-
 function stripAnsi(value: string) {
   return value.replace(/\u001b\[[0-9;]*m/g, "")
 }
@@ -323,12 +299,11 @@ async function resolveSourcePodImageFromRef(sourceSandboxRef: string) {
   const requested = sourceSandboxRef.trim()
   const source = await resolveSandboxRef(requested)
   const sourceName = validateSandboxName(source.name)
-  const sourceImage = await readPodImage(sourceName, '{.spec.containers[?(@.name=="agent")].image}')
-    .catch(() => null)
-    || await readPodImage(sourceName, "{.spec.containers[0].image}").catch(() => null)
+  const registryEntry = readNemoClawRegistry().sandboxes?.[sourceName]
+  const sourceImage = registryEntry?.imageTag?.trim() || null
 
   if (!sourceImage) {
-    throw new Error(`Could not resolve the running image for source sandbox '${sourceName}'.`)
+    throw new Error(`Could not resolve the registered image for source sandbox '${sourceName}'. Rebuild it with current NemoClaw to record imageTag.`)
   }
 
   return {
