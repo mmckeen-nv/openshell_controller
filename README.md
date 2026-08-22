@@ -466,4 +466,4 @@ npm run dev
 
 ## License
 
-Internal development prototype. Add the appropriate license before distribution.
+OpenShell Control is available under the [MIT License](LICENSE). You may use, copy, modify, merge, publish, distribute, sublicense, and sell copies, provided the copyright and permission notices are retained. The software is provided without warranty.
