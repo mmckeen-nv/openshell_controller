@@ -221,6 +221,8 @@ The dashboard shells out to the OpenShell CLI for several operations:
 - `openshell provider create/update/delete/list`
 - `openshell inference set/get/update`
 
+The **Quick Deploy New NemoClaw Sandbox** path clones a registered image through OpenShell, but it deliberately does not write the clone into NemoClaw's private `sandboxes.json`. Current NemoClaw entries include lifecycle identity, policy-authority, and workload receipts that must be issued by NemoClaw itself. The clone remains visible and operable through OpenShell Control; use **Fresh NemoClaw Image** when the new sandbox must participate in NemoClaw-managed lifecycle operations.
+
 OpenClaw dashboard access is loopback-only inside the host/sandbox context, so the UI uses local proxy routes:
 
 - `/api/openshell/dashboard/proxy`

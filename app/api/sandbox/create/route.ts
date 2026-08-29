@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server"
 import { execFile, spawn } from "node:child_process"
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs"
+import { existsSync, readFileSync } from "node:fs"
 import path from "node:path"
 import { promisify } from "node:util"
 import { inspectSandbox, resolveSandboxRef } from "@/app/lib/openshellHost"
@@ -342,47 +342,12 @@ async function resolveSourcePodImage(sourceSandboxRef: string | null | undefined
   throw new Error("No running NemoClaw sandbox image was found for quick deploy. Create one Fresh NemoClaw Image first, or pass sourceSandboxName explicitly.")
 }
 
-function registerNemoClawImageRedeploy(sourceName: string, sandboxName: string) {
-  try {
-    const current = existsSync(NEMOCLAW_REGISTRY_FILE)
-      ? JSON.parse(readFileSync(NEMOCLAW_REGISTRY_FILE, "utf8"))
-      : {}
-    const sandboxes = current && typeof current.sandboxes === "object" && current.sandboxes !== null
-      ? current.sandboxes
-      : {}
-    const sourceEntry = sandboxes[sourceName] && typeof sandboxes[sourceName] === "object"
-      ? sandboxes[sourceName]
-      : { name: sourceName }
-
-    sandboxes[sandboxName] = {
-      ...sourceEntry,
-      name: sandboxName,
-      createdAt: new Date().toISOString(),
-      nimContainer: null,
-      policies: [],
-      imageTag: null,
-    }
-
-    const next = {
-      ...current,
-      sandboxes,
-      defaultSandbox: current.defaultSandbox || sandboxName,
-    }
-    mkdirSync(path.dirname(NEMOCLAW_REGISTRY_FILE), { recursive: true })
-    const tempPath = `${NEMOCLAW_REGISTRY_FILE}.tmp.${process.pid}.${Date.now()}`
-    writeFileSync(tempPath, `${JSON.stringify(next, null, 2)}\n`, { mode: 0o600 })
-    renameSync(tempPath, NEMOCLAW_REGISTRY_FILE)
-    return {
-      ok: true as const,
-      registryFile: NEMOCLAW_REGISTRY_FILE,
-      note: "Registered the image-redeployed sandbox in the local NemoClaw registry without assigning a host Docker image tag.",
-    }
-  } catch (error) {
-    return {
-      ok: false as const,
-      registryFile: NEMOCLAW_REGISTRY_FILE,
-      error: error instanceof Error ? error.message : "Failed to update the local NemoClaw registry",
-    }
+function skippedNemoClawImageRedeployRegistration() {
+  return {
+    registered: false as const,
+    skipped: true as const,
+    registryFile: NEMOCLAW_REGISTRY_FILE,
+    note: "The quick-deployed sandbox remains an OpenShell-managed clone and was not written into NemoClaw's private registry. Current NemoClaw registry entries carry lifecycle, policy-authority, and workload receipts that only NemoClaw can issue safely.",
   }
 }
 
@@ -1062,7 +1027,7 @@ export async function POST(request: Request) {
         error: "Sandbox readiness polling produced no verification result.",
       }
       const created = readiness.verified
-      const registry = created ? registerNemoClawImageRedeploy(source.name, sandboxName) : null
+      const registry = created ? skippedNemoClawImageRedeployRegistration() : null
       const execApprovalsRepair = created ? await repairOpenClawExecApprovalsFile(sandboxName).catch((error) => ({
         sandboxName,
         path: "/sandbox/.openclaw/exec-approvals.json",
@@ -1128,7 +1093,7 @@ export async function POST(request: Request) {
               createAttempt.timedOut
                 ? "The OpenShell create command stayed attached after the sandbox reached Ready, so the dashboard stopped waiting for the local command."
                 : false,
-              registry && !registry.ok ? `NemoClaw registry update failed: ${registry.error}` : false,
+              registry?.note,
               execApprovalsRepair && "note" in execApprovalsRepair ? execApprovalsRepair.note : false,
               execApprovalsRepair && "error" in execApprovalsRepair ? `OpenClaw exec approvals repair failed: ${execApprovalsRepair.error}` : false,
               deviceApproval?.note,
