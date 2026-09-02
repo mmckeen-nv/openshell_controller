@@ -5,6 +5,13 @@ import { hostname, networkInterfaces } from "node:os"
 import path from "node:path"
 import { promisify } from "node:util"
 import { NEMOCLAW_BIN, NODE_BIN, OPENSHELL_BIN, hostCommandEnv } from "@/app/lib/hostCommands"
+import {
+  parseDefaultSandboxNames,
+  parseNemoclawListJson,
+  resolveSandboxAgent,
+  type NemoClawListJsonIdentity,
+  type NemoClawRegistryData,
+} from "@/app/lib/nemoclawIdentity.mjs"
 import { resolveRuntimeAuthority } from "@/app/lib/runtimeAuthority"
 
 const execFileAsync = promisify(execFile)
@@ -28,10 +35,6 @@ type NemoClawSummary = {
   serviceLines: string[]
   summaryLines: string[]
   source: "nemoclaw-cli" | "none"
-}
-
-type NemoClawRegistryData = {
-  sandboxes?: Record<string, { name?: string; agent?: string | null }>
 }
 
 type SandboxItem = {
@@ -115,17 +118,6 @@ function parseOpenShellSandboxNames(output: string) {
     .filter((entry): entry is string => Boolean(entry))
 }
 
-function parseDefaultSandboxNames(output: string) {
-  return new Set(
-    output
-      .split(/\r?\n/)
-      .map((entry) => stripAnsi(entry))
-      .filter((entry) => /^\s{2,}[\w.-]+(?:\s+\*)?\s*$/.test(entry) && entry.includes("*"))
-      .map((entry) => entry.replace("*", "").trim())
-      .filter(Boolean)
-  )
-}
-
 function buildNemoClawSummary(output: string | null, defaultSandboxNames: Set<string>): NemoClawSummary {
   if (!output) {
     return {
@@ -161,14 +153,6 @@ function readNemoClawRegistry(): NemoClawRegistryData {
   } catch {
     return {}
   }
-}
-
-function resolveSandboxAgent(name: string, id: string | null, registry: NemoClawRegistryData) {
-  const entries = registry.sandboxes ?? {}
-  const directEntry = entries[name] || (id ? entries[id] : undefined)
-  const namedEntry = Object.values(entries).find((entry) => entry?.name === name || Boolean(id && entry?.name === id))
-  const agent = directEntry?.agent || namedEntry?.agent
-  return typeof agent === "string" && agent.trim() ? agent.trim() : "openclaw"
 }
 
 async function execNemoclaw(args: string[]) {
@@ -215,7 +199,12 @@ function readHostIdentity() {
   return { hostname: hostname(), address: "127.0.0.1", interface: "lo0" }
 }
 
-async function readSandbox(name: string, defaultSandboxNames: Set<string>, registry: NemoClawRegistryData): Promise<{ summary: SandboxSummary; pod: SandboxItem }> {
+async function readSandbox(
+  name: string,
+  defaultSandboxNames: Set<string>,
+  listJsonIdentity: NemoClawListJsonIdentity | null,
+  registry: NemoClawRegistryData | null
+): Promise<{ summary: SandboxSummary; pod: SandboxItem }> {
   try {
     const [{ stdout: detailsStdout }, { stdout: sshStdout }] = await Promise.all([
       execOpenShell(["sandbox", "get", name]),
@@ -229,7 +218,7 @@ async function readSandbox(name: string, defaultSandboxNames: Set<string>, regis
     const sshConfig = sshStdout.trim()
     const sshHostAlias = parseSshHostAlias(sshConfig, sandboxName)
     const isDefault = defaultSandboxNames.has(sandboxName)
-    const agent = resolveSandboxAgent(sandboxName, sandboxId, registry)
+    const agent = resolveSandboxAgent(sandboxName, sandboxId, listJsonIdentity, registry)
 
     return {
       summary: {
@@ -274,7 +263,7 @@ async function readSandbox(name: string, defaultSandboxNames: Set<string>, regis
   } catch (error) {
     const sandboxName = name
     const isDefault = defaultSandboxNames.has(sandboxName)
-    const agent = resolveSandboxAgent(sandboxName, sandboxName, registry)
+    const agent = resolveSandboxAgent(sandboxName, sandboxName, listJsonIdentity, registry)
     return {
       summary: {
         id: sandboxName,
@@ -322,15 +311,28 @@ export async function GET() {
   try {
     const { stdout: sandboxListStdout } = await execOpenShell(["sandbox", "list"])
     const names = parseOpenShellSandboxNames(sandboxListStdout)
-    const [nemoclawListResult, nemoclawStatusResult] = names.length > 0
-      ? await Promise.all([
-          execNemoclaw(["list"]).catch(() => null),
-          execNemoclaw(["status"]).catch(() => null),
-        ])
-      : [null, null]
-    const defaultSandboxNames = parseDefaultSandboxNames(nemoclawListResult?.stdout ?? "")
-    const registry = readNemoClawRegistry()
-    const results = await Promise.all(names.map((name) => readSandbox(name, defaultSandboxNames, registry)))
+    let listJsonIdentity: NemoClawListJsonIdentity | null = null
+    let legacyListResult: { stdout: string; stderr: string } | null = null
+    const nemoclawStatusPromise = names.length > 0
+      ? execNemoclaw(["status"]).catch(() => null)
+      : Promise.resolve(null)
+
+    if (names.length > 0) {
+      const nemoclawListJsonResult = await execNemoclaw(["list", "--json"]).catch(() => null)
+      listJsonIdentity = parseNemoclawListJson(nemoclawListJsonResult?.stdout ?? "")
+      if (!listJsonIdentity) {
+        legacyListResult = await execNemoclaw(["list"]).catch(() => null)
+      }
+    }
+
+    const nemoclawStatusResult = await nemoclawStatusPromise
+    const defaultSandboxNames = listJsonIdentity
+      ? new Set(listJsonIdentity.defaultSandboxNames)
+      : parseDefaultSandboxNames(legacyListResult?.stdout ?? "")
+    const registry = listJsonIdentity ? null : readNemoClawRegistry()
+    const results = await Promise.all(
+      names.map((name) => readSandbox(name, defaultSandboxNames, listJsonIdentity, registry))
+    )
     const sandboxes = results.map((result) => result.summary)
     const items = results.map((result) => result.pod)
     const nemoclaw = buildNemoClawSummary(nemoclawStatusResult?.stdout ?? null, defaultSandboxNames)
@@ -363,7 +365,11 @@ export async function GET() {
         explicitInstanceOverride: authority.explicitInstanceOverride,
         usedMappedSandboxInstance: authority.usedMappedSandboxInstance,
       })),
-      defaultSource: defaultSandboxNames.size > 0 ? "nemoclaw-cli" : "none",
+      defaultSource: listJsonIdentity
+        ? "nemoclaw-list-json"
+        : defaultSandboxNames.size > 0
+          ? "nemoclaw-cli"
+          : "none",
       count: inventoryCount,
       message: hasMappedFallbackWithoutInventory
         ? "Fetched live OpenShell inventory: zero sandboxes reported, so any mapped NemoClaw dashboard should be treated as fallback-only."

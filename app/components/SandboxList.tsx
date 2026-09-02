@@ -78,14 +78,19 @@ function openDashboardUrl(url: string, openInNewTab: boolean) {
 }
 
 function displaySandboxAgent(agent?: string) {
-  if (agent === 'hermes') return 'Hermes'
-  return 'OpenClaw'
+  const normalized = typeof agent === 'string' ? agent.trim().toLowerCase() : ''
+  if (normalized === 'hermes') return 'Hermes'
+  if (!normalized || normalized === 'openclaw') return 'OpenClaw'
+  if (normalized === 'unknown') return 'Unknown'
+  return agent || 'Unknown'
 }
 
 function SandboxTypeLogo({ agent }: { agent?: string }) {
-  const isHermes = agent === 'hermes'
-  const label = isHermes ? 'Hermes sandbox' : 'OpenClaw sandbox'
-  const logoSrc = isHermes ? HERMES_SANDBOX_LOGO : OPENCLAW_SANDBOX_LOGO
+  const normalized = typeof agent === 'string' ? agent.trim().toLowerCase() : ''
+  const isHermes = normalized === 'hermes'
+  const isOpenClaw = !normalized || normalized === 'openclaw'
+  const label = isHermes ? 'Hermes sandbox' : isOpenClaw ? 'OpenClaw sandbox' : 'Non-OpenClaw sandbox'
+  const logoSrc = isHermes ? HERMES_SANDBOX_LOGO : isOpenClaw ? OPENCLAW_SANDBOX_LOGO : null
   return (
     <span
       aria-label={label}
@@ -93,10 +98,16 @@ function SandboxTypeLogo({ agent }: { agent?: string }) {
       className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-md border shadow-inner ${
         isHermes
           ? 'border-sky-300/60 bg-sky-500/15'
-          : 'border-rose-300/60 bg-rose-500/15'
+          : isOpenClaw
+            ? 'border-rose-300/60 bg-rose-500/15'
+            : 'border-slate-300/60 bg-slate-500/15 text-[10px] font-semibold uppercase tracking-wide text-[var(--foreground-dim)]'
       }`}
     >
-      <span aria-hidden="true" className="h-6 w-6 bg-contain bg-center bg-no-repeat" style={{ backgroundImage: `url(${logoSrc})` }} />
+      {logoSrc ? (
+        <span aria-hidden="true" className="h-6 w-6 bg-contain bg-center bg-no-repeat" style={{ backgroundImage: `url(${logoSrc})` }} />
+      ) : (
+        <span aria-hidden="true">?</span>
+      )}
     </span>
   )
 }
