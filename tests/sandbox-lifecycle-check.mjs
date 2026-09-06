@@ -110,7 +110,7 @@ assert.match(createRouteSource, /registryEntry\?\.imageTag\?\.trim\(\)/, 'image 
 assert.doesNotMatch(createRouteSource, /OPENSHELL_CLUSTER_CONTAINER|readPodImage|"kubectl"/, 'image redeploy must not depend on obsolete cluster containers or in-container kubectl')
 assert.match(createRouteSource, /"--auto-providers"/, 'image redeploy must use OpenShell auto providers for provider-backed images')
 assert.match(createRouteSource, /skippedNemoClawImageRedeployRegistration/, 'image redeploy must report that NemoClaw registry registration was deliberately skipped')
-assert.match(createRouteSource, /lifecycle, policy-authority, and workload receipts that only NemoClaw can issue safely/, 'image redeploy must explain why direct NemoClaw registry writes are unsafe')
+assert.match(createRouteSource, /lifecycle identity, workload provenance, and agent-specific state that only NemoClaw can issue safely/, 'image redeploy must explain why direct NemoClaw registry writes are unsafe')
 assert.doesNotMatch(createRouteSource, /function registerNemoClawImageRedeploy|writeFileSync\(tempPath|renameSync\(tempPath/, 'image redeploy must not forge current NemoClaw registry entries by copying source-bound authority receipts')
 assert.match(createRouteSource, /readyVerification\?: SandboxVerification/, 'ready-aware create command must carry the authoritative verification result')
 assert.match(createRouteSource, /readyVerification: verification/, 'ready-aware create command must return the verification that proved readiness')

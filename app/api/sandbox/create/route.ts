@@ -347,7 +347,7 @@ function skippedNemoClawImageRedeployRegistration() {
     registered: false as const,
     skipped: true as const,
     registryFile: NEMOCLAW_REGISTRY_FILE,
-    note: "The quick-deployed sandbox remains an OpenShell-managed clone and was not written into NemoClaw's private registry. Current NemoClaw registry entries carry lifecycle, policy-authority, and workload receipts that only NemoClaw can issue safely.",
+    note: "The quick-deployed sandbox remains an OpenShell-managed clone and was not written into NemoClaw's private registry. Current NemoClaw registry entries carry lifecycle identity, workload provenance, and agent-specific state that only NemoClaw can issue safely.",
   }
 }
 
