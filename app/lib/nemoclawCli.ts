@@ -98,7 +98,7 @@ async function runNemoClaw(args: string[], timeout = 30000): Promise<NemoClawRun
   try {
     const { stdout, stderr } = await execFileAsync(invocation.file, invocation.args, {
       env: hostCommandEnv({
-        OPENSHELL_GATEWAY: process.env.OPENSHELL_GATEWAY || "nemoclaw",
+        OPENSHELL_GATEWAY: process.env.OPENSHELL_GATEWAY?.trim() || undefined,
         NO_COLOR: "1",
         CLICOLOR: "0",
         CLICOLOR_FORCE: "0",

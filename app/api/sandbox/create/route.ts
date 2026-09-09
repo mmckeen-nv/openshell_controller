@@ -284,7 +284,7 @@ async function listOpenShellSandboxNames() {
   try {
     const { stdout } = await execFileAsync(OPENSHELL_BIN, ["sandbox", "list"], {
       env: hostCommandEnv({
-        OPENSHELL_GATEWAY: process.env.OPENSHELL_GATEWAY || "nemoclaw",
+        OPENSHELL_GATEWAY: process.env.OPENSHELL_GATEWAY?.trim() || undefined,
       }),
       timeout: 10000,
       maxBuffer: 1024 * 1024,
@@ -648,7 +648,7 @@ async function approveOpenClawDeviceRequests(sandboxName: string) {
     "-lc",
     "openclaw devices approve --latest --json --timeout 10000",
   ], hostCommandEnv({
-    OPENSHELL_GATEWAY: process.env.OPENSHELL_GATEWAY || "nemoclaw",
+    OPENSHELL_GATEWAY: process.env.OPENSHELL_GATEWAY?.trim() || undefined,
   }), 15000)
 
   const combinedOutput = `${result.stdout}\n${result.stderr}`.trim()
@@ -783,7 +783,7 @@ export async function POST(request: Request) {
         NEMOCLAW_NON_INTERACTIVE: "1",
         NEMOCLAW_RECREATE_SANDBOX: "1",
         NEMOCLAW_ACCEPT_THIRD_PARTY_SOFTWARE: "1",
-        OPENSHELL_GATEWAY: process.env.OPENSHELL_GATEWAY || "nemoclaw",
+        OPENSHELL_GATEWAY: process.env.OPENSHELL_GATEWAY?.trim() || undefined,
       })
 
       if (!enableTailscale) {
@@ -893,7 +893,7 @@ export async function POST(request: Request) {
 
     if (blueprint === "custom-sandbox") {
       const env: NodeJS.ProcessEnv = hostCommandEnv({
-        OPENSHELL_GATEWAY: process.env.OPENSHELL_GATEWAY || "nemoclaw",
+        OPENSHELL_GATEWAY: process.env.OPENSHELL_GATEWAY?.trim() || undefined,
         NO_COLOR: "1",
         CLICOLOR: "0",
         CLICOLOR_FORCE: "0",
@@ -995,7 +995,7 @@ export async function POST(request: Request) {
       const sourceImage = source.image
       const basePolicyPath = resolveNemoClawBasePolicyPath()
       const env: NodeJS.ProcessEnv = hostCommandEnv({
-        OPENSHELL_GATEWAY: process.env.OPENSHELL_GATEWAY || "nemoclaw",
+        OPENSHELL_GATEWAY: process.env.OPENSHELL_GATEWAY?.trim() || undefined,
       })
 
       const createAttempt = await runCreateCommandUntilReady(OPENSHELL_BIN, [

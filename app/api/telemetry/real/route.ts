@@ -157,7 +157,7 @@ function readNemoClawRegistry(): NemoClawRegistryData {
 
 async function execNemoclaw(args: string[]) {
   const env = hostCommandEnv({
-    OPENSHELL_GATEWAY: process.env.OPENSHELL_GATEWAY || "nemoclaw",
+    OPENSHELL_GATEWAY: process.env.OPENSHELL_GATEWAY?.trim() || undefined,
   })
 
   const command = /\.(?:c?m?js|ts)$/i.test(NEMOCLAW_BIN)

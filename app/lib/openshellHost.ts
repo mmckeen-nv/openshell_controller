@@ -397,13 +397,16 @@ function resolveSandboxInstanceId(instanceId: string) {
 }
 
 function buildSandboxSshArgs(sandboxName: string, extraArgs: string[]) {
+  const gatewayOption = OPENSHELL_GATEWAY
+    ? ` --gateway-name ${JSON.stringify(OPENSHELL_GATEWAY)}`
+    : ""
   return [
     "-o", "BatchMode=yes",
     "-o", "StrictHostKeyChecking=no",
     "-o", "UserKnownHostsFile=/dev/null",
     "-o", "GlobalKnownHostsFile=/dev/null",
     "-o", "LogLevel=ERROR",
-    "-o", `ProxyCommand=${OPENSHELL_BIN} ssh-proxy --gateway-name nemoclaw --name ${sandboxName}`,
+    "-o", `ProxyCommand=${OPENSHELL_BIN} ssh-proxy${gatewayOption} --name ${sandboxName}`,
     `sandbox@openshell-${sandboxName}`,
     ...extraArgs,
   ]

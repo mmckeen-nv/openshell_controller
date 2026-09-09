@@ -36,7 +36,7 @@ async function runOpenShell(args: string[], extraEnv: Record<string, string> = {
   const { stdout, stderr } = await execFileAsync(OPENSHELL_BIN, args, {
     env: hostCommandEnv({
       ...extraEnv,
-      OPENSHELL_GATEWAY: process.env.OPENSHELL_GATEWAY || "nemoclaw",
+      OPENSHELL_GATEWAY: process.env.OPENSHELL_GATEWAY?.trim() || undefined,
     }),
     timeout: 60000,
     maxBuffer: 20 * 1024 * 1024,

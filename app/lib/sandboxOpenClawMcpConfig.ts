@@ -17,7 +17,7 @@ function runSandboxShell(sandboxName: string, script: string, input?: string, ti
   return new Promise<{ stdout: string; stderr: string; code: number | null }>((resolve, reject) => {
     const child = spawn(OPENSHELL_BIN, ["sandbox", "exec", "-n", sandboxName, "--", "sh", "-lc", script], {
       env: hostCommandEnv({
-        OPENSHELL_GATEWAY: process.env.OPENSHELL_GATEWAY || "nemoclaw",
+        OPENSHELL_GATEWAY: process.env.OPENSHELL_GATEWAY?.trim() || undefined,
       }),
       stdio: ["pipe", "pipe", "pipe"],
     })

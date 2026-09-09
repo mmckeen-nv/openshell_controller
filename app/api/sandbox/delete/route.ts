@@ -113,7 +113,7 @@ async function deleteSandbox(sandboxName: string) {
   try {
     const { stdout, stderr } = await execFileAsync(OPENSHELL_BIN, ["sandbox", "delete", sandboxName], {
       env: hostCommandEnv({
-        OPENSHELL_GATEWAY: process.env.OPENSHELL_GATEWAY || "nemoclaw",
+        OPENSHELL_GATEWAY: process.env.OPENSHELL_GATEWAY?.trim() || undefined,
       }),
       timeout: 60000,
       maxBuffer: 20 * 1024 * 1024,
@@ -154,7 +154,7 @@ async function wipePersistentSandboxState(sandboxName: string, agent: string | n
   try {
     const { stdout, stderr } = await execFileAsync(OPENSHELL_BIN, ["sandbox", "exec", "-n", sandboxName, "--", "sh", "-lc", script], {
       env: hostCommandEnv({
-        OPENSHELL_GATEWAY: process.env.OPENSHELL_GATEWAY || "nemoclaw",
+        OPENSHELL_GATEWAY: process.env.OPENSHELL_GATEWAY?.trim() || undefined,
       }),
       timeout: 30000,
       maxBuffer: 1024 * 1024,

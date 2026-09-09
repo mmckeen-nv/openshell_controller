@@ -26,7 +26,7 @@ type BrokerNetworkAction = {
 function runOpenShell(args: string[], timeout = 60000) {
   return execFileAsync(OPENSHELL_BIN, args, {
     env: hostCommandEnv({
-      OPENSHELL_GATEWAY: process.env.OPENSHELL_GATEWAY || "nemoclaw",
+      OPENSHELL_GATEWAY: process.env.OPENSHELL_GATEWAY?.trim() || undefined,
       TERM: "dumb",
     }),
     timeout,

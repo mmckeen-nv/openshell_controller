@@ -21,7 +21,7 @@ function validateSandboxName(value: string) {
 async function runOpenShell(args: string[], timeout = 30000) {
   const { stdout, stderr } = await execFileAsync(OPENSHELL_BIN, args, {
     env: hostCommandEnv({
-      OPENSHELL_GATEWAY: process.env.OPENSHELL_GATEWAY || "nemoclaw",
+      OPENSHELL_GATEWAY: process.env.OPENSHELL_GATEWAY?.trim() || undefined,
     }),
     timeout,
     maxBuffer: 4 * 1024 * 1024,

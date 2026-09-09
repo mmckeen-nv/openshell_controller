@@ -12,7 +12,7 @@ export const dynamic = "force-dynamic"
 async function run(command: string, args: string[]) {
   try {
     const env = command === OPENSHELL_BIN
-      ? hostCommandEnv({ OPENSHELL_GATEWAY: process.env.OPENSHELL_GATEWAY || "nemoclaw" })
+      ? hostCommandEnv({ OPENSHELL_GATEWAY: process.env.OPENSHELL_GATEWAY?.trim() || undefined })
       : { ...process.env, PATH: HOST_PATH, NO_COLOR: "1", CLICOLOR: "0", CLICOLOR_FORCE: "0" }
     const { stdout, stderr } = await execFileAsync(command, args, {
       timeout: 10000,

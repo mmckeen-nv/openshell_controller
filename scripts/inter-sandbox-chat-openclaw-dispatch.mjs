@@ -12,7 +12,7 @@ const execFileAsync = promisify(execFile)
 const DASHBOARD_PORT_BASE = Number.parseInt(process.env.OPENCLAW_SANDBOX_DASHBOARD_PORT_BASE || "19000", 10)
 const DASHBOARD_PORT_RANGE = Number.parseInt(process.env.OPENCLAW_SANDBOX_DASHBOARD_PORT_RANGE || "2000", 10)
 const REMOTE_DASHBOARD_PORT = Number.parseInt(process.env.OPENCLAW_SANDBOX_DASHBOARD_REMOTE_PORT || "18789", 10)
-const OPENSHELL_GATEWAY = process.env.OPENSHELL_GATEWAY || "nemoclaw"
+const OPENSHELL_GATEWAY = process.env.OPENSHELL_GATEWAY?.trim() || undefined
 const CONTROL_UI_ORIGIN = process.env.OPENCLAW_SANDBOX_CONTROL_UI_ORIGIN || "http://127.0.0.1:18789"
 const CONNECT_TIMEOUT_MS = Number.parseInt(process.env.INTER_SANDBOX_CHAT_OPENCLAW_CONNECT_TIMEOUT_MS || "15000", 10)
 const SEND_TIMEOUT_MS = Number.parseInt(process.env.INTER_SANDBOX_CHAT_OPENCLAW_SEND_TIMEOUT_MS || "120000", 10)
@@ -54,13 +54,16 @@ function getDashboardPort(sandboxName) {
 }
 
 function buildSandboxSshArgs(sandboxName, extraArgs) {
+  const gatewayOption = OPENSHELL_GATEWAY
+    ? ` --gateway-name ${JSON.stringify(OPENSHELL_GATEWAY)}`
+    : ""
   return [
     "-o", "BatchMode=yes",
     "-o", "StrictHostKeyChecking=no",
     "-o", "UserKnownHostsFile=/dev/null",
     "-o", "GlobalKnownHostsFile=/dev/null",
     "-o", "LogLevel=ERROR",
-    "-o", `ProxyCommand=${OPENSHELL_BIN} ssh-proxy --gateway-name ${OPENSHELL_GATEWAY} --name ${sandboxName}`,
+    "-o", `ProxyCommand=${OPENSHELL_BIN} ssh-proxy${gatewayOption} --name ${sandboxName}`,
     `sandbox@openshell-${sandboxName}`,
     ...extraArgs,
   ]

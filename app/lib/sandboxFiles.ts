@@ -59,7 +59,7 @@ function runSandboxExec(sandboxName: string, script: string, input?: Buffer, tim
   return new Promise<{ stdout: Buffer; stderr: string; code: number | null }>((resolve, reject) => {
     const child = spawn(OPENSHELL_BIN, ["sandbox", "exec", "-n", sandboxName, "--", "sh", "-lc", script], {
       env: hostCommandEnv({
-        OPENSHELL_GATEWAY: process.env.OPENSHELL_GATEWAY || "nemoclaw",
+        OPENSHELL_GATEWAY: process.env.OPENSHELL_GATEWAY?.trim() || undefined,
       }),
       stdio: ["pipe", "pipe", "pipe"],
     })

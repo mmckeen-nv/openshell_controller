@@ -24,7 +24,7 @@ function parseRouteModel(output: string, label: "Gateway inference" | "System in
 async function readOpenShellInferenceModel() {
   const { stdout } = await execFileAsync(OPENSHELL_BIN, ["inference", "get"], {
     env: hostCommandEnv({
-      OPENSHELL_GATEWAY: process.env.OPENSHELL_GATEWAY || "nemoclaw",
+      OPENSHELL_GATEWAY: process.env.OPENSHELL_GATEWAY?.trim() || undefined,
     }),
     timeout: 30000,
     maxBuffer: 5 * 1024 * 1024,
