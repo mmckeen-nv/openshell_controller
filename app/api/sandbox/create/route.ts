@@ -1,11 +1,15 @@
 import { NextResponse } from "next/server"
 import { execFile, spawn } from "node:child_process"
-import { existsSync, readFileSync } from "node:fs"
+import { existsSync } from "node:fs"
 import path from "node:path"
 import { promisify } from "node:util"
 import { inspectSandbox, resolveSandboxRef } from "@/app/lib/openshellHost"
 import { recordActivity } from "@/app/lib/activityLog"
 import { repairOpenClawExecApprovalsFile } from "@/app/lib/sandboxPrivilegedFiles"
+import {
+  findNemoClawRegistryEntry,
+  listNemoClawRegistryCandidates,
+} from "@/app/lib/nemoclawRegistry.mjs"
 import {
   commandExists,
   HOST_PATH,
@@ -20,7 +24,7 @@ import {
 } from "@/app/lib/hostCommands"
 
 const execFileAsync = promisify(execFile)
-const NEMOCLAW_REGISTRY_FILE = path.join(process.env.HOME || "/tmp", ".nemoclaw", "sandboxes.json")
+const NEMOCLAW_STATE_ROOT = path.join(process.env.HOME || "/tmp", ".nemoclaw")
 
 function validateSandboxName(name: string) {
   if (!name || typeof name !== "string") throw new Error("sandbox name is required")
@@ -84,10 +88,6 @@ type CreateInferenceSettings = {
   envSummary: string[]
 }
 
-type NemoClawRegistryData = {
-  sandboxes?: Record<string, { name?: string; createdAt?: string; imageTag?: string }>
-  defaultSandbox?: string | null
-}
 
 function parseCreateGpuMode(body: any): CreateGpuMode {
   const raw = typeof body?.gpuMode === "string"
@@ -270,16 +270,6 @@ function parseOpenShellSandboxNames(output: string) {
     .filter((entry): entry is string => Boolean(entry))
 }
 
-function readNemoClawRegistry(): NemoClawRegistryData {
-  try {
-    return existsSync(NEMOCLAW_REGISTRY_FILE)
-      ? JSON.parse(readFileSync(NEMOCLAW_REGISTRY_FILE, "utf8"))
-      : {}
-  } catch {
-    return {}
-  }
-}
-
 async function listOpenShellSandboxNames() {
   try {
     const { stdout } = await execFileAsync(OPENSHELL_BIN, ["sandbox", "list"], {
@@ -299,7 +289,7 @@ async function resolveSourcePodImageFromRef(sourceSandboxRef: string) {
   const requested = sourceSandboxRef.trim()
   const source = await resolveSandboxRef(requested)
   const sourceName = validateSandboxName(source.name)
-  const registryEntry = readNemoClawRegistry().sandboxes?.[sourceName]
+  const registryEntry = findNemoClawRegistryEntry(sourceName)?.entry
   const sourceImage = registryEntry?.imageTag?.trim() || null
 
   if (!sourceImage) {
@@ -319,15 +309,10 @@ async function resolveSourcePodImage(sourceSandboxRef: string | null | undefined
     return await resolveSourcePodImageFromRef(sourceSandboxRef)
   }
 
-  const registry = readNemoClawRegistry()
-  const registeredEntries = Object.entries(registry.sandboxes ?? {})
-  const newestRegisteredNames = registeredEntries
-    .sort(([, a], [, b]) => String(b?.createdAt ?? "").localeCompare(String(a?.createdAt ?? "")))
-    .map(([key, value]) => value?.name || key)
+  const registeredNames = listNemoClawRegistryCandidates()
   const liveNames = await listOpenShellSandboxNames()
   const candidates = Array.from(new Set([
-    registry.defaultSandbox || undefined,
-    ...newestRegisteredNames,
+    ...registeredNames,
     ...liveNames,
   ].filter((candidate): candidate is string => Boolean(candidate && candidate !== targetSandboxName))))
 
@@ -346,7 +331,7 @@ function skippedNemoClawImageRedeployRegistration() {
   return {
     registered: false as const,
     skipped: true as const,
-    registryFile: NEMOCLAW_REGISTRY_FILE,
+    registryFile: NEMOCLAW_STATE_ROOT,
     note: "The quick-deployed sandbox remains an OpenShell-managed clone and was not written into NemoClaw's private registry. Current NemoClaw registry entries carry lifecycle identity, workload provenance, and agent-specific state that only NemoClaw can issue safely.",
   }
 }

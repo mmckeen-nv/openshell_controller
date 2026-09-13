@@ -102,7 +102,7 @@ assert.match(createRouteSource, /label: "Fresh Hermes Sandbox"/, 'Hermes sandbox
 assert.match(createRouteSource, /source: "~\/NemoClaw\/agents\/hermes\/Dockerfile"/, 'Hermes sandbox creation must point at the upstream Hermes agent source')
 assert.match(createRouteSource, /id: "nemoclaw-deepagents-code"/, 'create API must expose Deep Agents Code sandbox creation')
 assert.match(createRouteSource, /source: "~\/NemoClaw\/agents\/langchain-deepagents-code\/manifest\.yaml"/, 'Deep Agents Code sandbox creation must point at the upstream agent manifest')
-assert.match(createRouteSource, /readNemoClawRegistry/, 'image redeploy must discover the default NemoClaw sandbox image automatically')
+assert.match(createRouteSource, /findNemoClawRegistryEntry/, 'image redeploy must discover NemoClaw sandbox images across default and alternate-port registries')
 assert.match(createRouteSource, /listOpenShellSandboxNames/, 'image redeploy must fall back to live OpenShell inventory when registry entries are stale')
 assert.match(createRouteSource, /resolveSourcePodImage\(sourceSandboxName, sandboxName\)/, 'image redeploy must allow optional explicit source while defaulting automatically')
 assert.match(createRouteSource, /"--from",\s*sourceImage/, 'image redeploy must pass the resolved image to openshell sandbox create')

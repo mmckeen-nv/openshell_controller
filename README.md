@@ -90,7 +90,7 @@ OpenShell must already be installed and able to reach its gateway. On this host 
 
 The installer does not create an OpenShell gateway for you. Start or connect OpenShell first, then install this dashboard.
 
-Controller commands follow OpenShell's active gateway by default. Set `OPENSHELL_GATEWAY` only for an intentional override; leaving it unset also allows current NemoClaw to restore a port-qualified gateway such as `nemoclaw-8990` when its installer selected an alternate gateway port.
+Controller commands follow OpenShell's active gateway by default. Set `OPENSHELL_GATEWAY` only for an intentional override; leaving it unset also allows current NemoClaw to restore a port-qualified gateway such as `nemoclaw-8990` when its installer selected an alternate gateway port. Quick Deploy image discovery checks both the default NemoClaw registry and its numeric alternate-port registry roots, and fails closed if a sandbox name is registered under multiple gateways.
 
 ## Installer
 
