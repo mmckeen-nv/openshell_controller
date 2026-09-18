@@ -1,12 +1,6 @@
 import { NextResponse } from "next/server"
-import { execFile } from "node:child_process"
-import { promisify } from "node:util"
-import { OPENSHELL_BIN, hostCommandEnv } from "@/app/lib/hostCommands"
-import { recoverSandboxWithNemoClaw } from "@/app/lib/nemoclawCli"
+import { restartSandboxGatewayWithNemoClaw } from "@/app/lib/nemoclawCli"
 import { inspectSandbox, resolveSandboxRef } from "@/app/lib/openshellHost"
-
-const execFileAsync = promisify(execFile)
-const SANDBOX_DASHBOARD_REMOTE_PORT = Number.parseInt(process.env.OPENCLAW_SANDBOX_DASHBOARD_REMOTE_PORT || "18789", 10)
 
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms))
@@ -18,20 +12,6 @@ function validateSandboxName(value: string) {
   return value
 }
 
-async function runOpenShell(args: string[], timeout = 30000) {
-  const { stdout, stderr } = await execFileAsync(OPENSHELL_BIN, args, {
-    env: hostCommandEnv({
-      OPENSHELL_GATEWAY: process.env.OPENSHELL_GATEWAY?.trim() || undefined,
-    }),
-    timeout,
-    maxBuffer: 4 * 1024 * 1024,
-  })
-  return { stdout: String(stdout).trim(), stderr: String(stderr).trim() }
-}
-
-async function runSandboxShell(sandboxName: string, script: string, timeout = 30000) {
-  return runOpenShell(["sandbox", "exec", "-n", sandboxName, "--", "sh", "-lc", script], timeout)
-}
 
 async function waitForSandboxReady(sandboxName: string, timeoutMs: number, intervalMs: number) {
   const startedAt = Date.now()
@@ -55,29 +35,6 @@ async function waitForSandboxReady(sandboxName: string, timeoutMs: number, inter
   return { ready: false, attempts, elapsedMs: Date.now() - startedAt, lastError }
 }
 
-function restartOpenClawGatewayScript() {
-  return [
-    `port=${SANDBOX_DASHBOARD_REMOTE_PORT}`,
-    "for p in /proc/[0-9]*; do",
-    "  cmd=$(tr '\\0' ' ' < \"$p/cmdline\" 2>/dev/null || true)",
-    "  case \"$cmd\" in",
-    "    *'openclaw gateway run'*) kill \"${p##*/}\" 2>/dev/null || true ;;",
-    "  esac",
-    "done",
-    "sleep 1",
-    "if command -v openclaw >/dev/null 2>&1; then openclaw_bin=$(command -v openclaw);",
-    "elif [ -x /usr/local/bin/openclaw ]; then openclaw_bin=/usr/local/bin/openclaw;",
-    "else echo 'openclaw command not found in sandbox' >&2; exit 127; fi",
-    "nohup \"$openclaw_bin\" gateway run --allow-unconfigured --bind loopback --port \"$port\" >/tmp/gateway.log 2>&1 &",
-    "for i in 1 2 3 4 5 6 7 8 9 10; do",
-    "  curl -fsS --max-time 2 \"http://127.0.0.1:$port/\" >/dev/null 2>&1 && exit 0",
-    "  sleep 1",
-    "done",
-    "echo 'OpenClaw gateway did not answer after restart. Last log lines:' >&2",
-    "tail -40 /tmp/gateway.log >&2 2>/dev/null || true",
-    "exit 1",
-  ].join("\n")
-}
 
 export async function POST(
   _request: Request,
@@ -101,37 +58,34 @@ export async function POST(
       }, { status: 409 })
     }
 
-    const nemoclawRecover = await recoverSandboxWithNemoClaw(sandboxName)
-    if (nemoclawRecover.attempted && nemoclawRecover.ok) {
+    const nemoclawRestart = await restartSandboxGatewayWithNemoClaw(sandboxName)
+    if (nemoclawRestart.attempted && nemoclawRestart.ok) {
       return NextResponse.json({
         ok: true,
         restarted: true,
-        restartMode: "nemoclaw-recover",
+        restartMode: "nemoclaw-native-gateway",
         sandboxId: resolved.id,
         sandboxName,
         readiness,
-        nemoclawRecover,
+        nemoclawRestart,
         elapsedMs: Date.now() - startedAt,
-        note: "NemoClaw recover completed. The sandbox runtime and dashboard forward were checked without deleting the sandbox.",
+        note: "NemoClaw asked the sandbox's native agent to restart its gateway, then verified gateway health and host forwards.",
       })
     }
 
-    const runtime = await runSandboxShell(sandboxName, restartOpenClawGatewayScript(), 45000)
-
     return NextResponse.json({
-      ok: true,
-      restarted: true,
-      restartMode: "openclaw-runtime",
+      ok: false,
+      restarted: false,
+      restartMode: "nemoclaw-native-gateway",
       sandboxId: resolved.id,
       sandboxName,
       readiness,
-      nemoclawRecover,
-      runtime,
+      nemoclawRestart,
       elapsedMs: Date.now() - startedAt,
-      note: nemoclawRecover.attempted
-        ? "NemoClaw recover did not complete, so the dashboard fell back to restarting the in-sandbox OpenClaw runtime. The sandbox pod was not deleted."
-        : "OpenClaw runtime restarted inside the sandbox. The sandbox pod was not deleted.",
-    })
+      note: nemoclawRestart.attempted
+        ? "NemoClaw could not complete the native gateway restart. The controller did not bypass the agent-owned lifecycle boundary."
+        : "The installed NemoClaw CLI does not support the native gateway restart command. Upgrade NemoClaw before retrying.",
+    }, { status: nemoclawRestart.attempted ? 502 : 409 })
   } catch (error) {
     const message = error instanceof Error ? error.message : "Failed to restart sandbox runtime"
     return NextResponse.json({ ok: false, restarted: false, error: message }, { status: /required|invalid/.test(message) ? 400 : 500 })

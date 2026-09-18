@@ -225,6 +225,8 @@ The dashboard shells out to the OpenShell CLI for several operations:
 
 The **Quick Deploy New NemoClaw Sandbox** path clones a registered image through OpenShell, but it deliberately does not write the clone into NemoClaw's private `sandboxes.json`. Current NemoClaw entries include lifecycle identity, workload provenance, and agent-specific state that must be issued by NemoClaw itself. The clone remains visible and operable through OpenShell Control; use **Fresh NemoClaw Image** when the new sandbox must participate in NemoClaw-managed lifecycle operations.
 
+Sandbox gateway restarts use NemoClaw's native-agent lifecycle command. The controller does not kill or launch OpenClaw or Hermes gateway processes directly; if NemoClaw cannot verify the restart, the request fails without bypassing the agent-owned lifecycle boundary.
+
 OpenClaw dashboard access is loopback-only inside the host/sandbox context, so the UI uses local proxy routes:
 
 - `/api/openshell/dashboard/proxy`
