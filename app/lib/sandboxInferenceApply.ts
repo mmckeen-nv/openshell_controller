@@ -1,6 +1,7 @@
 import { execFile, spawn } from "node:child_process"
 import { promisify } from "node:util"
 import { OPENSHELL_BIN, hostCommandEnv } from "./hostCommands"
+import { restartSandboxGatewayWithNemoClaw } from "./nemoclawCli"
 import { getSandboxInferenceConfig, type SandboxInferenceRoute } from "./sandboxInferenceStore"
 
 const execFileAsync = promisify(execFile)
@@ -199,11 +200,6 @@ async function writeOpenClawConfig(sandboxName: string, config: any) {
   return result
 }
 
-async function restartOpenClawGatewayIfRunning(sandboxName: string) {
-  const script = "for p in /proc/[0-9]*; do cmd=$(tr '\\0' ' ' < \"$p/cmdline\" 2>/dev/null || true); case \"$cmd\" in *'openclaw gateway'*) kill \"${p##*/}\" 2>/dev/null || true;; esac; done"
-  return await runOpenShellExec(sandboxName, script)
-}
-
 export async function applySandboxInferenceProfile(sandboxId: string, sandboxName: string) {
   const config = await getSandboxInferenceConfig(sandboxId)
   const enabledRoutes = config.routes.filter((route) => route.enabled)
@@ -213,12 +209,18 @@ export async function applySandboxInferenceProfile(sandboxId: string, sandboxNam
   const currentOpenClawConfig = await readCurrentOpenClawConfig(sandboxName)
   const nextOpenClawConfig = buildOpenClawConfig(currentOpenClawConfig, enabledRoutes, primary)
   await writeOpenClawConfig(sandboxName, nextOpenClawConfig)
-  await restartOpenClawGatewayIfRunning(sandboxName)
-
   const routeResult = await runOpenShell(["inference", "set", "--no-verify", "--provider", primary.provider, "--model", primary.model])
+  const restartResult = await restartSandboxGatewayWithNemoClaw(sandboxName)
+  if (!restartResult.ok) {
+    throw new Error(
+      restartResult.stderr || restartResult.error ||
+      "NemoClaw could not verify the native agent gateway restart after applying inference config",
+    )
+  }
   return {
     primaryRoute: primary,
     routesApplied: enabledRoutes.length,
     gatewayRoute: routeResult,
+    gatewayRestart: "nemoclaw-native-gateway",
   }
 }

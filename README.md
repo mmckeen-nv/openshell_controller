@@ -49,7 +49,7 @@ This dashboard is validated against the current NVIDIA NemoClaw repo and the Ope
 
 - OpenShell installer release: `v0.0.116` (`OPENSHELL_VERSION=v0.0.116`)
 - NemoClaw source ref: `main` (`NEMOCLAW_INSTALL_REF=main`)
-- OpenClaw base-image build target: `2026.7.1` (`OPENCLAW_VERSION=2026.7.1`) unless overridden
+- OpenClaw base-image build target: `2026.9.1` (`OPENCLAW_VERSION=2026.9.1`) unless overridden
 
 Runtime/toolchain versions used during development:
 
@@ -100,7 +100,7 @@ Install or refresh the locked OpenShell/NemoClaw pair first:
 ./install_versioned_nemoclaw_openshell.sh
 ```
 
-That helper defaults to `OPENSHELL_VERSION=v0.0.116`, `NEMOCLAW_INSTALL_REF=main`, and `OPENCLAW_VERSION=2026.7.1`.
+That helper defaults to `OPENSHELL_VERSION=v0.0.116`, `NEMOCLAW_INSTALL_REF=main`, and `OPENCLAW_VERSION=2026.9.1`.
 
 Then install the dashboard from the repository root:
 

@@ -5,7 +5,6 @@ import path from "node:path"
 import { promisify } from "node:util"
 import { inspectSandbox, resolveSandboxRef } from "@/app/lib/openshellHost"
 import { recordActivity } from "@/app/lib/activityLog"
-import { repairOpenClawExecApprovalsFile } from "@/app/lib/sandboxPrivilegedFiles"
 import {
   findNemoClawRegistryEntry,
   listNemoClawRegistryCandidates,
@@ -814,11 +813,6 @@ export async function POST(request: Request) {
         error: "Sandbox readiness polling produced no verification result.",
       }
       const created = readiness.verified
-      const execApprovalsRepair = created && isOpenClawAgent ? await repairOpenClawExecApprovalsFile(sandboxName).catch((error) => ({
-        sandboxName,
-        path: "/sandbox/.openclaw/exec-approvals.json",
-        error: error instanceof Error ? error.message : "Failed to repair OpenClaw exec approvals file",
-      })) : null
       const deviceApproval = created && isOpenClawAgent ? await approveOpenClawDeviceRequests(sandboxName) : null
       console.log(
         `[sandbox/create] request:complete sandbox=${sandboxName} created=${created} agent=${agent} readinessAttempts=${readiness.attempts} deviceApproval=${deviceApproval?.approved ?? false} elapsedMs=${elapsedMs(requestStartedAt)}`,
@@ -852,7 +846,6 @@ export async function POST(request: Request) {
           attempts: readiness.attempts,
           elapsedMs: readiness.elapsedMs,
         },
-        execApprovalsRepair,
         deviceApproval,
         stdout: result.stdout,
         stderr: result.stderr,
@@ -868,8 +861,6 @@ export async function POST(request: Request) {
                 : gpuMode === "required"
                   ? "GPU passthrough was required for this create run."
                   : "NemoClaw chose GPU passthrough automatically for this create run.",
-              execApprovalsRepair && "note" in execApprovalsRepair ? execApprovalsRepair.note : false,
-              execApprovalsRepair && "error" in execApprovalsRepair ? `OpenClaw exec approvals repair failed: ${execApprovalsRepair.error}` : false,
               deviceApproval?.note,
             )
           : "Blueprint command reported success, but the sandbox never reached a ready verification state afterward.",
@@ -911,11 +902,6 @@ export async function POST(request: Request) {
         error: "Sandbox readiness polling produced no verification result.",
       }
       const created = readiness.verified
-      const execApprovalsRepair = created ? await repairOpenClawExecApprovalsFile(sandboxName).catch((error) => ({
-        sandboxName,
-        path: "/sandbox/.openclaw/exec-approvals.json",
-        error: error instanceof Error ? error.message : "Failed to repair OpenClaw exec approvals file",
-      })) : null
       const deviceApproval = created ? await approveOpenClawDeviceRequests(sandboxName) : null
       const policyPrepared = Boolean(policy)
       console.log(
@@ -953,7 +939,6 @@ export async function POST(request: Request) {
           attempts: readiness.attempts,
           elapsedMs: readiness.elapsedMs,
         },
-        execApprovalsRepair,
         deviceApproval,
         policyPrepared,
         note: created
@@ -966,8 +951,6 @@ export async function POST(request: Request) {
               gpuMode === "required"
                 ? "GPU passthrough was requested for this create run."
                 : false,
-              execApprovalsRepair && "note" in execApprovalsRepair ? execApprovalsRepair.note : false,
-              execApprovalsRepair && "error" in execApprovalsRepair ? `OpenClaw exec approvals repair failed: ${execApprovalsRepair.error}` : false,
               deviceApproval?.note,
             )
           : "Create command started, but the sandbox never reached a ready verification state afterward.",
@@ -1013,11 +996,6 @@ export async function POST(request: Request) {
       }
       const created = readiness.verified
       const registry = created ? skippedNemoClawImageRedeployRegistration() : null
-      const execApprovalsRepair = created ? await repairOpenClawExecApprovalsFile(sandboxName).catch((error) => ({
-        sandboxName,
-        path: "/sandbox/.openclaw/exec-approvals.json",
-        error: error instanceof Error ? error.message : "Failed to repair OpenClaw exec approvals file",
-      })) : null
       const deviceApproval = created ? await approveOpenClawDeviceRequests(sandboxName) : null
       console.log(
         `[sandbox/create] request:complete sandbox=${sandboxName} created=${created} mode=redeploy-image createTimedOut=${createAttempt.timedOut} readinessAttempts=${readiness.attempts} deviceApproval=${deviceApproval?.approved ?? false} elapsedMs=${elapsedMs(requestStartedAt)}`,
@@ -1064,7 +1042,6 @@ export async function POST(request: Request) {
           elapsedMs: readiness.elapsedMs,
         },
         registry,
-        execApprovalsRepair,
         deviceApproval,
         note: created
           ? appendNote(
@@ -1079,8 +1056,6 @@ export async function POST(request: Request) {
                 ? "The OpenShell create command stayed attached after the sandbox reached Ready, so the dashboard stopped waiting for the local command."
                 : false,
               registry?.note,
-              execApprovalsRepair && "note" in execApprovalsRepair ? execApprovalsRepair.note : false,
-              execApprovalsRepair && "error" in execApprovalsRepair ? `OpenClaw exec approvals repair failed: ${execApprovalsRepair.error}` : false,
               deviceApproval?.note,
             )
           : createFailed

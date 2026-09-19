@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process"
 import { OPENSHELL_BIN, hostCommandEnv } from "./hostCommands"
+import { restartSandboxGatewayWithNemoClaw } from "./nemoclawCli"
 
 export const OPENSHELL_CONTROL_MCP_SERVER_NAME = "openshell-control"
 export const OPENCLAW_CONFIG_PATH = "/sandbox/.openclaw/openclaw.json"
@@ -61,9 +62,14 @@ async function writeOpenClawConfig(sandboxName: string, config: Record<string, u
   if (result.code !== 0) throw new Error(result.stderr || "Failed to write OpenClaw MCP config")
 }
 
-async function restartOpenClawGatewayIfRunning(sandboxName: string) {
-  const script = "for p in /proc/[0-9]*; do cmd=$(tr '\\0' ' ' < \"$p/cmdline\" 2>/dev/null || true); case \"$cmd\" in *'openclaw gateway'*) kill \"${p##*/}\" 2>/dev/null || true;; esac; done"
-  await runSandboxShell(sandboxName, script)
+async function restartNativeGateway(sandboxName: string) {
+  const result = await restartSandboxGatewayWithNemoClaw(sandboxName)
+  if (!result.ok) {
+    throw new Error(
+      result.stderr || result.error ||
+      "NemoClaw could not verify the native agent gateway restart after updating MCP config",
+    )
+  }
 }
 
 export function buildOpenClawMcpServerConfig(brokerBaseUrl: string, token: string) {
@@ -94,7 +100,7 @@ export async function syncSandboxOpenClawMcpConfig(
     ...current,
     mcp,
   })
-  await restartOpenClawGatewayIfRunning(sandboxName)
+  await restartNativeGateway(sandboxName)
 
   return {
     path: OPENCLAW_CONFIG_PATH,
@@ -121,7 +127,7 @@ export async function revokeSandboxOpenClawMcpConfig(sandboxName: string) {
   }
 
   await writeOpenClawConfig(sandboxName, nextConfig)
-  await restartOpenClawGatewayIfRunning(sandboxName)
+  await restartNativeGateway(sandboxName)
 
   return {
     path: OPENCLAW_CONFIG_PATH,

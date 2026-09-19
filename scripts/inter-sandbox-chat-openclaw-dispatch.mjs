@@ -28,6 +28,13 @@ const OPENSHELL_BIN = firstExisting([
   "/usr/local/bin/openshell",
   "/opt/homebrew/bin/openshell",
 ], "openshell")
+const NEMOCLAW_BIN = firstExisting([
+  process.env.NEMOCLAW_BIN,
+  path.join(os.homedir(), ".local/bin/nemoclaw"),
+  path.join(os.homedir(), ".nemoclaw/source/bin/nemoclaw.js"),
+  "/usr/local/bin/nemoclaw",
+  "/opt/homebrew/bin/nemoclaw",
+], "nemoclaw")
 
 function cleanText(value, fallback = "") {
   return String(value ?? fallback).trim()
@@ -102,12 +109,17 @@ async function waitForPort(port, timeoutMs = 8000) {
 }
 
 async function ensureRemoteDashboard(sandboxName) {
-  const command = [
-    `curl -fsS --max-time 2 http://127.0.0.1:${REMOTE_DASHBOARD_PORT}/ >/dev/null 2>&1`,
-    "||",
-    `(nohup /usr/local/bin/openclaw gateway run --allow-unconfigured --bind loopback --port ${REMOTE_DASHBOARD_PORT} >/tmp/gateway.log 2>&1 &)`,
-  ].join(" ")
-  await execSandboxSsh(sandboxName, command, 15000).catch(() => null)
+  try {
+    await execSandboxSsh(sandboxName, `curl -fsS --max-time 2 http://127.0.0.1:${REMOTE_DASHBOARD_PORT}/ >/dev/null`, 5000)
+    return true
+  } catch {
+    await execFileAsync(NEMOCLAW_BIN, ["sandbox", "gateway", "restart", sandboxName], {
+      timeout: 90000,
+      maxBuffer: 8 * 1024 * 1024,
+      env: process.env,
+    })
+    return true
+  }
 }
 
 async function ensureDashboardTunnel(sandboxName, port) {

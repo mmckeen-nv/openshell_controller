@@ -59,6 +59,8 @@ assert.match(telemetrySource, /authorities: authorities\.map\(/, 'inventory rout
 assert.match(openshellHostSource, /const OPENSHELL_GATEWAY = process\.env\.OPENSHELL_GATEWAY\?\.trim\(\) \|\| undefined/, 'OpenShell host commands must not force the legacy openshell gateway when NemoClaw has selected the nemoclaw gateway')
 assert.match(openshellHostSource, /ssh-proxy\$\{gatewayOption\}/, 'sandbox SSH proxy commands must make the explicit gateway option conditional')
 assert.doesNotMatch(openshellHostSource, /ssh-proxy --gateway-name nemoclaw/, 'sandbox SSH proxy commands must not force the legacy unqualified NemoClaw gateway')
+assert.match(openshellHostSource, /restartSandboxGatewayWithNemoClaw\(sandboxName\)/, 'sandbox dashboard recovery must use NemoClaw native agent lifecycle')
+assert.doesNotMatch(openshellHostSource, /\/usr\/local\/bin\/openclaw gateway run/, 'sandbox dashboard recovery must not manually launch OpenClaw')
 assert.match(sandboxHealthSource, /stripAnsi/, 'sandbox health must strip OpenShell ANSI styling before parsing fields such as Phase')
 assert.match(openshellHostSource, /const canMintBootstrapFromCli = instance\.id === defaultInstance\.id/, 'bootstrap minting should only use CLI for the default OpenClaw instance')
 assert.match(openshellHostSource, /readSandboxOpenClawDashboardToken/, 'sandbox dashboard bootstrap must fall back to the sandbox OpenClaw token when CLI output is bare')
