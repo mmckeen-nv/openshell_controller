@@ -27,9 +27,9 @@ const NEMOCLAW_STATE_ROOT = path.join(process.env.HOME || "/tmp", ".nemoclaw")
 
 function validateSandboxName(name: string) {
   if (!name || typeof name !== "string") throw new Error("sandbox name is required")
-  if (name.length > 63) throw new Error("sandbox name too long (max 63 chars)")
-  if (!/^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/.test(name)) {
-    throw new Error("sandbox name must be lowercase alphanumeric with optional internal hyphens")
+  if (name.length > 19) throw new Error("sandbox name too long (max 19 chars)")
+  if (!/^(?!.*--)[a-z]([a-z0-9-]*[a-z0-9])?$/.test(name)) {
+    throw new Error("sandbox name must start with a lowercase letter and contain only lowercase letters, numbers, and single internal hyphens")
   }
   return name
 }

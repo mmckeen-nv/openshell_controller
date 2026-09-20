@@ -60,6 +60,8 @@ Runtime/toolchain versions used during development:
 - OpenShell CLI and gateway compatible with current `NVIDIA/NemoClaw` blueprint constraints
 - NemoClaw CLI compatible with the current `NVIDIA/NemoClaw` repo
 
+Sandbox creation follows NemoClaw's OpenShell routed-name contract: names are 1-19 characters, start with a lowercase letter, contain only lowercase letters, numbers, and single internal hyphens, and end with a letter or number.
+
 Use `./install_versioned_nemoclaw_openshell.sh` to install or refresh the OpenShell/NemoClaw pair. Override `OPENSHELL_VERSION`, `NEMOCLAW_INSTALL_REF`, or `OPENCLAW_VERSION` only when intentionally testing a different pair.
 
 The app uses Next.js `15.5.15`, React `18.3.1`, TypeScript, Tailwind CSS, `ws`, `node-pty`, and the official MCP TypeScript SDK.
