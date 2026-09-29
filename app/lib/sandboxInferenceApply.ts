@@ -1,7 +1,8 @@
-import { execFile, spawn } from "node:child_process"
+import { execFile } from "node:child_process"
 import { promisify } from "node:util"
 import { OPENSHELL_BIN, hostCommandEnv } from "./hostCommands"
 import { restartSandboxGatewayWithNemoClaw } from "./nemoclawCli"
+import { writeNativeOpenClawConfigPatch } from "./openClawNativeConfig"
 import { getSandboxInferenceConfig, type SandboxInferenceRoute } from "./sandboxInferenceStore"
 
 const execFileAsync = promisify(execFile)
@@ -107,11 +108,9 @@ function resolveOpenClawRoute(route: SandboxInferenceRoute) {
   }
 }
 
-function buildOpenClawConfig(current: any, routes: SandboxInferenceRoute[], primary: SandboxInferenceRoute) {
+function buildOpenClawConfigPatch(routes: SandboxInferenceRoute[], primary: SandboxInferenceRoute) {
   const providers: Record<string, any> = {}
   let primaryModelRef = primary.model
-  const channelDefaults = { ...(current?.channels?.defaults || {}) }
-  delete channelDefaults.configWrites
 
   for (const route of routes.filter((item) => item.enabled)) {
     const resolved = resolveOpenClawRoute(route)
@@ -126,26 +125,20 @@ function buildOpenClawConfig(current: any, routes: SandboxInferenceRoute[], prim
   }
 
   return {
-    ...current,
     agents: {
-      ...(current?.agents || {}),
       defaults: {
-        ...(current?.agents?.defaults || {}),
         model: {
-          ...(current?.agents?.defaults?.model || {}),
           primary: primaryModelRef,
         },
       },
     },
     models: {
-      ...(current?.models || {}),
       mode: "merge",
       providers,
     },
     channels: {
-      ...(current?.channels || {}),
       defaults: {
-        ...channelDefaults,
+        configWrites: null,
       },
     },
   }
@@ -162,53 +155,18 @@ async function runOpenShell(args: string[]) {
   return { stdout: String(stdout).trim(), stderr: String(stderr).trim() }
 }
 
-async function runOpenShellExec(sandboxName: string, script: string, input?: string) {
-  return await new Promise<{ stdout: string; stderr: string; code: number | null }>((resolve, reject) => {
-    const child = spawn(OPENSHELL_BIN, ["sandbox", "exec", "-n", sandboxName, "--", "sh", "-lc", script], {
-      env: hostCommandEnv({
-        OPENSHELL_GATEWAY: process.env.OPENSHELL_GATEWAY?.trim() || undefined,
-      }),
-      stdio: ["pipe", "pipe", "pipe"],
-    })
-    let stdout = ""
-    let stderr = ""
-    child.stdout.on("data", (chunk) => { stdout += String(chunk) })
-    child.stderr.on("data", (chunk) => { stderr += String(chunk) })
-    child.on("error", reject)
-    child.on("close", (code) => resolve({ stdout: stdout.trim(), stderr: stderr.trim(), code }))
-    if (input) child.stdin.end(input)
-    else child.stdin.end()
-  })
-}
-
-async function readCurrentOpenClawConfig(sandboxName: string) {
-  const result = await runOpenShellExec(sandboxName, "cat /sandbox/.openclaw/openclaw.json")
-  if (result.code !== 0) throw new Error(result.stderr || "Failed to read OpenClaw config")
-  return JSON.parse(result.stdout)
-}
-
-async function writeOpenClawConfig(sandboxName: string, config: any) {
-  const payload = `${JSON.stringify(config, null, 2)}\n`
-  const script = [
-    "cat > /sandbox/.openclaw/openclaw.json",
-    "chmod 600 /sandbox/.openclaw/openclaw.json",
-    "sha256sum /sandbox/.openclaw/openclaw.json > /sandbox/.openclaw/.config-hash",
-    "chmod 600 /sandbox/.openclaw/.config-hash",
-  ].join(" && ")
-  const result = await runOpenShellExec(sandboxName, script, payload)
-  if (result.code !== 0) throw new Error(result.stderr || "Failed to write OpenClaw config")
-  return result
-}
-
 export async function applySandboxInferenceProfile(sandboxId: string, sandboxName: string) {
   const config = await getSandboxInferenceConfig(sandboxId)
   const enabledRoutes = config.routes.filter((route) => route.enabled)
   if (enabledRoutes.length === 0) throw new Error("No enabled inference routes are configured for this sandbox")
   const primary = enabledRoutes.find((route) => route.id === config.primaryRouteId) || enabledRoutes[0]
 
-  const currentOpenClawConfig = await readCurrentOpenClawConfig(sandboxName)
-  const nextOpenClawConfig = buildOpenClawConfig(currentOpenClawConfig, enabledRoutes, primary)
-  await writeOpenClawConfig(sandboxName, nextOpenClawConfig)
+  const openClawPatch = buildOpenClawConfigPatch(enabledRoutes, primary)
+  await writeNativeOpenClawConfigPatch(
+    sandboxName,
+    openClawPatch,
+    "Failed to apply native OpenClaw inference config",
+  )
   const routeResult = await runOpenShell(["inference", "set", "--no-verify", "--provider", primary.provider, "--model", primary.model])
   const restartResult = await restartSandboxGatewayWithNemoClaw(sandboxName)
   if (!restartResult.ok) {

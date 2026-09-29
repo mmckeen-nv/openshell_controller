@@ -27,6 +27,7 @@ const brokerMcpRoutePath = path.join(root, 'app/api/mcp/broker/mcp/route.ts')
 const sandboxMcpRoutePath = path.join(root, 'app/api/sandbox/[sandboxId]/mcp/route.ts')
 const brokerUrlPath = path.join(root, 'app/lib/mcpBrokerUrl.ts')
 const sandboxOpenClawMcpConfigPath = path.join(root, 'app/lib/sandboxOpenClawMcpConfig.ts')
+const openClawNativeConfigPath = path.join(root, 'app/lib/openClawNativeConfig.ts')
 const sandboxPermissionsPath = path.join(root, 'app/lib/sandboxPermissions.ts')
 const preflightLibPath = path.join(root, 'app/lib/mcpPreflight.ts')
 const preflightRepairLibPath = path.join(root, 'app/lib/mcpPreflightRepair.ts')
@@ -43,7 +44,7 @@ const interSandboxChatPath = path.join(root, 'scripts/inter-sandbox-chat-mcp.mjs
 const interSandboxChatOpenClawDispatchPath = path.join(root, 'scripts/inter-sandbox-chat-openclaw-dispatch.mjs')
 const interSandboxChatSidecarPath = path.join(root, 'scripts/inter-sandbox-chat-sidecar.mjs')
 
-const [storeSource, brokerStoreSource, brokerClientSource, brokerProtocolSource, sandboxAutoSyncSource, manifestSource, privilegedFilesSource, routeSource, uploadRouteSource, preflightRouteSource, healthRouteSource, registryRouteSource, registriesRouteSource, registriesAssistRouteSource, installAssistRouteSource, registryStoreSource, inferenceModelSource, brokerCapabilitiesRouteSource, brokerCallRouteSource, brokerMcpRouteSource, sandboxMcpRouteSource, brokerUrlSource, sandboxOpenClawMcpConfigSource, sandboxPermissionsSource, preflightLibSource, preflightRepairLibSource, mcpServerSpecsSource, middlewareSource, panelSource, helpSource, sidebarSource, sandboxListSource, pageSource, interSandboxChatCoreSource, interSandboxChatSource, interSandboxChatOpenClawDispatchSource, interSandboxChatSidecarSource, serverSource] = await Promise.all([
+const [storeSource, brokerStoreSource, brokerClientSource, brokerProtocolSource, sandboxAutoSyncSource, manifestSource, privilegedFilesSource, routeSource, uploadRouteSource, preflightRouteSource, healthRouteSource, registryRouteSource, registriesRouteSource, registriesAssistRouteSource, installAssistRouteSource, registryStoreSource, inferenceModelSource, brokerCapabilitiesRouteSource, brokerCallRouteSource, brokerMcpRouteSource, sandboxMcpRouteSource, brokerUrlSource, sandboxOpenClawMcpConfigSource, openClawNativeConfigSource, sandboxPermissionsSource, preflightLibSource, preflightRepairLibSource, mcpServerSpecsSource, middlewareSource, panelSource, helpSource, sidebarSource, sandboxListSource, pageSource, interSandboxChatCoreSource, interSandboxChatSource, interSandboxChatOpenClawDispatchSource, interSandboxChatSidecarSource, serverSource] = await Promise.all([
   readFile(storePath, 'utf8'),
   readFile(brokerStorePath, 'utf8'),
   readFile(brokerClientPath, 'utf8'),
@@ -67,6 +68,7 @@ const [storeSource, brokerStoreSource, brokerClientSource, brokerProtocolSource,
   readFile(sandboxMcpRoutePath, 'utf8'),
   readFile(brokerUrlPath, 'utf8'),
   readFile(sandboxOpenClawMcpConfigPath, 'utf8'),
+  readFile(openClawNativeConfigPath, 'utf8'),
   readFile(sandboxPermissionsPath, 'utf8'),
   readFile(preflightLibPath, 'utf8'),
   readFile(preflightRepairLibPath, 'utf8'),
@@ -186,7 +188,10 @@ assert.match(brokerUrlSource, /if \(!shouldUseProxyWrappedBrokerUrl\(\)\) return
 assert.match(brokerUrlSource, /discoverSandboxProxyOrigin/, 'Sandbox MCP broker handoff must discover each sandbox proxy endpoint')
 assert.match(brokerUrlSource, /HTTP_PROXY/, 'Sandbox MCP broker handoff must derive the proxy endpoint from sandbox environment')
 assert.match(brokerUrlSource, /FALLBACK_SANDBOX_PROXY_ORIGIN/, 'Sandbox MCP broker handoff may keep a fallback for older OpenShell layouts')
-assert.match(sandboxOpenClawMcpConfigSource, /mcp\.servers = servers/, 'Sandbox MCP sync must write mcp.servers into OpenClaw config')
+assert.match(sandboxOpenClawMcpConfigSource, /writeNativeOpenClawConfigPatch/, 'Sandbox MCP sync must use OpenClaw native config ownership')
+assert.match(openClawNativeConfigSource, /"openclaw",[\s\S]*"config",[\s\S]*"patch",[\s\S]*"--stdin"/, 'OpenClaw config helper must use the native patch stdin command')
+assert.match(sandboxOpenClawMcpConfigSource, /\[OPENSHELL_CONTROL_MCP_SERVER_NAME\]: null/, 'Sandbox MCP revoke must remove only the controller-owned native config entry')
+assert.doesNotMatch(sandboxOpenClawMcpConfigSource, /config-hash|cat > .*openclaw\.json|chmod .*openclaw\.json/, 'Sandbox MCP sync must not replace OpenClaw native config or recreate retired ownership metadata')
 assert.match(sandboxOpenClawMcpConfigSource, /streamable-http/, 'OpenClaw MCP broker config must use streamable HTTP transport')
 assert.match(sandboxOpenClawMcpConfigSource, /Authorization: `Bearer \$\{token\}`/, 'OpenClaw MCP broker config must pass the sandbox broker token as bearer auth')
 assert.match(sandboxOpenClawMcpConfigSource, /restartSandboxGatewayWithNemoClaw/, 'MCP config changes must restart through NemoClaw native agent lifecycle')

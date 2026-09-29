@@ -229,6 +229,8 @@ The **Quick Deploy New NemoClaw Sandbox** path clones a registered image through
 
 Sandbox gateway restarts use NemoClaw's native-agent lifecycle command. The controller does not kill or launch OpenClaw or Hermes gateway processes directly; if NemoClaw cannot verify the restart, the request fails without bypassing the agent-owned lifecycle boundary.
 
+OpenClaw owns `openclaw.json` after first launch. Controller-managed MCP and inference updates use OpenClaw's native `config patch --stdin` boundary and do not replace the file or recreate NemoClaw's retired `.config-hash` ownership metadata.
+
 OpenClaw dashboard access is loopback-only inside the host/sandbox context, so the UI uses local proxy routes:
 
 - `/api/openshell/dashboard/proxy`
