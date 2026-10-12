@@ -84,7 +84,7 @@ assert.match(
 )
 assert.match(
   sandboxListSource,
-  /OpenClaw dashboard opened in a new tab/,
+  /dashboard opened in a new tab/,
   'sandbox list should surface concise dashboard launch feedback'
 )
 

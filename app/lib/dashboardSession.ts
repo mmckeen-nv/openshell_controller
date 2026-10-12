@@ -78,7 +78,7 @@ export function persistDashboardSessionState(session: DashboardSessionState) {
 export function buildOperatorTerminalRoute(params: {
   sandboxId?: string | null
   dashboardSessionId: string
-  launch?: 'hermes' | null
+  launch?: 'hermes' | 'turnstone' | null
 }) {
   const searchParams = new URLSearchParams()
   if (params.sandboxId) {

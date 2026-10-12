@@ -81,6 +81,18 @@ function buildHermesTerminalConnectCommand(sandboxId: string) {
 
 const HERMES_AGENT_COMMAND = "if command -v hermes >/dev/null 2>&1; then hermes; else echo 'Hermes CLI not found in this shell. Check that the terminal is attached to a Hermes sandbox.' >&2; fi"
 
+function buildTurnstoneTerminalConnectCommand(sandboxId: string) {
+  const target = shellQuote(sandboxId)
+  const alias = shellQuote(`openshell-${sandboxId}`)
+  const message = shellQuote(`[OpenShell Control] Connecting to Turnstone sandbox ${sandboxId}...`)
+  return [
+    `printf '\\n%s\\n' ${message}`,
+    `if command -v nemo-turnstone >/dev/null 2>&1; then nemo-turnstone ${target} connect; elif command -v nemoclaw >/dev/null 2>&1; then nemoclaw ${target} connect; elif command -v turnstone >/dev/null 2>&1; then ssh ${alias}; else ssh ${alias}; fi`,
+  ].join('; ')
+}
+
+const TURNSTONE_AGENT_COMMAND = "if command -v turnstone >/dev/null 2>&1; then turnstone; else echo 'Turnstone CLI not found in this shell. You can attach the dashboard via the OpenShell Gateway Dashboard button.' >&2; fi"
+
 function isHermesAttachReadyOutput(output: string, sandboxId: string) {
   const escapedSandboxId = escapeRegExp(sandboxId)
   return (
@@ -124,8 +136,10 @@ function OperatorTerminalInner() {
   }, [requestedDashboardSessionId])
 
   const shouldLaunchHermes = launchMode === 'hermes' && Boolean(sandboxId)
-  const terminalDescription = shouldLaunchHermes
-    ? 'Live operator terminal for Hermes. The dashboard connects to the sandbox and starts the Hermes CLI.'
+  const shouldLaunchTurnstone = launchMode === 'turnstone' && Boolean(sandboxId)
+  const shouldLaunchHarness = shouldLaunchHermes || shouldLaunchTurnstone
+  const terminalDescription = shouldLaunchHarness
+    ? `Live operator terminal for ${shouldLaunchTurnstone ? 'Turnstone' : 'Hermes'}. The dashboard connects to the sandbox and starts the harness CLI.`
     : sandboxId ? 'Live operator terminal for the selected sandbox, brokered through the dashboard-owned terminal bridge.' : 'Live operator terminal for host mode, brokered through the dashboard-owned terminal bridge.'
 
   const refreshReadiness = useCallback(async () => {
@@ -295,8 +309,8 @@ function OperatorTerminalInner() {
     socket.addEventListener('open', () => {
       setTerminalState('connected')
       const transportLabel = liveSession.transport ? ` via ${liveSession.transport}` : ''
-      setTerminalStatus(shouldLaunchHermes
-        ? `Live terminal connected for ${liveSession.sandboxId}${transportLabel}; launching Hermes…`
+      setTerminalStatus(shouldLaunchHarness
+        ? `Live terminal connected for ${liveSession.sandboxId}${transportLabel}; launching ${shouldLaunchTurnstone ? 'Turnstone' : 'Hermes'}…`
         : `Live terminal connected for ${liveSession.sandboxId}${transportLabel}.`)
       try {
         fitAddonRef.current?.fit()
@@ -305,11 +319,14 @@ function OperatorTerminalInner() {
       }
       term.focus()
       socket.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }))
-      if (shouldLaunchHermes && sandboxId && !hermesLaunchSentRef.current) {
+      if (shouldLaunchHarness && sandboxId && !hermesLaunchSentRef.current) {
         hermesLaunchSentRef.current = true
         window.setTimeout(() => {
           if (socket.readyState === WebSocket.OPEN) {
-            socket.send(JSON.stringify({ type: 'input', data: `\n\n${buildHermesTerminalConnectCommand(sandboxId)}\n` }))
+            const connectCommand = shouldLaunchTurnstone
+              ? buildTurnstoneTerminalConnectCommand(sandboxId)
+              : buildHermesTerminalConnectCommand(sandboxId)
+            socket.send(JSON.stringify({ type: 'input', data: `\n\n${connectCommand}\n` }))
           }
         }, 250)
       }
@@ -323,14 +340,15 @@ function OperatorTerminalInner() {
           term.write(message.replay)
         } else if (message.type === 'data' && typeof message.data === 'string') {
           term.write(message.data)
-          if (shouldLaunchHermes && sandboxId && !hermesAgentSentRef.current) {
+          if (shouldLaunchHarness && sandboxId && !hermesAgentSentRef.current) {
             hermesAttachBufferRef.current = `${hermesAttachBufferRef.current}${message.data}`.slice(-8000)
             if (isHermesAttachReadyOutput(hermesAttachBufferRef.current, sandboxId)) {
               hermesAgentSentRef.current = true
-              setTerminalStatus(`Hermes sandbox ${sandboxId} attached; starting Hermes CLI…`)
+              setTerminalStatus(`${shouldLaunchTurnstone ? 'Turnstone' : 'Hermes'} sandbox ${sandboxId} attached; starting harness CLI…`)
               window.setTimeout(() => {
                 if (socket.readyState === WebSocket.OPEN) {
-                  socket.send(JSON.stringify({ type: 'input', data: `\n\n${HERMES_AGENT_COMMAND}\n` }))
+                  const agentCommand = shouldLaunchTurnstone ? TURNSTONE_AGENT_COMMAND : HERMES_AGENT_COMMAND
+                  socket.send(JSON.stringify({ type: 'input', data: `\n\n${agentCommand}\n` }))
                 }
               }, 350)
             }
@@ -361,7 +379,7 @@ function OperatorTerminalInner() {
       socket.close()
       if (socketRef.current === socket) socketRef.current = null
     }
-  }, [liveSession, terminalReady, shouldLaunchHermes, sandboxId])
+  }, [liveSession, terminalReady, shouldLaunchHarness, shouldLaunchTurnstone, sandboxId])
 
   const readiness = useMemo(() => {
     if (!sandboxId) return { tone: 'border-[var(--status-pending)] text-[var(--status-pending)]', label: 'HOST MODE', detail: 'No sandbox query was provided. The dashboard terminal stays in host mode and keeps dashboard-session diagnostics for reconnect behavior.' }

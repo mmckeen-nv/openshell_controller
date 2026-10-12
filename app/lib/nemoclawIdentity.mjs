@@ -13,8 +13,10 @@ export function normalizeAgentIdentifier(agent) {
   const compact = trimmed.toLowerCase().replace(/[^a-z0-9]/g, '')
   if (compact === 'openclaw') return 'openclaw'
   if (compact === 'nemohermes' || compact === 'hermes') return 'hermes'
+  if (compact === 'turnstone' || compact === 'turnstonesandbox') return 'turnstone'
   if (compact.includes('openclaw')) return 'openclaw'
   if (compact.includes('hermes')) return 'hermes'
+  if (compact.includes('turnstone')) return 'turnstone'
 
   const canonical = canonicalizeAgent(trimmed)
   if (!canonical) return null

@@ -77,7 +77,7 @@ type NemoClawCreateCommand = {
 
 type CreateInferenceMode = "auto" | "vllm" | "nvidia" | "compatible" | "nim"
 type CreateGpuMode = "none" | "auto" | "required"
-type NemoClawAgent = "openclaw" | "hermes" | "langchain-deepagents-code"
+type NemoClawAgent = "openclaw" | "hermes" | "turnstone" | "langchain-deepagents-code"
 
 type CreateInferenceSettings = {
   mode: CreateInferenceMode
@@ -198,11 +198,12 @@ function nemoClawAgentArgs(agent: NemoClawAgent) {
 }
 
 function isNemoClawOnboardBlueprint(blueprint: string) {
-  return blueprint === "nemoclaw-blueprint" || blueprint === "nemoclaw-hermes" || blueprint === "nemoclaw-deepagents-code"
+  return blueprint === "nemoclaw-blueprint" || blueprint === "nemoclaw-hermes" || blueprint === "nemoclaw-turnstone" || blueprint === "nemoclaw-deepagents-code"
 }
 
 function nemoClawAgentForBlueprint(blueprint: string): NemoClawAgent {
   if (blueprint === "nemoclaw-deepagents-code") return "langchain-deepagents-code"
+  if (blueprint === "nemoclaw-turnstone") return "turnstone"
   return blueprint === "nemoclaw-hermes" ? "hermes" : "openclaw"
 }
 
@@ -702,6 +703,14 @@ export async function GET() {
         description: "Bootstraps a Hermes Agent sandbox using NemoClaw's Hermes workflow.",
         type: "blueprint",
         source: "~/NemoClaw/agents/hermes/Dockerfile",
+        supportsTailscale: false,
+      },
+      {
+        id: "nemoclaw-turnstone",
+        label: "Fresh Turnstone Sandbox",
+        description: "Bootstraps a Turnstone sandbox using NemoClaw's turnstone agent workflow.",
+        type: "blueprint",
+        source: "~/NemoClaw/agents/turnstone/Dockerfile",
         supportsTailscale: false,
       },
       {

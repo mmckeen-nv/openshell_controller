@@ -464,8 +464,16 @@ async function ensureSandboxOpenClawDashboardTunnel(sandboxName: string) {
   return waitForListeningPort(port, 8000)
 }
 
-export async function probeOpenClawDashboard(instanceId?: string | null): Promise<DashboardProbe> {
+export async function probeOpenClawDashboard(instanceId?: string | null, options: { dashboardPort?: number | string | null } = {}): Promise<DashboardProbe> {
   const instance = resolveOpenClawInstance(instanceId)
+  const dashboardPortOverride = options.dashboardPort != null && String(options.dashboardPort).length > 0
+    ? Number.parseInt(String(options.dashboardPort), 10)
+    : null
+  if (dashboardPortOverride && Number.isFinite(dashboardPortOverride)) {
+    const overridden = new URL(instance.dashboardUrl)
+    overridden.port = String(dashboardPortOverride)
+    instance.dashboardUrl = overridden.toString()
+  }
   const target = new URL(instance.dashboardUrl)
   const port = Number.parseInt(target.port || (target.protocol === 'https:' ? '443' : '80'), 10)
   const listener = await ensureOpenClawDashboardListener(instance.id, port)

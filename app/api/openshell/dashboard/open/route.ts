@@ -80,6 +80,8 @@ export async function GET(request: Request) {
   const requestUrl = new URL(request.url)
   const sandboxId = requestUrl.searchParams.get('sandboxId')
   const requestedInstanceId = requestUrl.searchParams.get('instanceId')
+  const requestedAgent = requestUrl.searchParams.get('agent') || requestUrl.searchParams.get('dashboardAgent')
+  const requestedDashboardPort = requestUrl.searchParams.get('dashboardPort')
   const inventoryCount = parseInventoryCount(requestUrl)
   const mappedSandboxInstanceId = getOpenClawInstanceIdForSandbox(sandboxId)
   const instance = requestedInstanceId
@@ -89,7 +91,11 @@ export async function GET(request: Request) {
     sandboxId,
     instanceId: requestedInstanceId,
   })
-  const probe = await probeOpenClawDashboard(authority.openclaw.id)
+  const probe = await probeOpenClawDashboard(authority.openclaw.id, { dashboardPort: requestedDashboardPort })
+  const baseDashboardUrl = getOpenClawDashboardUrl(authority.openclaw.id)
+  const effectiveDashboardUrl = requestedDashboardPort && baseDashboardUrl
+    ? (() => { try { const parsed = new URL(baseDashboardUrl); parsed.port = String(Number.parseInt(String(requestedDashboardPort), 10) || parsed.port); return parsed.toString() } catch { return baseDashboardUrl } })()
+    : baseDashboardUrl
   const instanceQualifiedProxyBase = `/api/openshell/instances/${encodeURIComponent(instance.id)}/dashboard/proxy`
   const zeroInventoryMappedDashboard = Boolean(
     inventoryCount === 0 &&
@@ -131,7 +137,7 @@ export async function GET(request: Request) {
       usedMappedSandboxInstance: authority.usedMappedSandboxInstance,
     },
     defaultInstanceId: getDefaultOpenClawDashboardInstanceId(),
-    dashboardUrl: getOpenClawDashboardUrl(authority.openclaw.id),
+    dashboardUrl: effectiveDashboardUrl,
     bootstrapUrl: probe.bootstrapUrl,
     bootstrapTokenPresent: probe.bootstrapTokenPresent,
     bootstrapSource: probe.bootstrapSource,
