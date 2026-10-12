@@ -63,10 +63,11 @@ const DISMISSED_PERMISSION_ALERTS_STORAGE_KEY = 'openshell-control-dismissed-per
 const DISMISS_PERMISSION_VALUE = '__dismiss_permission_alerts__'
 const OPENCLAW_SANDBOX_LOGO = '/sandbox-logos/openclaw.svg'
 const HERMES_SANDBOX_LOGO = '/sandbox-logos/hermes.png'
+const TURNSTONE_SANDBOX_LOGO = '/sandbox-logos/turnstone.svg'
 
 function renderDashboardTruthMessage(data: any) {
-  if (data.reachable) return 'OpenClaw dashboard opened in a new tab.'
-  return 'OpenClaw dashboard is not reachable from this host right now.'
+  if (data.reachable) return 'dashboard opened in a new tab.'
+  return 'dashboard is not reachable from this host right now.'
 }
 
 function openDashboardUrl(url: string, openInNewTab: boolean) {
@@ -80,6 +81,7 @@ function openDashboardUrl(url: string, openInNewTab: boolean) {
 function displaySandboxAgent(agent?: string) {
   const normalized = typeof agent === 'string' ? agent.trim().toLowerCase() : ''
   if (normalized === 'hermes') return 'Hermes'
+  if (normalized === 'turnstone') return 'Turnstone'
   if (!normalized || normalized === 'openclaw') return 'OpenClaw'
   if (normalized === 'unknown') return 'Unknown'
   return agent || 'Unknown'
@@ -88,9 +90,10 @@ function displaySandboxAgent(agent?: string) {
 function SandboxTypeLogo({ agent }: { agent?: string }) {
   const normalized = typeof agent === 'string' ? agent.trim().toLowerCase() : ''
   const isHermes = normalized === 'hermes'
+  const isTurnstone = normalized === 'turnstone'
   const isOpenClaw = !normalized || normalized === 'openclaw'
-  const label = isHermes ? 'Hermes sandbox' : isOpenClaw ? 'OpenClaw sandbox' : 'Non-OpenClaw sandbox'
-  const logoSrc = isHermes ? HERMES_SANDBOX_LOGO : isOpenClaw ? OPENCLAW_SANDBOX_LOGO : null
+  const label = isHermes ? 'Hermes sandbox' : isTurnstone ? 'Turnstone sandbox' : isOpenClaw ? 'OpenClaw sandbox' : 'Non-OpenClaw sandbox'
+  const logoSrc = isHermes ? HERMES_SANDBOX_LOGO : isTurnstone ? TURNSTONE_SANDBOX_LOGO : isOpenClaw ? OPENCLAW_SANDBOX_LOGO : null
   return (
     <span
       aria-label={label}
@@ -98,9 +101,11 @@ function SandboxTypeLogo({ agent }: { agent?: string }) {
       className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-md border shadow-inner ${
         isHermes
           ? 'border-sky-300/60 bg-sky-500/15'
-          : isOpenClaw
-            ? 'border-rose-300/60 bg-rose-500/15'
-            : 'border-slate-300/60 bg-slate-500/15 text-[10px] font-semibold uppercase tracking-wide text-[var(--foreground-dim)]'
+          : isTurnstone
+            ? 'border-emerald-300/60 bg-emerald-500/15'
+            : isOpenClaw
+              ? 'border-rose-300/60 bg-rose-500/15'
+              : 'border-slate-300/60 bg-slate-500/15 text-[10px] font-semibold uppercase tracking-wide text-[var(--foreground-dim)]'
       }`}
     >
       {logoSrc ? (
@@ -335,12 +340,22 @@ export default function SandboxList({
     mcpServers.filter((server) => sandboxCanAccessMcpServer(sandbox, server))
   )
   const selectedSandboxIsHermes = selectedSandbox?.agent === 'hermes'
+  const selectedSandboxIsTurnstone = selectedSandbox?.agent === 'turnstone'
 
   const connectToHermes = (sandbox: SandboxInventoryItem) => {
     const route = buildOperatorTerminalRoute({
       sandboxId: sandbox.name,
       dashboardSessionId,
       launch: 'hermes',
+    })
+    window.open(route, '_blank', 'noopener,noreferrer')
+  }
+
+  const connectToTurnstone = (sandbox: SandboxInventoryItem) => {
+    const route = buildOperatorTerminalRoute({
+      sandboxId: sandbox.name,
+      dashboardSessionId,
+      launch: 'turnstone',
     })
     window.open(route, '_blank', 'noopener,noreferrer')
   }
@@ -645,37 +660,57 @@ export default function SandboxList({
             <>
               <DrawerSection
                 title={`${selectedSandbox.name} - Operations`}
-                summary={selectedSandboxIsHermes ? "Terminal, restart, refresh, and live telemetry." : "Dashboard, terminal, restart, refresh, and live telemetry."}
+                summary={
+                  selectedSandboxIsHermes
+                    ? "Terminal, restart, refresh, and live telemetry."
+                    : selectedSandboxIsTurnstone
+                      ? "Turnstone UI, terminal, restart, refresh, and live telemetry."
+                      : "Dashboard, terminal, restart, refresh, and live telemetry."
+                }
                 open={openDrawers.operations}
                 onToggle={() => toggleDrawer('operations')}
               >
                 <div className="space-y-6">
                   <div className="flex flex-wrap items-center gap-3 max-sm:[&>button]:w-full">
                     {!selectedSandboxIsHermes ? (
-                      <button
-                        onClick={async () => {
-                          try {
-                            const searchParams = new URLSearchParams()
-                            searchParams.set('sandboxId', selectedSandbox.name)
-                            searchParams.set('inventoryCount', String(sandboxes.length))
-                            const res = await fetch(`/api/openshell/dashboard/open?${searchParams.toString()}`)
-                            const data = await res.json()
-                            setDashboardMessage(renderDashboardTruthMessage(data))
-                            if (data.reachable && data.launchUrl) {
-                              openDashboardUrl(data.launchUrl, data.openInNewTab)
-                            } else if (data.reachable && data.proxiedUrl) {
-                              openDashboardUrl(data.proxiedUrl, data.openInNewTab)
-                            } else if (data.reachable && data.dashboardUrl && !data.loopbackOnly) {
-                              openDashboardUrl(data.dashboardUrl, data.openInNewTab)
+                      <>
+                        <button
+                          onClick={async () => {
+                            try {
+                              const searchParams = new URLSearchParams()
+                              searchParams.set('sandboxId', selectedSandbox.name)
+                              if (selectedSandboxIsTurnstone) {
+                                searchParams.set('agent', 'turnstone')
+                                searchParams.set('dashboardPort', '8080')
+                              }
+                              searchParams.set('inventoryCount', String(sandboxes.length))
+                              const res = await fetch(`/api/openshell/dashboard/open?${searchParams.toString()}`)
+                              const data = await res.json()
+                              setDashboardMessage(renderDashboardTruthMessage(data))
+                              if (data.reachable && data.launchUrl) {
+                                openDashboardUrl(data.launchUrl, data.openInNewTab)
+                              } else if (data.reachable && data.proxiedUrl) {
+                                openDashboardUrl(data.proxiedUrl, data.openInNewTab)
+                              } else if (data.reachable && data.dashboardUrl && !data.loopbackOnly) {
+                                openDashboardUrl(data.dashboardUrl, data.openInNewTab)
+                              }
+                            } catch (error) {
+                              setDashboardMessage('Failed to resolve Dashboard endpoint.')
                             }
-                          } catch (error) {
-                            setDashboardMessage('Failed to resolve OpenClaw Dashboard endpoint.')
-                          }
-                        }}
-                        className="action-button px-3 py-2"
-                      >
-                        Start OpenClaw Gateway Dashboard
-                      </button>
+                          }}
+                          className="action-button px-3 py-2"
+                        >
+                          Start {displaySandboxAgent(selectedSandbox.agent)} Gateway Dashboard
+                        </button>
+                        {selectedSandboxIsTurnstone ? (
+                          <button
+                            onClick={() => connectToTurnstone(selectedSandbox)}
+                            className="action-button px-3 py-2"
+                          >
+                            Open Turnstone Terminal
+                          </button>
+                        ) : null}
+                      </>
                     ) : (
                       <button
                         onClick={() => connectToHermes(selectedSandbox)}

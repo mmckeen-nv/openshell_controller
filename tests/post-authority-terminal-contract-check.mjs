@@ -85,6 +85,7 @@ assert.match(
 assert.match(
   pageSource,
   /HERMES_AGENT_COMMAND/,
+  /(HERMES_AGENT_COMMAND|TURNSTONE_AGENT_COMMAND)/,
   'Hermes terminal launch must run the Hermes CLI after attaching'
 )
 assert.match(
@@ -94,8 +95,13 @@ assert.match(
 )
 assert.match(
   pageSource,
-  /data: `\\n\\n\$\{HERMES_AGENT_COMMAND\}\\n`/,
-  'Hermes terminal launch must nudge the attached shell before running Hermes'
+  /const agentCommand = shouldLaunchTurnstone \? TURNSTONE_AGENT_COMMAND : HERMES_AGENT_COMMAND/,
+  'Hermes terminal launch must lazily choose between HERMES_AGENT_COMMAND and TURNSTONE_AGENT_COMMAND'
+)
+assert.match(
+  pageSource,
+  /data: `\\n\\n\$\{agentCommand\}\\n`/,
+  'terminal attach must send the resolved agentCommand over the websocket terminal frame'
 )
 assert.doesNotMatch(
   pageSource,

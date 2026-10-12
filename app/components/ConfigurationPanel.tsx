@@ -129,7 +129,7 @@ export default function ConfigurationPanel({ sandboxId, mode = 'existing', onCre
   const assembledPolicy = useMemo(() => ({ ...policy, network_policies: blocksToPolicy(blocks) }), [policy, blocks])
   const activePreset = selectedPreset ? getSecurityPreset(selectedPreset) : null
   const activeBlueprint = blueprints.find((bp) => bp.id === selectedBlueprint)
-  const isNemoClawOnboardBlueprint = selectedBlueprint === 'nemoclaw-blueprint' || selectedBlueprint === 'nemoclaw-hermes' || selectedBlueprint === 'nemoclaw-deepagents-code'
+  const isNemoClawOnboardBlueprint = selectedBlueprint === 'nemoclaw-blueprint' || selectedBlueprint === 'nemoclaw-hermes' || selectedBlueprint === 'nemoclaw-turnstone' || selectedBlueprint === 'nemoclaw-deepagents-code'
 
   function applyPreset(presetId: SecurityPresetId) {
     const preset = getSecurityPreset(presetId); if (!preset) return
@@ -221,7 +221,7 @@ export default function ConfigurationPanel({ sandboxId, mode = 'existing', onCre
             </div>
             <div>
               <label className="text-xs uppercase tracking-wider text-[var(--foreground-dim)]">Sandbox Name<FieldHelp text="1-19 characters; start with a lowercase letter; use lowercase letters, numbers, and single internal hyphens only." /></label>
-              <input value={sandboxName} onChange={(e) => setSandboxName(e.target.value)} maxLength={19} pattern="(?!.*--)[a-z](?:[a-z0-9-]*[a-z0-9])?" placeholder={selectedBlueprint === 'nemoclaw-hermes' ? 'my-hermes' : selectedBlueprint === 'nemoclaw-deepagents-code' ? 'my-deepagents-code' : selectedBlueprint === 'nemoclaw-blueprint' ? 'my-assistant' : selectedBlueprint === 'redeploy-image' ? 'my-assistant-copy' : 'custom-sandbox'} className="mt-2 w-full rounded-sm border border-[var(--border-subtle)] bg-[var(--background)] px-3 py-2 text-xs font-mono text-[var(--foreground)] focus:outline-none focus:border-[var(--nvidia-green)]" />
+              <input value={sandboxName} onChange={(e) => setSandboxName(e.target.value)} maxLength={19} pattern="(?!.*--)[a-z](?:[a-z0-9-]*[a-z0-9])?" placeholder={selectedBlueprint === 'nemoclaw-hermes' ? 'my-hermes' : selectedBlueprint === 'nemoclaw-turnstone' ? 'my-turnstone' : selectedBlueprint === 'nemoclaw-deepagents-code' ? 'my-deepagents-code' : selectedBlueprint === 'nemoclaw-blueprint' ? 'my-assistant' : selectedBlueprint === 'redeploy-image' ? 'my-assistant-copy' : 'custom-sandbox'} className="mt-2 w-full rounded-sm border border-[var(--border-subtle)] bg-[var(--background)] px-3 py-2 text-xs font-mono text-[var(--foreground)] focus:outline-none focus:border-[var(--nvidia-green)]" />
             </div>
             <div className="rounded-sm border border-[var(--border-subtle)] bg-[var(--background)] p-4 space-y-4">
               <div>
