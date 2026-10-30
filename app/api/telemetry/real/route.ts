@@ -103,7 +103,39 @@ function normalizePhase(phase: string | null) {
   }
 }
 
+function parseOpenShellJsonList(output: string): Array<Record<string, unknown>> | null {
+  try {
+    const parsed = JSON.parse(output)
+    if (Array.isArray(parsed)) return parsed
+    if (parsed && typeof parsed === "object" && Array.isArray(parsed.sandboxes)) {
+      return parsed.sandboxes
+    }
+    return null
+  } catch {
+    return null
+  }
+}
+
+function parseOpenShellJsonItem(output: string): Record<string, unknown> | null {
+  try {
+    const parsed = JSON.parse(output)
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      return parsed
+    }
+    return null
+  } catch {
+    return null
+  }
+}
+
 function parseOpenShellSandboxNames(output: string) {
+  const jsonList = parseOpenShellJsonList(output)
+  if (jsonList) {
+    return jsonList
+      .map((entry) => String(entry.name || entry.id || "").trim())
+      .filter(Boolean)
+  }
+
   return output
     .split(/\r?\n/)
     .map((entry) => stripAnsi(entry).trim())
@@ -206,15 +238,37 @@ async function readSandbox(
   registry: NemoClawRegistryData | null
 ): Promise<{ summary: SandboxSummary; pod: SandboxItem }> {
   try {
-    const [{ stdout: detailsStdout }, { stdout: sshStdout }] = await Promise.all([
-      execOpenShell(["sandbox", "get", name]),
-      execOpenShell(["sandbox", "ssh-config", name]),
-    ])
+    let detailsStdout = ""
+    let jsonItem: Record<string, unknown> | null = null
 
-    const sandboxName = parseField(detailsStdout, "Name") ?? name
-    const namespace = parseField(detailsStdout, "Namespace") ?? "openshell"
-    const phase = normalizePhase(parseField(detailsStdout, "Phase"))
-    const sandboxId = parseField(detailsStdout, "Id") ?? sandboxName
+    try {
+      const { stdout } = await execOpenShell(["sandbox", "get", name, "-o", "json"])
+      detailsStdout = stdout
+      jsonItem = parseOpenShellJsonItem(stdout)
+    } catch {
+      const { stdout } = await execOpenShell(["sandbox", "get", name])
+      detailsStdout = stdout
+    }
+
+    const { stdout: sshStdout } = await execOpenShell(["sandbox", "ssh-config", name])
+
+    const sandboxName =
+      (typeof jsonItem?.name === "string" ? jsonItem.name : null) ??
+      parseField(detailsStdout, "Name") ??
+      name
+    const namespace =
+      (typeof jsonItem?.workspace === "string" ? jsonItem.workspace : null) ??
+      parseField(detailsStdout, "Namespace") ??
+      "openshell"
+    const rawPhase =
+      (typeof jsonItem?.status === "string" ? jsonItem.status : null) ??
+      (typeof jsonItem?.phase === "string" ? jsonItem.phase : null) ??
+      parseField(detailsStdout, "Phase")
+    const phase = normalizePhase(rawPhase)
+    const sandboxId =
+      (typeof jsonItem?.id === "string" ? jsonItem.id : null) ??
+      parseField(detailsStdout, "Id") ??
+      sandboxName
     const sshConfig = sshStdout.trim()
     const sshHostAlias = parseSshHostAlias(sshConfig, sandboxName)
     const isDefault = defaultSandboxNames.has(sandboxName)
@@ -309,7 +363,9 @@ async function readSandbox(
 
 export async function GET() {
   try {
-    const { stdout: sandboxListStdout } = await execOpenShell(["sandbox", "list"])
+    const { stdout: sandboxListStdout } = await execOpenShell(["sandbox", "list", "-o", "json"]).catch(
+      () => execOpenShell(["sandbox", "list"])
+    )
     const names = parseOpenShellSandboxNames(sandboxListStdout)
     let listJsonIdentity: NemoClawListJsonIdentity | null = null
     let legacyListResult: { stdout: string; stderr: string } | null = null
