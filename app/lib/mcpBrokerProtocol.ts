@@ -84,6 +84,15 @@ function reserveToolName(
   return candidate
 }
 
+function isOperatorPrivilegedTool(toolName: string): boolean {
+  const normalized = toolName.toLowerCase()
+  return (
+    normalized === "post_operator_message" ||
+    normalized.endsWith("__post_operator_message") ||
+    normalized.includes("operator_message")
+  )
+}
+
 async function loadToolCatalog(session: SandboxMcpBrokerSession) {
   const allowedServers = await listAllowedBrokerServers(session)
   const usedNames = new Set<string>()
@@ -93,6 +102,10 @@ async function loadToolCatalog(session: SandboxMcpBrokerSession) {
   for (const server of allowedServers) {
     const serverTools = await listBrokerServerTools(server)
     for (const tool of serverTools) {
+      // SECURITY GATE: Sandbox sessions must never be exposed to operator-privileged tools
+      if (isOperatorPrivilegedTool(tool.name)) {
+        continue
+      }
       const exposedName = reserveToolName(usedNames, server.id, tool.name)
       refs.set(exposedName, { server, originalToolName: tool.name })
       tools.push({
@@ -147,7 +160,7 @@ async function handleBrokerMcpJsonRpcMessage(session: SandboxMcpBrokerSession, m
       case "tools/call": {
         const params = isRecord(request.params) ? request.params : {}
         const name = typeof params.name === "string" ? params.name : ""
-        const toolArguments = isRecord(params.arguments) ? params.arguments : {}
+        const toolArguments = isRecord(params.arguments) ? { ...params.arguments } : {}
         if (!name) return isNotification ? null : brokerMcpErrorFor(id, -32602, "Tool name is required.")
 
         const catalog = await loadToolCatalog(session)
@@ -157,6 +170,25 @@ async function handleBrokerMcpJsonRpcMessage(session: SandboxMcpBrokerSession, m
             content: [{ type: "text", text: "Requested MCP capability is unavailable." }],
             isError: true,
           })
+        }
+
+        // SECURITY GATE: Prevent sandboxes from spoofing operator or other sandboxes
+        if (
+          ref.originalToolName === "post_message" ||
+          ref.originalToolName.endsWith("__post_message") ||
+          ref.originalToolName.includes("post_message")
+        ) {
+          // Force origin to sandbox
+          toolArguments.origin = "sandbox"
+          // Force sender to session identity (prevent spoofing operator or other sandboxes)
+          const authorizedSender = session.sandboxName || session.sandboxId
+          if (
+            !toolArguments.sender ||
+            toolArguments.sender === "operator" ||
+            toolArguments.sender !== authorizedSender
+          ) {
+            toolArguments.sender = authorizedSender
+          }
         }
 
         const result = await callBrokerServerTool(ref.server, ref.originalToolName, toolArguments)
