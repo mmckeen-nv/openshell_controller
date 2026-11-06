@@ -114,7 +114,48 @@ function parseSshHostAlias(sshConfig: string, fallbackName: string) {
   return alias || `openshell-${fallbackName}`
 }
 
+type OpenShellSandboxJson = {
+  id?: string
+  name?: string
+  status?: string
+  phase?: string
+  workspace?: string
+  [key: string]: unknown
+}
+
+function parseOpenShellJsonList(output: string): OpenShellSandboxJson[] | null {
+  try {
+    const parsed = JSON.parse(output)
+    if (Array.isArray(parsed)) return parsed
+    if (parsed && typeof parsed === "object" && Array.isArray(parsed.sandboxes)) {
+      return parsed.sandboxes
+    }
+    return null
+  } catch {
+    return null
+  }
+}
+
+function parseOpenShellJsonItem(output: string): OpenShellSandboxJson | null {
+  try {
+    const parsed = JSON.parse(output)
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      return parsed
+    }
+    return null
+  } catch {
+    return null
+  }
+}
+
 function parseOpenShellSandboxNames(output: string) {
+  const jsonList = parseOpenShellJsonList(output)
+  if (jsonList) {
+    return jsonList
+      .map((entry) => (entry.name || entry.id || "").trim())
+      .filter(Boolean)
+  }
+
   return output
     .split(/\r?\n/)
     .map((entry) => stripAnsi(entry).trim())
@@ -126,6 +167,24 @@ function parseOpenShellSandboxNames(output: string) {
 export async function resolveSandboxRef(ref: string) {
   const requested = ref.trim()
 
+  // 1. Try direct get with -o json (OpenShell 0.1.6+)
+  try {
+    const { stdout } = await execOpenShell(["sandbox", "get", requested, "-o", "json"])
+    const jsonItem = parseOpenShellJsonItem(stdout)
+    if (jsonItem && (jsonItem.name || jsonItem.id)) {
+      return {
+        requested,
+        name: (jsonItem.name as string) ?? requested,
+        id: (jsonItem.id as string) ?? requested,
+        details: stdout.trim(),
+        resolvedBy: "direct" as const,
+      }
+    }
+  } catch {
+    // Fall back to text output or list resolution
+  }
+
+  // 2. Try direct get without -o json (legacy table output)
   try {
     const { stdout } = await execOpenShell(["sandbox", "get", requested])
     return {
@@ -136,6 +195,30 @@ export async function resolveSandboxRef(ref: string) {
       resolvedBy: "direct" as const,
     }
   } catch (directError) {
+    // 3. Fallback: list sandboxes with -o json
+    try {
+      const { stdout: jsonListStdout } = await execOpenShell(["sandbox", "list", "-o", "json"])
+      const items = parseOpenShellJsonList(jsonListStdout)
+      if (items) {
+        for (const item of items) {
+          const sName = (item.name as string) ?? ""
+          const sId = (item.id as string) ?? ""
+          if (requested === sId || requested === sName) {
+            return {
+              requested,
+              name: sName || requested,
+              id: sId || requested,
+              details: JSON.stringify(item),
+              resolvedBy: requested === sName ? ("list-name" as const) : ("list-id" as const),
+            }
+          }
+        }
+      }
+    } catch {
+      // Ignore json list failure
+    }
+
+    // 4. Fallback: list sandboxes with table output
     const { stdout: sandboxListStdout } = await execOpenShell(["sandbox", "list"])
     const names = parseOpenShellSandboxNames(sandboxListStdout)
 
@@ -526,13 +609,28 @@ export async function inspectSandbox(ref: string): Promise<SandboxInspection> {
   ])
 
   const sshConfig = sshStdout.trim()
+  const jsonItem = parseOpenShellJsonItem(detailsStdout)
 
-  const rawPhase = parseField(detailsStdout, "Phase")
+  const rawPhase =
+    (typeof jsonItem?.status === "string" ? jsonItem.status : null) ??
+    (typeof jsonItem?.phase === "string" ? jsonItem.phase : null) ??
+    parseField(detailsStdout, "Phase")
+  const name =
+    (typeof jsonItem?.name === "string" ? jsonItem.name : null) ??
+    parseField(detailsStdout, "Name") ??
+    resolved.name
+  const id =
+    (typeof jsonItem?.id === "string" ? jsonItem.id : null) ??
+    parseField(detailsStdout, "Id") ??
+    resolved.id
+  const namespace =
+    (typeof jsonItem?.workspace === "string" ? jsonItem.workspace : null) ??
+    parseField(detailsStdout, "Namespace")
 
   return {
-    name: parseField(detailsStdout, "Name") ?? resolved.name,
-    id: parseField(detailsStdout, "Id") ?? resolved.id,
-    namespace: parseField(detailsStdout, "Namespace"),
+    name,
+    id,
+    namespace,
     phase: normalizeSandboxPhase(rawPhase),
     rawPhase,
     sshHostAlias: parseSshHostAlias(sshConfig, resolved.name),
